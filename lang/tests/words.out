@@ -1,0 +1,5 @@
+words=11 unique=8 longest=quick
+the    3
+fox    2
+brown,dog,fox,jumps,lazy,over,quick,the
+THE QUICK|THE quick brown fox jumps over THE lazy dog THE fox

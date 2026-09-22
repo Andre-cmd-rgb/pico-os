@@ -1,0 +1,199 @@
+// benchmark.al — a CLI microbenchmark for the a virtual machine.
+//
+//   a benchmark.al                    default sizes (the smallest)
+//   a benchmark.al cpu                run only the cpu group
+//   a benchmark.al --full             five times the work
+//   a benchmark.al -n 3               three times the work
+//   a benchmark.al --help             this text
+//
+// Groups: cpu fpu mem io proc. The "op/s" column is the useful one — it
+// shows how fast the VM interprets each kind of code on this machine.
+
+int scale = 1;
+str only = "";          // "" = all groups, else one of cpu fpu mem io proc
+int t0 = 0;
+
+int fib(int n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }
+
+bool want(str g) { return only == "" || only == g; }
+
+void start() { t0 = uptime_ms(); }
+
+void result(str name, int items) {
+    int ms = uptime_ms() - t0;
+    printf("  %-18s %7d ms", name, ms);
+    if (ms > 0) {
+        printf("   %9.0f op/s\n", float(items) * 1000.0 / float(ms));
+    } else {
+        println("");
+    }
+}
+
+void usage() {
+    println("usage: a benchmark.al [--full|-n N] [cpu|fpu|mem|io|proc]");
+    println("  --full    five times the work   -n N     N times the work");
+    println("  --help    this text");
+    println("groups: cpu fpu mem io proc");
+}
+
+int main(str[] args) {
+    for (int i = 1; i < len(args); i++) {
+        str a = args[i];
+        if (a == "-h" || a == "--help") { usage(); return 0; }
+        else if (a == "--full") { scale = 5; }
+        else if (a == "-n" || a == "--scale") {
+            if (i + 1 < len(args)) { i++; scale = max(1, to_int(args[i], 1)); }
+        }
+        else { only = a; }
+    }
+    println("a benchmark, scale ", scale, only == "" ? "" : " (" + only + " only)");
+
+    int f = 0, sum = 0, x = 1, total = 0, tot = 0, ok = 0, bytes = 0;
+    float g = 0.0, acc = 0.0;
+
+    if (want("cpu")) {
+        println("cpu");
+
+        // fib(26) makes 2 * fib(27) - 1 = 392835 calls
+        start();
+        for (int i = 0; i < scale; i++) { f = fib(26); }
+        result("fib(26) calls", 392835 * scale);
+
+        start();
+        int n = 400000 * scale;
+        for (int i = 0; i < n; i++) { sum += i; }
+        result("int loop adds", n);
+
+        start();
+        int steps = 200000 * scale;
+        for (int i = 0; i < steps; i++) { x = x * 1103515245 + 12345; }
+        result("int mul+add", steps);
+    }
+
+    if (want("fpu")) {
+        println("fpu");
+
+        start();
+        int n = 300000 * scale;
+        for (int i = 0; i < n; i++) { g += float(i) * 0.5; }
+        result("float mul+add", n);
+
+        // angles within a turn, as real programs use them: past about 200
+        // radians the C library's sin and cos take a path ten times slower
+        start();
+        int calls = 30000 * scale;
+        for (int i = 0; i < calls; i++) {
+            float x = float(i % 628) * 0.01;
+            acc += sin(x) + cos(x) + sqrt(float(i) + 1.0);
+        }
+        result("sin+cos+sqrt", calls * 3);
+
+        // A small Mandelbrot, run `scale` times: count total z = z^2 + c.
+        start();
+        int w = 60, h = 30;
+        for (int p = 0; p < scale; p++) {
+            for (int y = 0; y < h; y++) {
+                float ci = float(y) / float(h) * 3.0 - 1.5;
+                for (int px = 0; px < w; px++) {
+                    float cr = float(px) / float(w) * 3.0 - 2.0;
+                    float zr = 0.0, zi = 0.0, zr2 = 0.0, zi2 = 0.0;
+                    int it = 0;
+                    while (it < 32 && zr2 + zi2 <= 4.0) {
+                        zi = 2.0 * zr * zi + ci;
+                        zr = zr2 - zi2 + cr;
+                        zr2 = zr * zr;
+                        zi2 = zi * zi;
+                        it++;
+                    }
+                    total += it;
+                }
+            }
+        }
+        result("mandel 60x30", scale * w * h * 32);
+    }
+
+    if (want("mem")) {
+        println("mem");
+
+        // The arrays stay a fixed size so -n scales *time*, not memory: a
+        // 10-million-element int[] would not fit in the 8 MB PSRAM.
+        start();
+        int pushes = 0;
+        for (int p = 0; p < scale; p++) {
+            int[] a = [];
+            for (int i = 0; i < 100000; i++) { push(a, i); }
+            pushes += len(a);
+        }
+        result("array push", pushes);
+
+        int[] a = [];
+        for (int i = 0; i < 100000; i++) { push(a, i); }
+        start();
+        for (int p = 0; p < scale; p++) {
+            for (int i = 0; i < len(a); i++) { tot += a[i]; }
+        }
+        result("array scan", len(a) * scale);
+
+        seed(1);
+        start();
+        int sorted = 0;
+        for (int p = 0; p < scale; p++) {
+            int[] r = [];
+            for (int i = 0; i < 12000; i++) { push(r, random(1 << 24)); }
+            sort(r);
+            sorted += len(r);
+        }
+        result("array sort", sorted);
+    }
+
+    if (want("io")) {
+        println("io");
+
+        // A fixed 128 KB file of 64-byte lines, rewritten and reread `scale`
+        // times, so -n scales time without filling the 2 MB RAM disk.
+        str line = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n";
+        str path = "/tmp/benchmark_io.txt";
+        int writes = 2000;
+        start();
+        for (int p = 0; p < scale; p++) {
+            File f = open(path, "w");
+            for (int i = 0; i < writes; i++) { write(f, line); }
+            close(f);
+        }
+        result("write 64B lines", writes * scale);
+
+        start();
+        int lines = 0;
+        for (int p = 0; p < scale; p++) {
+            File f = open(path, "r");
+            str s = readline(f);
+            while (s != "") {
+                lines++;
+                bytes += len(s);
+                s = readline(f);
+            }
+            close(f);
+        }
+        remove(path);
+        result("read lines", lines);
+    }
+
+    if (want("proc")) {
+        println("proc");
+
+        start();
+        int n = 300 * scale;
+        for (int i = 0; i < n; i++) { if (run("true") == 0) { ok++; } }
+        result("spawn true", n);
+
+        // run() starts a program directly; redirection needs a shell
+        start();
+        n = 100 * scale;
+        for (int i = 0; i < n; i++) { if (run("sh", "-c", "echo x > /dev/null") == 0) { ok++; } }
+        result("spawn sh -c", n);
+    }
+
+    println("(checks: fib=", f, " sum=", sum, " x=", x, " g=", g,
+            " acc=", acc, " total=", total, " tot=", tot, " bytes=", bytes, " ok=", ok, ")");
+    return 0;
+}

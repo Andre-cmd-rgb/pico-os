@@ -1,0 +1,1 @@
+err_null.al:6: runtime error: null struct (reading a field)

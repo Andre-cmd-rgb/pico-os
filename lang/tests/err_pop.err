@@ -1,0 +1,1 @@
+err_pop.al:4: runtime error: pop() from an empty array

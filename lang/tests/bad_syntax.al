@@ -1,0 +1,6 @@
+// status: 1
+int main() {
+    int x = 1
+    println(x
+    return 0;
+}

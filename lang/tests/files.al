@@ -1,0 +1,36 @@
+int main() {
+    str dir = getenv("AL_TMP") + "/filetest";
+    println(mkdir(dir), " ", is_dir(dir), " ", exists(dir + "/none"));
+    File f = open(dir + "/notes.txt", "w");
+    println(f == null);
+    write(f, "first line\n");
+    write(f, "second line\n");
+    close(f);
+    f = open(dir + "/notes.txt", "a");
+    write(f, "third\n");
+    close(f);
+    f = open(dir + "/notes.txt", "r");
+    str line = readline(f);
+    println("[", trim(line), "]");
+    int n = 0;
+    while (true) {
+        line = readline(f);
+        if (line == "") { break; }
+        n++;
+    }
+    println("more lines: ", n);
+    close(f);
+    f = open(dir + "/notes.txt", "r");
+    str all = read(f);
+    close(f);
+    println(len(all), " ", len(split(trim(all), "\n")));
+    f = open(dir + "/notes.txt", "r");
+    println("[", read(f, 5), "]");
+    close(f);
+    println(listdir(dir));
+    println(rename(dir + "/notes.txt", dir + "/renamed.txt"), " ", listdir(dir));
+    println(remove(dir + "/renamed.txt"), " ", remove(dir), " ", exists(dir));
+    File missing = open(dir + "/gone.txt", "r");
+    println(missing == null);
+    return 0;
+}

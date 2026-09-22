@@ -1,0 +1,12 @@
+bad_type.al:3:13: error: expected int, got str; parse it with to_int(s)
+    int n = "text";
+            ^
+bad_type.al:5:13: error: expected int, got float; convert with int(x)
+    int m = f;
+            ^
+bad_type.al:6:13: error: expected str, got int; convert with str(x)
+    str s = 42;
+            ^
+bad_type.al:7:14: error: expected bool, got int
+    bool b = 1;
+             ^

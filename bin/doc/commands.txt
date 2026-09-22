@@ -1,0 +1,70 @@
+Commands
+========
+
+`help NAME` explains any of these in detail.
+
+FILES
+  ls cat cp mv rm mkdir rmdir touch pwd
+  df mount umount sync mkfs
+  head tail wc grep hexdump more edit
+  push/pull are on the PC side (see `man intro`)
+
+SYSTEM
+  ps top kill free dmesg uptime uname date time
+  sleep env which clear reboot chvt screenshot
+  i2cdetect keytest bench lcdtest backlight
+
+POWER
+  battery     level, what it is doing, time left
+  power       policy, locks, where the time went
+  cpufreq     performance | ondemand | powersave
+  suspend     deep sleep until a key is pressed
+  poweroff    deep sleep until reset
+  led         the status light
+
+SOUND
+  play FILE   WAV, FLAC, MP3, or raw 16-bit mono
+  play -n F   decode without playing: speed and a
+              checksum, for testing
+  rec FILE    record from the microphone
+  beep [hz] [ms]
+  volume [0-100]
+
+NETWORK
+  wifi              what the radio is doing
+  wifi scan         what is in range, numbered
+  wifi connect #2 PASSWORD
+  wifi forget NAME / disconnect / on / off
+  ntp               set the clock
+  ping [-c N] HOST
+  modem             the SIM module, if one is wired
+  sms               text messages
+  A shell is also waiting on port 23, so the board can
+  be used over the network with the USB port free.
+
+VIDEO
+  video             pick a clip from ~/video
+  video CLIP.ptv    play it; space pauses, s saves a
+                    frame, q stops
+  On the PC: make video FILE=something.mp4
+
+PICTURES
+  view              pick one from ~/photos
+  view FILE...      BMP or baseline JPEG, scaled to fit;
+                    left and right move between them,
+                    s saves a copy of the screen, q quits
+
+GAMES
+  nes               pick a game from ~/roms
+  nes ROM.nes       a NES emulator; q quits, p saves a
+                    screenshot
+  pad on            the Bluetooth radio
+  pad scan          look for a gamepad
+  pad connect N     join one
+  pad watch         see what a pad sends, to map it in
+                    /etc/gamepad
+
+THE LANGUAGE
+  a FILE.al     compile and run in one step
+  ac FILE.al    compile to an executable
+  See `man language`.

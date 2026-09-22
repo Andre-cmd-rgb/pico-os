@@ -1,0 +1,60 @@
+// Timings for the a virtual machine. Run it on the PC and on the board:
+//   a bench.al         the default sizes
+//   a bench.al 2       twice the work
+int scale = 1;
+
+int fib(int n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }
+
+void report(str name, int ms, int items) {
+    printf("%-14s %6d ms", name, ms);
+    if (ms > 0) { printf("   %d thousand per second", items / ms); }
+    println("");
+}
+
+int main(str[] args) {
+    if (len(args) > 1) { scale = max(1, to_int(args[1], 1)); }
+    println("a benchmark, scale ", scale);
+
+    int t = uptime_ms();
+    int f = 0;
+    for (int i = 0; i < scale; i++) { f = fib(24); }
+    report("fib(24) calls", uptime_ms() - t, 150049 * scale);
+
+    t = uptime_ms();
+    int sum = 0;
+    int n = 300000 * scale;
+    for (int i = 0; i < n; i++) { sum += i; }
+    report("loop adds", uptime_ms() - t, n);
+
+    t = uptime_ms();
+    float g = 0.0;
+    for (int i = 0; i < n; i++) { g += float(i) * 0.5; }
+    report("float adds", uptime_ms() - t, n);
+
+    t = uptime_ms();
+    int[] a = [];
+    for (int i = 0; i < 100000 * scale; i++) { push(a, i); }
+    int total = 0;
+    for (int i = 0; i < len(a); i++) { total += a[i]; }
+    report("array items", uptime_ms() - t, 200000 * scale);
+
+    t = uptime_ms();
+    str s = "";
+    for (int i = 0; i < 20000 * scale; i++) { s += "abcde"; }
+    report("string joins", uptime_ms() - t, 20000 * scale);
+
+    t = uptime_ms();
+    int primes = 0;
+    int limit = 20000 * scale;
+    bool[] sieve = [];
+    resize(sieve, limit);
+    for (int i = 2; i < limit; i++) {
+        if (sieve[i]) { continue; }
+        primes++;
+        for (int k = i * 2; k < limit; k += i) { sieve[k] = true; }
+    }
+    report("sieve numbers", uptime_ms() - t, limit);
+
+    println("checks: fib=", f, " sum=", sum, " total=", total, " len=", len(s), " primes=", primes);
+    return 0;
+}

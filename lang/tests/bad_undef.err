@@ -1,0 +1,9 @@
+bad_undef.al:3:13: error: unknown name 'missing'
+    println(missing);
+            ^
+bad_undef.al:4:5: error: unknown function 'nosuch'
+    nosuch(1, 2);
+    ^
+bad_undef.al:6:9: error: unknown name 'z'
+    y = z + 1;
+        ^

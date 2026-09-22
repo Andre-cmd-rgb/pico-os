@@ -1,0 +1,43 @@
+# An ESP32-S3 devkit with a 2.4" Arduino Uno ILI9341 shield on 12 jumper
+# wires, and a CardKB on GPIO3/GPIO0 so a keypress wakes it from suspend.
+# See docs/WIRING.md. The parallel bus is sensitive to wiring: lcdprobe and
+# lcdreg are there for when it does not come up.
+#
+# The console is the COM port, which leaves the native USB port for a
+# USB keyboard.
+
+CONFIG_PT_LCD_ILI9341_I80=y
+CONFIG_PT_LCD_PCLK_HZ=2000000
+CONFIG_PT_LCD_D0=4
+CONFIG_PT_LCD_D1=5
+CONFIG_PT_LCD_D2=6
+CONFIG_PT_LCD_D3=7
+CONFIG_PT_LCD_D4=15
+CONFIG_PT_LCD_D5=16
+CONFIG_PT_LCD_D6=17
+CONFIG_PT_LCD_D7=18
+CONFIG_PT_LCD_RS=1
+CONFIG_PT_LCD_CS=2
+CONFIG_PT_LCD_WR=42
+CONFIG_PT_LCD_RST=41
+CONFIG_PT_LCD_RD=-1
+
+CONFIG_PT_SD_SPI=y
+CONFIG_PT_SD_CS=10
+CONFIG_PT_SD_MOSI=11
+CONFIG_PT_SD_SCK=12
+CONFIG_PT_SD_MISO=13
+
+CONFIG_PT_KBD_CARDKB=y
+CONFIG_PT_CARDKB_SDA=3
+CONFIG_PT_CARDKB_SCL=0
+
+CONFIG_PT_KBD_USB=y
+CONFIG_PT_LED=y
+CONFIG_PT_LED_GPIO=48
+
+# The chip has Wi-Fi; /etc/wifi holds the networks
+CONFIG_PT_WIFI=y
+
+# The devkit has a second USB socket, so it can host a stick or a keyboard
+CONFIG_PT_USB_MSC=y

@@ -1,0 +1,81 @@
+CONFIG_IDF_TARGET="esp32s3"
+
+# ESP32-S3 N16R8: 16 MB quad flash, 8 MB octal PSRAM
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# Anything over a kilobyte goes to PSRAM unless it asks for internal
+# memory by name (DMA buffers, task stacks). There are 8 MB of PSRAM and
+# 320 KB of internal RAM, so the default should lean the other way.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+
+# lwIP buffers: the network here carries a shell and the odd NTP packet,
+# not bulk transfers, and every kilobyte is internal RAM. Measured: this
+# frees about 12 KB and telnet still feels instant.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
+CONFIG_LWIP_MAX_SOCKETS=6
+
+# Two Wi-Fi memory settings were measured on the board and both left
+# alone: SPIRAM_TRY_ALLOCATE_WIFI_LWIP cost 36 KB of internal RAM rather
+# than saving any, and trimming the RX/TX buffer counts gained 2 KB,
+# which is not worth the throughput it would cost.
+
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Processes run on core 1 and may hog it; only core 0's idle task is watched.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# The COM port is the console. The native USB port belongs to the keyboard.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Quiet ROM/bootloader/startup chatter: the kernel prints its own boot log.
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_LOG_COLORS=n
+
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+CONFIG_VFS_SUPPORT_DIR=y
+
+# 460800 baud keeps the serial mirror from throttling screen output.
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=460800
+CONFIG_ESPTOOLPY_MONITOR_BAUD=460800
+
+# Dynamic frequency scaling for the cpufreq policies (no light sleep).
+CONFIG_PM_ENABLE=y
+
+# Larger CPU caches: faster PSRAM access and less flash-cache thrashing,
+# for about 48 KB of internal RAM.
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+
+# FAT volumes: SD card, /tmp, and a FAT root filesystem or QEMU's RAM root.
+CONFIG_FATFS_VOLUME_COUNT=4
+
+# Idle light sleep (off by default, `power sleep on`) and the time-in-mode
+# statistics `power` prints.
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_PM_PROFILING=y
+
+# The low-power RISC-V core runs the keyboard watch during suspend.
+CONFIG_ULP_COPROC_ENABLED=y
+CONFIG_ULP_COPROC_TYPE_RISCV=y
+CONFIG_ULP_COPROC_RESERVE_MEM=4096

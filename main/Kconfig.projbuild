@@ -1,0 +1,785 @@
+menu "PocketType"
+
+menu "System"
+
+config PT_HOSTNAME
+	string "Hostname"
+	default "pockettype"
+
+config PT_USERNAME
+	string "User name"
+	default "andre"
+	help
+	  Shown in the prompt. Home is /home/<user>.
+
+config PT_TZ
+	string "Time zone (POSIX TZ string)"
+	default "CET-1CEST,M3.5.0,M10.5.0/3"
+	help
+	  The default is Italy (CET/CEST).
+
+choice PT_CPUFREQ
+	prompt "CPU frequency policy"
+	default PT_CPUFREQ_ONDEMAND
+	help
+	  Like Linux cpufreq governors; change it at runtime with `cpufreq`.
+	  The ESP32-S3 runs at 80, 160 or 240 MHz. 240 MHz is its maximum:
+	  there is no overclocking.
+
+config PT_CPUFREQ_PERFORMANCE
+	bool "performance: always 240 MHz"
+
+config PT_CPUFREQ_ONDEMAND
+	bool "ondemand: 240 MHz while busy, 80 MHz while idle"
+
+config PT_CPUFREQ_POWERSAVE
+	bool "powersave: always 80 MHz"
+
+endchoice
+
+config PT_IDLE_SLEEP
+	bool "Light sleep when idle"
+	default n
+	help
+	  Sleep between events with RAM kept, which saves power on battery.
+	  Never happens while a PC is connected to the native USB console or a
+	  USB keyboard is plugged in. On the COM port console the first key
+	  after a quiet spell can be lost. Toggle at runtime with
+	  `power sleep on|off`.
+
+config PT_VT_COUNT
+	int "Virtual terminals"
+	range 1 6
+	default 4
+	help
+	  Separate terminals, as on a Linux console: switch with Ctrl-A
+	  then a digit, or with `chvt`. Each keeps its own screen and its
+	  own shell, and a shell is only started when its terminal is
+	  first used. A terminal's text lives in PSRAM, so an unused one
+	  costs nothing.
+
+config PT_MAX_PROCS
+	int "Maximum number of processes"
+	range 4 32
+	default 16
+
+config PT_PROC_STACK_KB
+	int "Default process stack size (KB)"
+	range 4 64
+	default 8
+
+config PT_KLOG_SIZE
+	int "Kernel log buffer size (bytes)"
+	range 2048 262144
+	default 16384
+
+endmenu
+
+#
+# Drivers, one option each, as in the Linux kernel. A board file under
+# boards/ turns on the set a given board needs; see boards/README.md.
+#
+menu "Device drivers"
+
+menu "Graphics: the screen"
+
+choice PT_LCD_DRIVER
+	prompt "Display panel"
+	default PT_LCD_NONE
+	help
+	  The controller and the bus it is wired to. Without a display the
+	  console still works over the serial port, on an 80x24 terminal.
+
+config PT_LCD_NONE
+	bool "none: serial console only"
+
+config PT_LCD_ILI9341_SPI
+	bool "ILI9341 over SPI (Freenove FNK0104A/B and other boards)"
+	select PT_LCD
+
+config PT_LCD_ILI9341_I80
+	bool "ILI9341 over an 8-bit parallel bus (Arduino Uno shields)"
+	select PT_LCD
+	help
+	  The 2.4" Uno shield. Needs 12 wires and careful timing; see
+	  docs/WIRING.md and the lcdprobe and lcdreg commands.
+
+endchoice
+
+config PT_LCD
+	bool
+
+if PT_LCD
+
+choice PT_THEME
+	prompt "Color theme"
+	default PT_THEME_AMBER
+
+config PT_THEME_AMBER
+	bool "Amber CRT"
+
+config PT_THEME_GREEN
+	bool "Green CRT"
+
+endchoice
+
+choice PT_FONT
+	prompt "Text size"
+	default PT_FONT_SMALL
+
+config PT_FONT_SMALL
+	bool "Small: 53x24 on a 320x240 screen"
+
+config PT_FONT_LARGE
+	bool "Large: 26x12"
+
+endchoice
+
+config PT_LCD_ROTATION
+	int "Rotation (1 and 3 are landscape)"
+	range 0 3
+	default 1
+
+config PT_LCD_BGR
+	bool "Panel expects BGR (swap if red and blue are swapped)"
+	default y
+
+config PT_LCD_INVERT
+	bool "Invert colors (IPS panels usually need this)"
+	default n
+
+choice PT_LCD_INIT
+	prompt "Start-up sequence"
+	default PT_LCD_INIT_STANDARD
+	help
+	  Which table of power, VCOM and gamma settings to send when the
+	  panel wakes up. Panels sold as ILI9341 are not all the same
+	  silicon, and the wrong table shows a blank, washed-out or dim
+	  screen although the controller answers.
+
+config PT_LCD_INIT_STANDARD
+	bool "standard (Adafruit, most modules)"
+
+config PT_LCD_INIT_ALT
+	bool "alternative (Freenove FNK0104A/B and other CYD boards)"
+	help
+	  What Freenove ships for this board: TFT_eSPI's ILI9341_2 table,
+	  with lower drive and its own gamma curves.
+
+endchoice
+
+config PT_STATUS_LINE
+	bool "Status line along the bottom"
+	default y
+	help
+	  Which terminal you are on, the time, the battery and the network,
+	  on the bottom row of the screen. Costs one row of text.
+
+config PT_CURSOR_BLINK_MS
+	int "Cursor blink period (ms, 0 = steady)"
+	range 0 2000
+	default 530
+
+config PT_LCD_BACKLIGHT
+	int "Backlight GPIO (-1 if it is always on)"
+	range -1 48
+	default -1
+	help
+	  Driven by PWM, so `backlight 0-100` dims the screen.
+
+config PT_LCD_BACKLIGHT_ACTIVE_LOW
+	bool "Backlight is on when the pin is low"
+	depends on PT_LCD_BACKLIGHT >= 0
+	default n
+
+config PT_LCD_BRIGHTNESS
+	int "Backlight brightness at boot (percent)"
+	depends on PT_LCD_BACKLIGHT >= 0
+	range 1 100
+	default 80
+
+if PT_LCD_ILI9341_SPI
+
+menu "SPI display pins"
+
+config PT_LCD_SPI_HOST
+	int "SPI host (2 or 3)"
+	range 2 3
+	default 2
+
+config PT_LCD_MOSI
+	int "MOSI"
+	default 11
+config PT_LCD_SCLK
+	int "SCLK"
+	default 12
+config PT_LCD_SPI_CS
+	int "CS"
+	default 10
+config PT_LCD_SPI_DC
+	int "DC / RS"
+	default 46
+config PT_LCD_SPI_RST
+	int "RESET (-1 when it follows the board's reset)"
+	range -1 48
+	default -1
+
+config PT_LCD_SPI_HZ
+	int "Bus clock (Hz)"
+	range 1000000 80000000
+	default 40000000
+	help
+	  40 MHz works on a board with the panel soldered on. Lower it if the
+	  picture shows noise.
+
+endmenu
+
+endif # PT_LCD_ILI9341_SPI
+
+if PT_LCD_ILI9341_I80
+
+config PT_LCD_PCLK_HZ
+	int "Bus write clock (Hz)"
+	range 1250000 20000000
+	default 2000000
+	help
+	  The lowest the peripheral can make is about 1.25 MHz. Long jumper
+	  wires need a slow clock.
+
+menu "Parallel display pins"
+
+config PT_LCD_D0
+	int "D0 (shield LCD_D0, Uno D8)"
+	default 4
+config PT_LCD_D1
+	int "D1 (shield LCD_D1, Uno D9)"
+	default 5
+config PT_LCD_D2
+	int "D2 (shield LCD_D2, Uno D2)"
+	default 6
+config PT_LCD_D3
+	int "D3 (shield LCD_D3, Uno D3)"
+	default 7
+config PT_LCD_D4
+	int "D4 (shield LCD_D4, Uno D4)"
+	default 15
+config PT_LCD_D5
+	int "D5 (shield LCD_D5, Uno D5)"
+	default 16
+config PT_LCD_D6
+	int "D6 (shield LCD_D6, Uno D6)"
+	default 17
+config PT_LCD_D7
+	int "D7 (shield LCD_D7, Uno D7)"
+	default 18
+config PT_LCD_RS
+	int "RS / D/C (shield A2)"
+	default 1
+config PT_LCD_CS
+	int "CS (shield A3)"
+	default 2
+config PT_LCD_WR
+	int "WR (shield A1)"
+	default 42
+config PT_LCD_RST
+	int "RESET (shield A4, -1 if not wired)"
+	range -1 48
+	default 41
+config PT_LCD_RD
+	int "RD (shield A0, -1 if tied to 3V3)"
+	range -1 48
+	default -1
+	help
+	  The display is only written to, so RD normally goes straight to
+	  3V3. Wired to a GPIO instead, the driver holds it high, and
+	  lcdprobe and lcdreg use it to read the controller back. It must
+	  never float: the shield then turns its data buffer around and
+	  fights the bus.
+
+endmenu
+
+endif # PT_LCD_ILI9341_I80
+
+endif # PT_LCD
+
+endmenu
+
+menu "Games"
+
+config PT_NES
+	bool "NES emulator"
+	depends on PT_LCD
+	default n
+	help
+	  Plays NES cartridges with Nofrendo (third_party/nofrendo). The
+	  picture is 256x240 in the middle of the screen, sound goes to the
+	  codec, and the keyboard stands in for a joypad.
+
+	  Nofrendo is GPL v2, so a PocketType binary built with this and
+	  then given to somebody else is GPL v2 as well. Building it for
+	  yourself changes nothing.
+
+endmenu
+
+menu "Network"
+
+config PT_WIFI
+	bool "Wi-Fi"
+	default n
+	help
+	  The chip's own 2.4 GHz radio: the wifi, ntp and ping commands, and
+	  /proc/net. Networks are saved in /etc/wifi, one per line, and a
+	  supplicant task keeps trying them. Costs about 50 KB of internal
+	  RAM while the radio is up, and stops the system going into deep
+	  sleep on its own.
+
+if PT_WIFI
+
+config PT_WIFI_AT_BOOT
+	bool "Start the radio at boot"
+	default y
+	help
+	  With this off the chip boots with the radio down and about 100 KB
+	  more free internal RAM, until `wifi on`.
+
+config PT_NETCONSOLE
+	bool "A shell over the network"
+	default y
+	help
+	  Listens for a telnet connection and runs a login shell on it, so
+	  the board can be used with the USB port doing something else.
+	  One session at a time; the screen keeps its own shell.
+
+config PT_NETCONSOLE_PORT
+	int "Port"
+	depends on PT_NETCONSOLE
+	default 23
+
+config PT_NTP_SERVER
+	string "Time server"
+	default "pool.ntp.org"
+	help
+	  Where `ntp` asks for the time. The clock has no battery, so
+	  without this every boot starts in 1970.
+
+config PT_NTP_AT_BOOT
+	bool "Set the clock as soon as a network is joined"
+	default y
+
+endif
+
+config PT_MODEM
+	bool "GSM/LTE modem on a serial port"
+	default n
+	select LWIP_PPP_SUPPORT
+	select LWIP_PPP_PAP_SUPPORT
+	select LWIP_PPP_CHAP_SUPPORT
+	help
+	  A module that speaks AT commands (SIM800, SIM7600, A7670, EC200
+	  and friends): the modem and sms commands, /proc/modem, and a PPP
+	  link so the whole system can reach the internet over the mobile
+	  network. Calls are not supported.
+
+if PT_MODEM
+
+config PT_MODEM_TX
+	int "TX pin (to the module's RX)"
+	default 43
+config PT_MODEM_RX
+	int "RX pin (from the module's TX)"
+	default 44
+config PT_MODEM_BAUD
+	int "Baud rate"
+	default 115200
+
+config PT_MODEM_APN
+	string "APN"
+	default "internet"
+	help
+	  What the network calls its data service. Wrong here means the
+	  dial succeeds and nothing routes.
+
+config PT_MODEM_USER
+	string "APN user name (usually empty)"
+	default ""
+config PT_MODEM_PASSWORD
+	string "APN password (usually empty)"
+	default ""
+
+endif
+
+endmenu
+
+menu "Input: keyboards"
+
+config PT_KBD_UART
+	bool "Keyboard input from the serial console"
+	default y
+	help
+	  Type on the PC through the console port. The console port itself is
+	  ESP-IDF's "Channel for console output" setting: UART0 is the COM
+	  port, USB Serial/JTAG is the native USB port.
+
+config PT_BUTTON_GPIO
+	int "Button that switches terminals (-1 for none)"
+	range -1 48
+	default -1
+	help
+	  The board's own button, once the chip has booted: a press moves
+	  to the next terminal, holding it goes back to the first. On most
+	  ESP32-S3 boards this is the BOOT button on GPIO0.
+
+config PT_KBD_CARDKB
+	bool "M5Stack CardKB (I2C)"
+	default n
+
+if PT_KBD_CARDKB
+
+config PT_CARDKB_SDA
+	int "SDA pin"
+	default 16
+	help
+	  Only GPIO1 or GPIO3 let the low-power core read the keyboard while
+	  the system is suspended, which is what wakes it on a keypress.
+
+config PT_CARDKB_SCL
+	int "SCL pin"
+	default 15
+	help
+	  Only GPIO0 or GPIO2 can wake the system from suspend, as above.
+
+config PT_CARDKB_POLL_MS
+	int "Poll interval (ms)"
+	range 5 200
+	default 25
+
+endif
+
+comment "USB keyboard unavailable: the console uses the native USB port"
+	depends on ESP_CONSOLE_USB_SERIAL_JTAG
+
+config PT_BLE_PAD
+	bool "Bluetooth gamepad"
+	default n
+	select BT_ENABLED
+	help
+	  A Bluetooth pad for the games: a terminal cannot say when a key
+	  is released, and a pad can. The radio is only started when `pad
+	  on` asks for it, because the stack costs tens of kilobytes of
+	  internal RAM. Which bytes of a pad's reports mean which button
+	  is set in /etc/gamepad; `pad watch` shows what yours sends.
+
+	  The Bluetooth host itself is a choice ESP-IDF makes separately:
+	  a board file that turns this on also needs BT_NIMBLE_ENABLED.
+
+config PT_USB_HOST
+	bool
+	help
+	  The USB host stack, brought in by whatever needs it.
+
+config PT_USB_MSC
+	bool "USB memory sticks"
+	select PT_USB_HOST
+	default n
+	help
+	  A stick plugged into the USB port appears on /mnt/usb. Two
+	  things to know: the port has to be free (on a board whose only
+	  socket is the console, that means moving the console to the
+	  network or the serial header first), and hosting means the board
+	  supplies 5 V to whatever is plugged in, which a socket meant for
+	  power coming *in* cannot do without a powered hub.
+
+config PT_KBD_USB
+	bool "USB keyboard on the native USB port"
+	depends on !ESP_CONSOLE_USB_SERIAL_JTAG
+	select PT_USB_HOST
+	default n
+
+if PT_KBD_USB
+
+choice PT_KBD_LAYOUT
+	prompt "Keyboard layout"
+	default PT_KBD_LAYOUT_US
+
+config PT_KBD_LAYOUT_US
+	bool "US"
+
+config PT_KBD_LAYOUT_IT
+	bool "Italian"
+
+endchoice
+
+config PT_KBD_REPEAT_DELAY_MS
+	int "Key repeat delay (ms)"
+	default 450
+
+config PT_KBD_REPEAT_RATE_MS
+	int "Key repeat interval (ms)"
+	default 35
+
+endif
+
+endmenu
+
+menu "Storage"
+
+choice PT_ROOTFS
+	prompt "Root filesystem"
+	default PT_ROOTFS_LITTLEFS
+
+config PT_ROOTFS_LITTLEFS
+	bool "LittleFS on internal flash"
+	help
+	  Survives power loss in the middle of a write and spreads wear by
+	  itself.
+
+config PT_ROOTFS_FAT
+	bool "FAT on internal flash"
+	help
+	  FAT behind wear levelling. A power cut during a write can corrupt it.
+
+config PT_ROOTFS_RAMDISK
+	bool "RAM disk (for testing in QEMU)"
+	help
+	  Formatted at every boot, so everything saved is lost on reset. Only
+	  useful in QEMU, which cannot emulate the flash filesystems.
+
+endchoice
+
+config PT_FILE_BUF_KB
+	int "Buffer per open file in KB (0 turns buffering off)"
+	range 0 32
+	default 4
+	help
+	  Small writes are collected until a whole flash page is ready, and
+	  reads fetch a block at a time. The buffer is internal RAM and
+	  appears only when a file is actually read or written, so it costs
+	  nothing until something opens a file. `sync` writes out whatever is
+	  still buffered.
+
+config PT_TMP_KB
+	int "/tmp size in KB (RAM, from PSRAM)"
+	range 128 4096
+	default 2048
+
+choice PT_SD_DRIVER
+	prompt "SD card slot"
+	default PT_SD_NONE
+
+config PT_SD_NONE
+	bool "none"
+
+config PT_SD_MMC
+	bool "SDMMC (the fast four-wire bus, boards with the slot on board)"
+	select PT_SD
+
+config PT_SD_SPI
+	bool "SPI (Arduino shields and breakout boards)"
+	select PT_SD
+
+endchoice
+
+config PT_SD
+	bool
+
+if PT_SD_MMC
+
+menu "SDMMC pins"
+
+config PT_SD_MMC_CLK
+	int "CLK"
+	default 38
+config PT_SD_MMC_CMD
+	int "CMD"
+	default 40
+config PT_SD_MMC_D0
+	int "D0"
+	default 39
+config PT_SD_MMC_D1
+	int "D1 (-1 for one-wire mode)"
+	range -1 48
+	default 41
+config PT_SD_MMC_D2
+	int "D2"
+	range -1 48
+	default 48
+config PT_SD_MMC_D3
+	int "D3"
+	range -1 48
+	default 47
+
+endmenu
+
+endif
+
+if PT_SD_SPI
+
+menu "SD card SPI pins"
+
+config PT_SD_CS
+	int "CS pin (shield D10)"
+	default 10
+config PT_SD_MOSI
+	int "MOSI pin (shield D11)"
+	default 11
+config PT_SD_SCK
+	int "SCK pin (shield D13)"
+	default 12
+config PT_SD_MISO
+	int "MISO pin (shield D12)"
+	default 13
+
+config PT_SD_FREQ_KHZ
+	int "Bus speed (kHz)"
+	range 400 40000
+	default 10000
+
+endmenu
+
+endif
+
+endmenu
+
+menu "Sound"
+
+config PT_AUDIO
+	bool "ES8311 codec: speaker and microphone"
+	default n
+	help
+	  Adds /dev/audio, and the play, rec, beep and volume commands.
+
+if PT_AUDIO
+
+config PT_AUDIO_I2C_SDA
+	int "Codec I2C SDA"
+	default 16
+config PT_AUDIO_I2C_SCL
+	int "Codec I2C SCL"
+	default 15
+config PT_AUDIO_MCLK
+	int "I2S MCLK"
+	default 4
+config PT_AUDIO_BCLK
+	int "I2S BCLK"
+	default 5
+config PT_AUDIO_WS
+	int "I2S word select (LRCK)"
+	default 7
+config PT_AUDIO_DOUT
+	int "I2S data out, to the speaker"
+	default 8
+config PT_AUDIO_DIN
+	int "I2S data in, from the microphone (-1 if none)"
+	range -1 48
+	default 6
+config PT_AUDIO_AMP_EN
+	int "Amplifier enable pin (-1 if always on)"
+	range -1 48
+	default 1
+
+config PT_AUDIO_AMP_ACTIVE_LOW
+	bool "The amplifier runs when that pin is low"
+	depends on PT_AUDIO_AMP_EN >= 0
+	default n
+	help
+	  Class-D amplifiers usually have a shutdown pin rather than an
+	  enable pin: the FM8002E on the Freenove board is off when the pin
+	  is high and plays when it is low. Getting this backwards means
+	  silence, so it is the first thing to try if nothing comes out.
+
+config PT_AUDIO_MIC_GAIN
+	int "Microphone gain (dB, 0-42 in steps of 6)"
+	range 0 42
+	default 36
+	help
+	  The analogue scale in front of the converter. Measured on the
+	  Freenove board in a quiet room: 30 dB records at -50 dBFS, 36 dB
+	  at -40 dBFS, and 42 dB only gains another 1.5 dB while losing
+	  headroom. `rec -g` overrides it.
+
+config PT_AUDIO_MIC_ALC
+	bool "Ride the microphone gain automatically"
+	default y
+	help
+	  The codec turns its digital gain up when the room is quiet and
+	  down before anything clips. Without it a recording of a room is
+	  far too quiet to hear.
+
+config PT_AUDIO_MIC_ALC_MAX_DB
+	int "How far the automatic gain may go (dB)"
+	depends on PT_AUDIO_MIC_ALC
+	range 0 32
+	default 24
+
+config PT_AUDIO_RATE
+	int "Sample rate (Hz)"
+	range 8000 48000
+	default 16000
+
+config PT_AUDIO_VOLUME
+	int "Volume at boot (percent)"
+	range 0 100
+	default 60
+
+endif
+
+endmenu
+
+menu "Power"
+
+config PT_BATTERY
+	bool "Battery level on an ADC pin"
+	default n
+	help
+	  Adds the `battery` command and the level in `power`.
+
+if PT_BATTERY
+
+config PT_BATTERY_ADC_GPIO
+	int "ADC pin the battery divider feeds"
+	default 9
+
+config PT_BATTERY_SCALE
+	int "Divider ratio, times 100 (200 = half the voltage)"
+	range 100 1000
+	default 200
+
+config PT_BATTERY_WARN_MV
+	int "Warn below (mV)"
+	default 3500
+
+config PT_BATTERY_OFF_MV
+	int "Sync and power off below (mV, 0 to never)"
+	default 3300
+
+endif
+
+endmenu
+
+menu "Status LED"
+
+config PT_LED
+	bool "RGB status LED (WS2812)"
+	default n
+	help
+	  Lit while booting, then a slow double blink like Linux's heartbeat
+	  LED trigger. Change it at runtime with the `led` command.
+
+if PT_LED
+
+config PT_LED_GPIO
+	int "GPIO"
+	default 42
+
+config PT_LED_BRIGHTNESS
+	int "Brightness (1-255)"
+	range 1 255
+	default 24
+
+endif
+
+endmenu
+
+endmenu
+
+endmenu

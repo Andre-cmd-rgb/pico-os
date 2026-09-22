@@ -1,0 +1,7 @@
+Point{x: 3, y: 4} 3 4
+Point{x: 12, y: 9}
+Person{name: "ann", age: 30, score: 0.0, member: false, home: null, tags: null}
+Person{name: "ann", age: 30, score: 0.0, member: false, home: Point{x: 1, y: 0}, tags: ["a", "b"]} 1 b
+99 true false
+6 3 true
+[Point{x: 1, y: 1}, Point{x: 20, y: 2}] 20

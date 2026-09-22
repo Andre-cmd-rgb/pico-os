@@ -1,0 +1,9 @@
+bad_args.al:4:18: error: too few arguments to add() (it takes 2)
+    println(add(1));
+                 ^
+bad_args.al:5:23: error: too many arguments to add() (it takes 2)
+    println(add(1, 2, 3));
+                      ^
+bad_args.al:6:20: error: expected int, got str; parse it with to_int(s)
+    println(add(1, "two"));
+                   ^

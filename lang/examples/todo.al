@@ -1,0 +1,55 @@
+// A todo list in a file. Shows arguments, files and string handling.
+//   a todo.al            list
+//   a todo.al add text   add an item
+//   a todo.al done 2     remove item 2
+const str FILE_NAME = "/todo.txt";
+
+str[] load(str path) {
+    str[] items = [];
+    File f = open(path, "r");
+    if (f == null) { return items; }
+    while (true) {
+        str line = trim(readline(f));
+        if (line == "") { break; }
+        push(items, line);
+    }
+    close(f);
+    return items;
+}
+
+bool save(str path, str[] items) {
+    File f = open(path, "w");
+    if (f == null) { return false; }
+    for (int i = 0; i < len(items); i++) { write(f, items[i] + "\n"); }
+    close(f);
+    return true;
+}
+
+int main(str[] args) {
+    str home = getenv("HOME");
+    str path = (home == "" ? "." : home) + FILE_NAME;
+    str[] items = load(path);
+    str command = len(args) > 1 ? args[1] : "list";
+
+    if (command == "list") {
+        if (len(items) == 0) { println("nothing to do"); }
+        for (int i = 0; i < len(items); i++) { printf("%2d. %s\n", i + 1, items[i]); }
+        return 0;
+    }
+    if (command == "add" && len(args) > 2) {
+        str[] words = slice(args, 2, len(args));
+        push(items, join(words, " "));
+        return save(path, items) ? 0 : 1;
+    }
+    if (command == "done" && len(args) > 2) {
+        int n = to_int(args[2], 0);
+        if (n < 1 || n > len(items)) {
+            write(stderr, "todo: no item " + args[2] + "\n");
+            return 1;
+        }
+        println("done: ", remove_at(items, n - 1));
+        return save(path, items) ? 0 : 1;
+    }
+    write(stderr, "usage: todo [add text | done number]\n");
+    return 2;
+}

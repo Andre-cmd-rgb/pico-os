@@ -1,0 +1,99 @@
+# Freenove FNK0104A/B: ESP32-S3R8 with a 2.8" 240x320 ILI9341 on SPI,
+# https://github.com/Freenove/Freenove_ESP32_S3_Display
+#
+# On board: the panel, a microSD slot on SDMMC, an ES8311 codec with a
+# speaker amplifier and a microphone, a battery charger with the level on
+# ADC, a WS2812 LED and three headers (I2C, UART, spare IO).
+#
+# The USB-C socket goes straight to the chip, so the console is on USB
+# Serial/JTAG and the native port cannot host a USB keyboard.
+
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
+
+# Display: ILI9341 on SPI2, reset tied to the board's, IPS needs inversion
+CONFIG_PT_LCD_ILI9341_SPI=y
+CONFIG_PT_LCD_SPI_HOST=2
+CONFIG_PT_LCD_MOSI=11
+CONFIG_PT_LCD_SCLK=12
+CONFIG_PT_LCD_SPI_CS=10
+CONFIG_PT_LCD_SPI_DC=46
+CONFIG_PT_LCD_SPI_RST=-1
+CONFIG_PT_LCD_SPI_HZ=80000000
+CONFIG_PT_LCD_BACKLIGHT=45
+CONFIG_PT_LCD_BRIGHTNESS=80
+CONFIG_PT_LCD_INVERT=y
+CONFIG_PT_LCD_INIT_ALT=y
+CONFIG_PT_LCD_BGR=y
+CONFIG_PT_LCD_ROTATION=1
+
+# microSD on the four-wire SDMMC bus
+CONFIG_PT_SD_MMC=y
+CONFIG_PT_SD_MMC_CLK=38
+CONFIG_PT_SD_MMC_CMD=40
+CONFIG_PT_SD_MMC_D0=39
+CONFIG_PT_SD_MMC_D1=41
+CONFIG_PT_SD_MMC_D2=48
+CONFIG_PT_SD_MMC_D3=47
+
+# CardKB on the I2C header, the bus the codec is on. Moving it to the spare
+# IO header (SDA 3, SCL 2) is what lets a keypress wake the board from
+# suspend; the low-power core can only reach those pins.
+CONFIG_PT_KBD_CARDKB=y
+CONFIG_PT_CARDKB_SDA=16
+CONFIG_PT_CARDKB_SCL=15
+
+# ES8311 codec, FM8002E amplifier, MEMS microphone
+CONFIG_PT_AUDIO=y
+CONFIG_PT_AUDIO_I2C_SDA=16
+CONFIG_PT_AUDIO_I2C_SCL=15
+CONFIG_PT_AUDIO_MCLK=4
+CONFIG_PT_AUDIO_BCLK=5
+CONFIG_PT_AUDIO_WS=7
+CONFIG_PT_AUDIO_DOUT=8
+CONFIG_PT_AUDIO_DIN=6
+CONFIG_PT_AUDIO_AMP_EN=1
+# FM8002E: pin 1 is shutdown, so low is the amplifier running
+CONFIG_PT_AUDIO_AMP_ACTIVE_LOW=y
+
+# Battery through a divider of one half
+CONFIG_PT_BATTERY=y
+CONFIG_PT_BATTERY_ADC_GPIO=9
+CONFIG_PT_BATTERY_SCALE=200
+
+CONFIG_PT_LED=y
+CONFIG_PT_LED_GPIO=42
+
+# The chip has Wi-Fi; /etc/wifi holds the networks
+CONFIG_PT_WIFI=y
+
+# A SIM module can go on the UART header (TX 43 / RX 44)
+CONFIG_PT_MODEM=y
+
+# NES emulator (GPL v2 core; see third_party/README.md)
+CONFIG_PT_NES=y
+
+# A Bluetooth pad for the games (the radio starts on demand). The host
+# stack is a Kconfig choice, so it has to be named here rather than
+# selected: NimBLE, which is the smaller of the two.
+CONFIG_PT_BLE_PAD=y
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+# the HID part of NimBLE is its own switch, and the whole host-side file
+# is compiled out without it
+CONFIG_BT_NIMBLE_HID_SERVICE=y
+# Cut to what a gamepad needs: one connection, and only the roles a
+# thing that *looks for* devices uses. Measured: the defaults leave no
+# internal RAM at all once the radio starts.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# The host's own allocations can live in PSRAM, of which there are 8 MB.
+# The controller's cannot: the radio reaches them from interrupts, and
+# PSRAM is unreachable whenever the cache is off.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+CONFIG_BT_NIMBLE_MAX_BONDS=2
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8
+CONFIG_BT_NIMBLE_ACL_BUF_COUNT=8
+CONFIG_BT_CTRL_BLE_MAX_ACT=2
+
+# The BOOT button switches terminals once the system is up
+CONFIG_PT_BUTTON_GPIO=0

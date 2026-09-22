@@ -1,0 +1,9 @@
+ready! 1 ["init"]
+box,0,1,3,4 [0, 1, 2, 3, 4]
+["init", "row0!", "row2!", "row3!"]
+c [0, 1] b
+Box{tag: "a", nums: [1], inner: null}
+[[0], [15, 11], [20, 42, 22]] 3
+ababababab 5 10
+bababab
+true none

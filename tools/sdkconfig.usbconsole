@@ -1,0 +1,4 @@
+# Console on the native USB port (USB Serial/JTAG): one cable for flashing
+# and the shell. The USB keyboard is unavailable in this configuration.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y

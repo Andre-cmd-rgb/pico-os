@@ -1,0 +1,12 @@
+bad_assign.al:5:5: error: cannot assign to constant 'local'
+    local = 2;
+    ^
+bad_assign.al:6:5: error: cannot assign to constant 'LIMIT'
+    LIMIT = 6;
+    ^
+bad_assign.al:7:15: error: strings cannot be changed; build a new one
+    "text"[0] = 65;
+              ^
+bad_assign.al:8:5: error: cannot assign to this expression
+    len("abc") = 4;
+    ^

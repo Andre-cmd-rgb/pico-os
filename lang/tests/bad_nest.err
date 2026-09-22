@@ -1,0 +1,3 @@
+bad_nest.al:2:45: error: nested too deeply (the limit is 24 levels)
+int main() { int x = ((((((((((((((((((((((((((((((((((((((((1)))))))))))))))))))))))))))))))))))))))); println(x); return 0; }
+                                            ^

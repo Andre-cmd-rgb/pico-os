@@ -1,0 +1,12 @@
+bad_printf.al:3:20: error: %d needs an int, argument 1 is str
+    printf("%d\n", "text");
+                   ^
+bad_printf.al:4:12: error: the format string wants more arguments
+    printf("%s %s\n", "only one");
+           ^
+bad_printf.al:5:23: error: argument 2 has no % conversion in the format string
+    printf("%d\n", 1, 2);
+                      ^
+bad_printf.al:6:12: error: bad conversion in format string
+    printf("%q\n", 1);
+           ^

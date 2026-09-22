@@ -1,0 +1,1 @@
+err_nullarray.al:6: runtime error: push() to a null array (give it a value first, as in int[] a = [])

@@ -1,0 +1,75 @@
+The `a` language
+================
+
+C-like, statically typed, with automatic memory and no
+pointers. A mistake stops with the line it happened on
+rather than corrupting something.
+
+  a hello.al        compile and run
+  ac hello.al       compile to ./hello
+
+A PROGRAM
+
+  int main(str[] args) {
+      println("hello ", len(args) > 1 ? args[1] : "world");
+      return 0;
+  }
+
+TYPES
+
+  int     32-bit signed        float   32-bit
+  bool    true or false        str     UTF-8 text
+  T[]     growable array       struct  named fields
+  File    an open file         void    returns nothing
+
+  struct Point { int x; int y; }
+  Point p = Point{x: 3, y: 4};
+  int[] xs = [1, 2, 3];
+  int[][] grid = [[1, 2], [3]];
+
+CONTROL
+
+  if / else, while, for (int i = 0; i < n; i++),
+  break, continue, return, and ? :
+
+STRINGS
+
+  len substr find split join trim upper lower replace
+  starts_with ends_with contains repeat chr ord
+  to_int to_float str
+  s[i] is the byte at i. "n=" + n builds text.
+
+ARRAYS
+
+  len push pop insert remove_at resize slice sort
+  reverse find
+
+MATHS
+
+  abs min max sqrt pow sin cos tan atan2 hypot exp
+  ln floor ceil round random seed
+  PI INT_MAX INT_MIN
+
+FILES AND THE SYSTEM
+
+  open close read readline write exists is_dir remove
+  mkdir rename listdir
+  stdin stdout stderr are File constants.
+  run getenv exit sleep_ms uptime_ms time date
+  raw_mode readkey term_cols term_rows
+
+CHECKING THINGS
+
+  assert(cond)             stops at the line if false
+  assert(cond, "why")      and says why
+
+PRINTING
+
+  print println printf format
+  printf checks its arguments when the format is a
+  literal, at compile time.
+
+EXAMPLES ON THE BOARD
+
+  ~/benchmark.al and the examples in lang/examples on
+  the PC: hello, guess, life, mandel, todo, wc.
