@@ -97,13 +97,14 @@ static SemaphoreHandle_t	 done;
 static SemaphoreHandle_t	 bus_lock;	/* renderer and lcdtest may draw at once */
 static int			 width, height;
 static int			 brightness = 100;
+static int			 rotation = CONFIG_PT_LCD_ROTATION;
 
 uint8_t ili9341_madctl(void)
 {
-	static const uint8_t rotation[4] = {
+	static const uint8_t modes[4] = {
 		MADCTL_MX, MADCTL_MV, MADCTL_MY, MADCTL_MX | MADCTL_MY | MADCTL_MV,
 	};
-	uint8_t mode = rotation[CONFIG_PT_LCD_ROTATION];
+	uint8_t mode = modes[rotation];
 
 #ifdef CONFIG_PT_LCD_BGR
 	mode |= MADCTL_BGR;
@@ -259,12 +260,38 @@ int lcd_init(void)
 	esp_lcd_panel_io_tx_param(io, CMD_INVOFF, NULL, 0);
 #endif
 
-	bool landscape = CONFIG_PT_LCD_ROTATION & 1;
+	bool landscape = rotation & 1;
 	width = landscape ? 320 : 240;
 	height = landscape ? 240 : 320;
 	backlight_init();
 	klog("lcd: ili9341%s on %s, %dx%d", INIT_NAME, lcd_io_name(), width, height);
 	return 0;
+}
+
+/*
+ * A half turn: 1 and 3 are the two ways up in landscape, 0 and 2 in
+ * portrait. Only those are offered while running -- a quarter turn would
+ * change the width and height the console was laid out for. Nothing is
+ * being sent while the bus is held, so the switch falls between frames;
+ * whoever owns the screen paints it again afterwards.
+ */
+int lcd_set_rotation(int r)
+{
+	uint8_t mode;
+
+	if (r < 0 || r > 3 || (r & 1) != (rotation & 1))
+		return -EINVAL;
+	lcd_bus_lock(true);
+	rotation = r;
+	mode = ili9341_madctl();
+	esp_lcd_panel_io_tx_param(io, CMD_MADCTL, &mode, 1);
+	lcd_bus_lock(false);
+	return 0;
+}
+
+int lcd_rotation(void)
+{
+	return rotation;
 }
 
 int lcd_width(void)
@@ -390,6 +417,8 @@ void lcd_fill(int x, int y, int w, int h, uint16_t rgb565) { }
 void lcd_backlight_set(int percent) { }
 int lcd_backlight_get(void) { return 0; }
 void lcd_sleep(void) { }
+int lcd_set_rotation(int r) { return -ENODEV; }
+int lcd_rotation(void) { return 0; }
 int lcd_capture_begin(void) { return -ENODEV; }
 const uint8_t *lcd_capture_pixels(int *w, int *h) { *w = *h = 0; return NULL; }
 void lcd_capture_end(void) { }

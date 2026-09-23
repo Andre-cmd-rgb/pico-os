@@ -24,6 +24,8 @@ int	lcd_capture_save(const char *path);	/* the whole dance, into a BMP */
 
 void	lcd_backlight_set(int percent);	/* 0 turns the backlight off */
 void	lcd_sleep(void);		/* lamp out and panel asleep, before deep sleep */
+int	lcd_set_rotation(int r);	/* 0-3 quarter turns; only a half turn from boot's */
+int	lcd_rotation(void);
 int	lcd_backlight_get(void);
 
 #if CONFIG_PT_LCD_ILI9341_I80

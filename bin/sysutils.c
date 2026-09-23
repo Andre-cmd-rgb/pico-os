@@ -1030,6 +1030,39 @@ PT_PROGRAM(backlight, "show or set the screen brightness\n"
 }
 #endif
 
+#if CONFIG_PT_LCD
+/*
+ * The two ways up a landscape screen has. The choice is kept in
+ * /etc/rotate, "0" or "180", and init applies it at boot.
+ */
+PT_PROGRAM(rotate, "turn the screen upside down\n"
+	   "usage: rotate [0 | 180]\n"
+	   "Alone it turns the screen round; 0 is the usual way up and 180\n"
+	   "the other. It stays that way after a restart.")
+{
+	int base = CONFIG_PT_LCD_ROTATION, now = lcd_rotation(), want, fd, err;
+
+	if (argc > 2 || (argc == 2 && strcmp(argv[1], "0") && strcmp(argv[1], "180"))) {
+		pt_dprintf(PT_STDERR, "usage: rotate [0 | 180]\n");
+		return 2;
+	}
+	if (!vt_has_display()) {
+		pt_dprintf(PT_STDERR, "rotate: there is no screen\n");
+		return 1;
+	}
+	want = argc == 1 ? now ^ 2 : !strcmp(argv[1], "180") ? base ^ 2 : base;
+	if ((err = lcd_set_rotation(want)))
+		return fail("rotate", NULL, err);
+	vt_redraw();
+	if ((fd = pt_open("/etc/rotate", O_WRONLY | O_CREAT | O_TRUNC)) >= 0) {
+		pt_dprintf(fd, "%s\n", want == base ? "0" : "180");
+		pt_close(fd);
+	}
+	pt_printf("screen at %s°\n", want == base ? "0" : "180");
+	return 0;
+}
+#endif
+
 PT_PROGRAM(mkfs, "make a new filesystem on the SD card\n"
 	   "usage: mkfs -y /mnt/sd\n"
 	   "Everything on the card is lost. -y says you mean it.")

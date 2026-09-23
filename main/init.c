@@ -98,6 +98,22 @@ static bool motd_is_ours(const char *path)
 	return n < sizeof(text) - 1 && strstr(text, "type 'help'") && strcmp(text, motd);
 }
 
+/* The screen the other way up, if `rotate` left it so (/etc/rotate). */
+static void screen_restore(void)
+{
+	char buf[VFS_PATH_MAX], line[8] = "";
+	FILE *f = vfs("/etc/rotate", buf) ? fopen(buf, "r") : NULL;
+
+	if (!f)
+		return;
+	fgets(line, sizeof(line), f);
+	fclose(f);
+	if (atoi(line) == 180 && !lcd_set_rotation(lcd_rotation() ^ 2)) {
+		vt_redraw();
+		klog("lcd: turned 180 degrees (/etc/rotate)");
+	}
+}
+
 /* Directories every system has, mount points included, as on Linux. */
 static void root_layout(void)
 {
@@ -222,6 +238,7 @@ void app_main(void)
 	if (!rootfs_init()) {
 		root_layout();	/* mount points must exist before mounting on them */
 		clock_restore();
+		screen_restore();
 	}
 	tmpfs_init();
 	sd_init();
