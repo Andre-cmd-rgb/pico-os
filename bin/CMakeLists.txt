@@ -5,11 +5,16 @@ idf_component_register(
 		canvas.c
 		edit.c
 		fileutils.c
+		filters.c
+		find.c
 		man.c
 		nes.c
 		net.c
 		passwd.c
 		pick.c
+		regex.c
+		shellutils.c
+		sort.c
 		sysutils.c
 		textutils.c
 		top.c
