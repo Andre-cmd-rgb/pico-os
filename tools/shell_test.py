@@ -98,7 +98,11 @@ def run_tests(b):
     step("df", ["/", "/tmp"])
     step("dmesg | head -n 3", "PocketType")
     step("uptime", "processes")
-    step("date -s '2026-09-16 18:30:00' && date +%Y-%m-%dT%H:%M", "2026-09-16T18:30")
+    # set it to this PC's time: the board keeps it (/etc/clock), so a
+    # made-up date would stay behind after the test
+    now = time.time()
+    step(time.strftime("date -s '%Y-%m-%d %H:%M:%S' && date +%Y-%m-%dT%H:%M", time.localtime(now)),
+         any_of=[time.strftime("%Y-%m-%dT%H:%M", time.localtime(t)) for t in (now, now + 60)])
     step("cp test.txt test.txt; mv test.txt ./test.txt; cat test.txt",
          ["are the same file", "hello", "more"])
     step("mkdir d && cp -r d d/inner; rm -r d", "into itself")
