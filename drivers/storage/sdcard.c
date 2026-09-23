@@ -140,6 +140,15 @@ static int sd_mount_common(bool format)
 
 	if (card)
 		return -EBUSY;
+	/*
+	 * The controller can only read into internal memory, and almost
+	 * everything a program reads into is in PSRAM. Left at its default
+	 * the driver then bounces each 512-byte sector through a buffer of
+	 * its own, one card command apiece -- 18 commands and 4 ms for one
+	 * frame of video. Sixteen sectors a command is an 8 KB buffer for
+	 * the length of the read, and it shrinks if there is not that much.
+	 */
+	host.unaligned_multi_block_rw_max_chunk_size = 16;
 	slot.clk = CONFIG_PT_SD_MMC_CLK;
 	slot.cmd = CONFIG_PT_SD_MMC_CMD;
 	slot.d0 = CONFIG_PT_SD_MMC_D0;
@@ -188,6 +197,7 @@ static int sd_mount_common(bool format)
 	sdmmc_host_t host = SDSPI_HOST_DEFAULT();
 	host.slot = SPI2_HOST;
 	host.max_freq_khz = CONFIG_PT_SD_FREQ_KHZ;
+	host.unaligned_multi_block_rw_max_chunk_size = 16;	/* see above */
 
 	sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
 	slot.gpio_cs = CONFIG_PT_SD_CS;

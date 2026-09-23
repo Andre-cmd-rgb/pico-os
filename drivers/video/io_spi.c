@@ -35,6 +35,15 @@ int lcd_io_open(esp_lcd_panel_io_handle_t *io, esp_lcd_panel_io_color_trans_done
 		.lcd_cmd_bits = 8,
 		.lcd_param_bits = 8,
 		.on_color_trans_done = done,
+		/*
+		 * A picture in PSRAM goes to the panel from where it is.
+		 * Without this the driver copies every 32 KB of it into a
+		 * fresh internal buffer first, and a full screen needs more
+		 * of those than there is internal memory: the first piece
+		 * arrives and the rest never does. The source must be
+		 * aligned to a cache line (canvas.c sees to that).
+		 */
+		.flags.psram_dma_direct = 1,
 	};
 	esp_err_t err = spi_bus_initialize(CONFIG_PT_LCD_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
 

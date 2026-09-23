@@ -25,6 +25,8 @@
 
 #define CHUNK		1024		/* bytes converted at a time */
 #define MCLK_MULTIPLE	256		/* what es8311.c's clock table assumes */
+#define DMA_BUFS	6		/* the output ring: 90 ms at 16 kHz */
+#define DMA_FRAMES	240
 
 static i2s_chan_handle_t	tx, rx;
 static SemaphoreHandle_t	lock;
@@ -88,6 +90,8 @@ int audio_init(void)
 	if (!lock || !scratch)
 		return -ENOMEM;
 	chan_cfg.auto_clear = true;	/* silence, not the last buffer again */
+	chan_cfg.dma_desc_num = DMA_BUFS;
+	chan_cfg.dma_frame_num = DMA_FRAMES;
 	/* "rx switched from master to slave for full-duplex" is a warning
 	 * about something we asked for: both directions share one clock. */
 	esp_log_level_set("i2s_common", ESP_LOG_ERROR);
@@ -139,7 +143,7 @@ static void stop_locked(void)
 {
 	if (amp_on) {
 		/* let the DMA buffers empty, or the last word is cut off */
-		vTaskDelay(pdMS_TO_TICKS(1440 * 1000 / rate + 20));
+		vTaskDelay(pdMS_TO_TICKS(audio_buffer_us() / 1000 + 20));
 		amp(false);
 		amp_on = false;
 	}
@@ -181,6 +185,12 @@ int audio_set_rate(int hz)
 		rate = hz;
 	xSemaphoreGive(lock);
 	return ret;
+}
+
+/* How much sound the output ring holds when it is full, at this rate. */
+int audio_buffer_us(void)
+{
+	return (int)((int64_t)DMA_BUFS * DMA_FRAMES * 1000000 / rate);
 }
 
 int audio_rate(void)
@@ -350,6 +360,7 @@ bool audio_present(void) { return false; }
 void audio_stop(void) { }
 int audio_set_rate(int hz) { return -ENODEV; }
 int audio_rate(void) { return 0; }
+int audio_buffer_us(void) { return 0; }
 int audio_set_volume(int percent) { return -ENODEV; }
 int audio_volume(void) { return 0; }
 int audio_set_mic_gain(int db) { return -ENODEV; }

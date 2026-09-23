@@ -389,6 +389,7 @@ void lcd_draw(int x, int y, int w, int h, const uint8_t *rgb565be) { }
 void lcd_fill(int x, int y, int w, int h, uint16_t rgb565) { }
 void lcd_backlight_set(int percent) { }
 int lcd_backlight_get(void) { return 0; }
+void lcd_sleep(void) { }
 int lcd_capture_begin(void) { return -ENODEV; }
 const uint8_t *lcd_capture_pixels(int *w, int *h) { *w = *h = 0; return NULL; }
 void lcd_capture_end(void) { }

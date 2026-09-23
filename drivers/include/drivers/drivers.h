@@ -75,6 +75,7 @@ bool	audio_present(void);
 void	audio_stop(void);		/* drain, then silence the amplifier */
 int	audio_set_rate(int hz);
 int	audio_rate(void);
+int	audio_buffer_us(void);		/* the output ring, full, in microseconds */
 int	audio_set_volume(int percent);
 int	audio_volume(void);
 int	audio_set_mic_gain(int db);	/* the analogue scale, 0-42 dB */

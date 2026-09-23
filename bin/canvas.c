@@ -2,28 +2,31 @@
  * Pictures on the panel.
  *
  * BMP is read here: the format is a header and rows of bytes, and reading
- * it takes less code than explaining why it should not be. JPEG is handed
- * to the decompressor in the chip's own ROM, which costs no flash at all
- * and is already there whether it is used or not; a Huffman decoder and
- * an inverse DCT written by hand would be a week's work to arrive at
- * something slower and larger.
+ * it takes less code than explaining why it should not be. JPEG goes to
+ * jpeg.c, which hands it back a band of RGB565 at a time. Either way the
+ * picture is fitted to the screen, keeping its shape, and each pixel of
+ * the screen is taken from the nearest pixel of the picture -- the screen
+ * pixel's, not the picture's, so that one smaller than the screen is
+ * stretched without leaving gaps.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "sdkconfig.h"
 
 #include "drivers/drivers.h"
+#include "pt/kernel.h"
 #include "canvas.h"
+#include "jpeg.h"
 #include "util.h"
 
 #if CONFIG_PT_LCD
 
-#include "esp32s3/rom/tjpgd.h"
-
-#define STRIP_ROWS	16		/* rows per transfer to the panel */
-#define JPEG_POOL	8192		/* the decompressor's working memory */
+#define PX_ALIGN	64		/* the largest data cache line */
+#define JPEG_READ	4096		/* a photo is read from the card this much at a time */
+#define MAX_W		480		/* the widest panel a column map is kept for */
 
 int canvas_open(struct canvas *c)
 {
@@ -31,13 +34,20 @@ int canvas_open(struct canvas *c)
 		return -ENODEV;
 	c->w = lcd_width();
 	c->h = lcd_height();
-	c->px = pt_malloc((size_t)c->w * c->h * 2);
-	return c->px ? 0 : -ENOMEM;
+	/*
+	 * On a cache line, which is what lets the panel's DMA read the
+	 * picture straight out of PSRAM; anywhere else and the SPI driver
+	 * would copy it somewhere that is, 32 KB at a time.
+	 */
+	c->mem = pt_malloc((size_t)c->w * c->h * 2 + PX_ALIGN - 1);
+	c->px = (uint8_t *)(((uintptr_t)c->mem + PX_ALIGN - 1) & ~(uintptr_t)(PX_ALIGN - 1));
+	return c->mem ? 0 : -ENOMEM;
 }
 
 void canvas_close(struct canvas *c)
 {
-	pt_free(c->px);
+	pt_free(c->mem);
+	c->mem = NULL;
 	c->px = NULL;
 }
 
@@ -46,27 +56,42 @@ void canvas_clear(struct canvas *c)
 	memset(c->px, 0, (size_t)c->w * c->h * 2);
 }
 
-void canvas_pixel(struct canvas *c, int dx, int dy, int r, int g, int b)
+/*
+ * Where each column of the screen takes its pixel from, for a picture
+ * that is not being shown at its own size.
+ */
+static void column_map(const struct canvas *c, uint16_t *map)
 {
-	unsigned v;
-	uint8_t *p;
+	for (int x = 0; x < c->dw; x++)
+		map[x] = (uint16_t)((int64_t)x * c->sw / c->dw);
+}
 
-	if (dx < 0 || dy < 0 || dx >= c->w || dy >= c->h)
+/*
+ * Rows `sy` to `sy + rows` of the picture, RGB565 high byte first, onto
+ * the screen rows that come from them: none, one or several, depending on
+ * which way the picture is scaled.
+ */
+static void place_rows(struct canvas *c, const uint16_t *map, int sy, int rows,
+		       const uint8_t *px, size_t stride)
+{
+	int first, end;
+
+	if (c->dw == c->sw && c->dh == c->sh) {		/* shown at its own size */
+		for (int r = 0; r < rows; r++)
+			memcpy(c->px + ((size_t)(c->y0 + sy + r) * c->w + c->x0) * 2,
+			       px + r * stride, (size_t)c->sw * 2);
 		return;
-	v = (r >> 3) << 11 | (g >> 2) << 5 | b >> 3;
-	p = c->px + ((size_t)dy * c->w + dx) * 2;
-	p[0] = v >> 8;
-	p[1] = v;
-}
+	}
+	/* screen row d shows picture row d * sh / dh */
+	first = (int)(((int64_t)sy * c->dh + c->sh - 1) / c->sh);
+	end = (int)(((int64_t)(sy + rows) * c->dh + c->sh - 1) / c->sh);
+	for (int d = first; d < end && d < c->dh; d++) {
+		const uint16_t *src = (const uint16_t *)(px + ((int64_t)d * c->sh / c->dh - sy) * stride);
+		uint16_t *dst = (uint16_t *)(c->px + ((size_t)(c->y0 + d) * c->w + c->x0) * 2);
 
-int canvas_x(const struct canvas *c, int sx)
-{
-	return c->dw == c->sw ? c->x0 + sx : c->x0 + (int)((int64_t)sx * c->dw / c->sw);
-}
-
-int canvas_y(const struct canvas *c, int sy)
-{
-	return c->dh == c->sh ? c->y0 + sy : c->y0 + (int)((int64_t)sy * c->dh / c->sh);
+		for (int x = 0; x < c->dw; x++)
+			dst[x] = src[map[x]];
+	}
 }
 
 /* The largest the picture can be on this screen without distorting it. */
@@ -87,43 +112,35 @@ void canvas_fit(struct canvas *c)
 	c->y0 = (c->h - c->dh) / 2;
 }
 
-/* `x, y, w, h` of the canvas, sent a strip at a time. */
-static void blit_rect(const struct canvas *c, int x0, int y0, int w, int h)
+/*
+ * Rows `y` to `y + h` of the canvas. Whole rows are one run of memory,
+ * so the DMA takes them from where they are, with nothing copied and no
+ * processor time spent: the call returns when the panel has them.
+ */
+static void blit_rows(const struct canvas *c, int y, int h)
 {
-	uint8_t *strip = lcd_alloc_buffer((size_t)w * STRIP_ROWS * 2);
-
-	if (!strip) {
-		lcd_draw(x0, y0, w, h, c->px);	/* in one go, if it can */
-		return;
-	}
-	for (int y = 0; y < h; y += STRIP_ROWS) {
-		int rows = h - y < STRIP_ROWS ? h - y : STRIP_ROWS;
-
-		for (int r = 0; r < rows; r++)
-			memcpy(strip + (size_t)r * w * 2,
-			       c->px + ((size_t)(y0 + y + r) * c->w + x0) * 2,
-			       (size_t)w * 2);
-		lcd_draw(x0, y0 + y, w, rows, strip);
-	}
-	free(strip);
+	if (h > 0)
+		lcd_draw(0, y, c->w, h, c->px + (size_t)y * c->w * 2);
 }
 
 void canvas_blit(const struct canvas *c)
 {
-	blit_rect(c, 0, 0, c->w, c->h);
+	blit_rows(c, 0, c->h);
 }
 
 /*
- * Only the part the picture covers. For a clip whose shape does not
- * match the screen this is the difference between sending the black
- * bars sixty times a second and not sending them at all; the bars are
- * already on the panel from the first full blit.
+ * Only the rows the picture covers. For a clip wider than the screen's
+ * shape this is the difference between sending the black bars thirty
+ * times a second and not sending them at all; the bars are already on
+ * the panel from the first full blit. A picture narrower than the screen
+ * is still sent in whole rows, bars and all: that is bus time, which is
+ * spent while the next frame decodes, where cutting the bars out would
+ * be processor time spent copying.
  */
 void canvas_blit_fit(const struct canvas *c)
 {
-	if (c->dw <= 0 || c->dh <= 0)
-		return;
-	blit_rect(c, c->x0, c->y0, c->dw, c->dh);
+	if (c->dw > 0 && c->dh > 0)
+		blit_rows(c, c->y0, c->dh);
 }
 
 /*
@@ -178,8 +195,9 @@ int canvas_bmp(struct canvas *c, int fd)
 {
 	uint8_t head[54];
 	uint32_t offset;
-	int bpp, stride, top_down = 0;
+	int bpp, stride, top_down = 0, ret = 0;
 	uint8_t *row;
+	uint16_t *line, *map;
 	int32_t h;
 
 	if (pt_lseek(fd, 0, SEEK_SET) < 0 || read_full(fd, head, sizeof(head)))
@@ -187,8 +205,8 @@ int canvas_bmp(struct canvas *c, int fd)
 	if (head[0] != 'B' || head[1] != 'M')
 		return -ENOTSUP;
 	offset = le32(head + 10);
-	if (le32(head + 14) < 12)
-		return -EINVAL;
+	if (le32(head + 14) < 40)
+		return -ENOTSUP;		/* the old OS/2 header */
 	c->sw = (int)le32(head + 18);
 	h = (int32_t)le32(head + 22);
 	if (h < 0) {
@@ -199,172 +217,180 @@ int canvas_bmp(struct canvas *c, int fd)
 	bpp = head[28] | head[29] << 8;
 	if (le32(head + 30) != 0)
 		return -ENOTSUP;		/* compressed: not this decoder */
-	if (c->sw <= 0 || c->sh <= 0 || (bpp != 16 && bpp != 24 && bpp != 32))
+	if (c->sw <= 0 || c->sh <= 0 || c->sw > 1 << 15 || c->sh > 1 << 15 ||
+	    (bpp != 16 && bpp != 24 && bpp != 32))
 		return -ENOTSUP;
 
 	canvas_fit(c);
 	stride = (c->sw * bpp / 8 + 3) & ~3;
 	row = pt_malloc(stride);
-	if (!row)
-		return -ENOMEM;
+	line = pt_malloc((size_t)c->sw * 2);
+	map = pt_malloc((size_t)c->dw * 2);
+	if (!row || !line || !map) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	column_map(c, map);
 	if (pt_lseek(fd, offset, SEEK_SET) < 0) {
-		pt_free(row);
-		return -EIO;
+		ret = -EIO;
+		goto out;
 	}
 
 	/*
 	 * Straight through the file, never seeking: rows are usually
 	 * stored bottom first, and asking a FAT driver for them in
-	 * reverse costs more than the whole rest of the decode. Each row
-	 * is placed where it belongs, and the ones the scaling throws
-	 * away are read but not converted.
+	 * reverse costs more than the whole rest of the decode. Rows the
+	 * scaling does not use are read but not converted.
 	 */
 	for (int file_row = 0; file_row < c->sh; file_row++) {
 		int sy = top_down ? file_row : c->sh - 1 - file_row;
-		int dy = canvas_y(c, sy);
+		int64_t first = ((int64_t)sy * c->dh + c->sh - 1) / c->sh;
+		int64_t end = ((int64_t)(sy + 1) * c->dh + c->sh - 1) / c->sh;
 
 		if (read_full(fd, row, stride)) {
-			pt_free(row);
-			return -EIO;
+			ret = -EIO;
+			break;
 		}
-		if (file_row && dy == canvas_y(c, top_down ? sy - 1 : sy + 1))
-			continue;
+		if (first == end)
+			continue;		/* no screen row shows this one */
 		for (int sx = 0; sx < c->sw; sx++) {
 			const uint8_t *p = row + sx * (bpp / 8);
-			int r, g, b;
+			unsigned r, g, b, v;
 
-			if (bpp == 16) {
-				unsigned v = p[0] | p[1] << 8;
-
-				r = (v >> 11 & 0x1f) << 3;
-				g = (v >> 5 & 0x3f) << 2;
+			if (bpp == 16) {		/* X1R5G5B5, as BMP has it */
+				v = p[0] | p[1] << 8;
+				r = (v >> 10 & 0x1f) << 3;
+				g = (v >> 5 & 0x1f) << 3;
 				b = (v & 0x1f) << 3;
 			} else {
 				b = p[0];
 				g = p[1];
 				r = p[2];
 			}
-			canvas_pixel(c, canvas_x(c, sx), dy, r, g, b);
+			v = (r >> 3) << 11 | (g >> 2) << 5 | b >> 3;
+			line[sx] = (uint16_t)(v >> 8 | v << 8);
 		}
+		place_rows(c, map, sy, 1, (const uint8_t *)line, 0);
 	}
+out:
 	pt_free(row);
-	return 0;
+	pt_free(line);
+	pt_free(map);
+	return ret;
 }
 
 /* ------------------------------------------------------------ JPEG */
 
+/*
+ * Everything a decode needs, in one allocation: the decoder's tables, the
+ * column map and, for a file, what has been read of it -- all of it in
+ * the fast internal memory when there is room, because every block of the
+ * picture goes through it, and a buffer there is one the card can fill
+ * without a bounce.
+ */
 struct jpeg_io {
+	struct jpeg	 j;
 	struct canvas	*c;
 	int		 fd;		/* -1 when the picture is in memory */
-	const uint8_t	*data;
-	size_t		 len, at;
+	uint16_t	 map[MAX_W];
+	uint8_t		 buf[];		/* JPEG_READ of the file, when there is one */
 };
 
-static UINT jpeg_in(JDEC *jd, BYTE *buf, UINT len)
+static int jpeg_refill(void *ctx, const uint8_t **p, const uint8_t **end)
 {
-	struct jpeg_io *io = jd->device;
+	struct jpeg_io *io = ctx;
+	int n = pt_read(io->fd, io->buf, JPEG_READ);
 
-	if (io->fd >= 0) {
-		if (!buf)
-			return pt_lseek(io->fd, len, SEEK_CUR) < 0 ? 0 : len;
-		int n = pt_read(io->fd, buf, len);
-		return n > 0 ? (UINT)n : 0;
-	}
-	if (len > io->len - io->at)
-		len = io->len - io->at;
-	if (buf)
-		memcpy(buf, io->data + io->at, len);
-	io->at += len;
-	return len;
-}
-
-static UINT jpeg_out(JDEC *jd, void *bitmap, JRECT *rect)
-{
-	struct jpeg_io *io = jd->device;
-	struct canvas *c = io->c;
-	const uint8_t *src = bitmap;		/* RGB888: the ROM's format */
-	int rw = rect->right - rect->left + 1;
-
-	/*
-	 * A clip made for this screen arrives at the size it will be
-	 * shown, which is the case worth being quick about: a rectangle
-	 * of the picture is then a rectangle of the canvas, and the
-	 * pixels go straight in without a multiply and a divide each.
-	 * The picture is centred, so the whole rectangle is on screen.
-	 */
-	if (c->dw == c->sw && c->dh == c->sh) {
-		for (int y = rect->top; y <= rect->bottom; y++, src += rw * 3) {
-			uint8_t *dst = c->px + ((size_t)(c->y0 + y) * c->w +
-						c->x0 + rect->left) * 2;
-			const uint8_t *p = src;
-
-			for (int x = 0; x < rw; x++, p += 3) {
-				unsigned v = (p[0] >> 3) << 11 | (p[1] >> 2) << 5 | p[2] >> 3;
-
-				*dst++ = v >> 8;
-				*dst++ = v;
-			}
-		}
-		return 1;
-	}
-	for (int y = rect->top; y <= rect->bottom; y++) {
-		int dy = canvas_y(c, y);
-
-		for (int x = rect->left; x <= rect->right; x++, src += 3)
-			canvas_pixel(c, canvas_x(c, x), dy, src[0], src[1], src[2]);
-	}
+	if (n <= 0)
+		return 0;
+	*p = io->buf;
+	*end = io->buf + n;
 	return 1;
 }
 
-static int jpeg_decode(struct canvas *c, struct jpeg_io *io)
+static int jpeg_band(void *ctx, int y, int rows, const uint8_t *px, size_t stride)
 {
-	JDEC jd;
-	void *pool = pt_malloc(JPEG_POOL);
-	JRESULT r;
-	BYTE scale = 0;
+	struct jpeg_io *io = ctx;
 
-	if (!pool)
+	place_rows(io->c, io->map, y, rows, px, stride);
+	return 0;
+}
+
+/* Internal memory if there is room, else any. Tracked, so a program
+ * stopped halfway through a picture does not keep it for good. */
+static void *fast_alloc(size_t n)
+{
+	void *p = pt_malloc_caps(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+	return p ? p : pt_malloc(n);
+}
+
+static int jpeg_decode_into(struct canvas *c, struct jpeg_io *io)
+{
+	struct jpeg *j = &io->j;
+	uint8_t *band;
+	int ret, scale = 0;
+
+	if ((ret = jpeg_open(j)))
+		return ret;
+	if (c->placed) {
+		/* The caller said where this goes; it had better be the
+		 * size it said, or the picture would land crooked. */
+		if (j->width != c->sw || j->height != c->sh)
+			return -EINVAL;
+	} else {
+		c->sw = j->width;
+		c->sh = j->height;
+		canvas_fit(c);
+		/*
+		 * The decoder shrinks by averaging, which is what shrinking
+		 * should be, so let it do as much as it can: the smallest
+		 * of its sizes that is still no smaller than the screen's.
+		 */
+		while (scale < 3 && jpeg_scaled_w(j, scale + 1) >= c->dw &&
+		       jpeg_scaled_h(j, scale + 1) >= c->dh)
+			scale++;
+		c->sw = jpeg_scaled_w(j, scale);
+		c->sh = jpeg_scaled_h(j, scale);
+	}
+	column_map(c, io->map);		/* a placed picture can be scaled too */
+	if (!(band = fast_alloc(jpeg_band_size(j, scale))))
 		return -ENOMEM;
-	r = jd_prepare(&jd, jpeg_in, pool, JPEG_POOL, io);
-	if (r != JDR_OK) {
-		pt_free(pool);
-		return r == JDR_FMT3 ? -ENOTSUP : -EINVAL;
-	}
-	/*
-	 * The decoder can halve the picture up to three times as it goes,
-	 * which is quicker and kinder to memory than decoding a photo at
-	 * full size only to throw most of it away. What is left over is
-	 * scaled the rest of the way as the pixels arrive.
-	 */
-	while (scale < 3 && ((jd.width >> scale) > (UINT)c->w * 2 ||
-			     (jd.height >> scale) > (UINT)c->h * 2))
-		scale++;
-	c->sw = (int)(jd.width >> scale);
-	c->sh = (int)(jd.height >> scale);
-	if (c->sw < 1 || c->sh < 1) {
-		pt_free(pool);
+	ret = jpeg_decode(j, scale, band, jpeg_band, io);
+	pt_free(band);
+	return ret;
+}
+
+static int jpeg_run(struct canvas *c, int fd, const void *data, size_t len)
+{
+	struct jpeg_io *io;
+	int ret;
+
+	if (c->w > MAX_W)
 		return -ENOTSUP;
-	}
-	canvas_fit(c);
-	r = jd_decomp(&jd, jpeg_out, scale);
-	pt_free(pool);
-	return r == JDR_OK ? 0 : -EIO;
+	if (!(io = fast_alloc(sizeof(*io) + (fd >= 0 ? JPEG_READ : 0))))
+		return -ENOMEM;
+	io->c = c;
+	io->fd = fd;
+	io->j.p = data;
+	io->j.end = (const uint8_t *)data + len;
+	io->j.refill = fd >= 0 ? jpeg_refill : NULL;
+	io->j.ctx = io;
+	ret = jpeg_decode_into(c, io);
+	pt_free(io);
+	return ret;
 }
 
 int canvas_jpeg(struct canvas *c, int fd)
 {
-	struct jpeg_io io = { .c = c, .fd = fd };
-
 	if (pt_lseek(fd, 0, SEEK_SET) < 0)
 		return -EIO;
-	return jpeg_decode(c, &io);
+	return jpeg_run(c, fd, NULL, 0);
 }
 
 int canvas_jpeg_mem(struct canvas *c, const void *data, size_t len)
 {
-	struct jpeg_io io = { .c = c, .fd = -1, .data = data, .len = len };
-
-	return jpeg_decode(c, &io);
+	return jpeg_run(c, -1, data, len);
 }
 
 #endif /* CONFIG_PT_LCD */

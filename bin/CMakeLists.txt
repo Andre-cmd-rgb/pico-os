@@ -8,6 +8,7 @@ idf_component_register(
 		fileutils.c
 		filters.c
 		find.c
+		jpeg.c
 		man.c
 		nes.c
 		net.c
