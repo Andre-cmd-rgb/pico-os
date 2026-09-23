@@ -5,7 +5,10 @@
 
 The ASCII glyphs are the PIXELTAPE 5x7 font (pixeltape/tools/make-font.mjs),
 unchanged: 5 columns x 8 rows, baseline under row 6, row 7 is the descender.
-The extra glyphs cover what an Italian keyboard types.
+The extra glyphs cover what an Italian keyboard types, and what notes written
+on a PC are full of: the other Western European letters, typographic quotes
+and dashes, the symbols of maths and science, and the Greek letters used in
+them. An accented letter is its accent in rows 0-1 over a five-row body.
 """
 
 ASCII = {
@@ -120,7 +123,104 @@ EXTRA = {
     '€': '00111 01000 11110 01000 11110 01000 00111 00000',
     '█': '11111 11111 11111 11111 11111 11111 11111 11111',
     '⚡': '00110 01100 11000 11111 00110 01100 01000 00000',
+    'Ç': '01110 10001 10000 10000 10000 10001 01110 00100',
+    'ß': '01100 10010 10010 10100 10010 10001 10110 00000',
+
+    # quotes, dashes and the like
+    '‘': '00010 00100 00100 00000 00000 00000 00000 00000',
+    '’': '00100 00100 01000 00000 00000 00000 00000 00000',
+    '“': '01001 10010 10010 00000 00000 00000 00000 00000',
+    '”': '01001 01001 10010 00000 00000 00000 00000 00000',
+    '«': '00000 00101 01010 10100 01010 00101 00000 00000',
+    '»': '00000 10100 01010 00101 01010 10100 00000 00000',
+    '–': '00000 00000 00000 11111 00000 00000 00000 00000',
+    '—': '00000 00000 00000 11111 00000 00000 00000 00000',
+    '…': '00000 00000 00000 00000 00000 00000 10101 00000',
+    '·': '00000 00000 00000 00100 00000 00000 00000 00000',
+    '•': '00000 00000 01110 01110 01110 00000 00000 00000',
+
+    # maths and science
+    '²': '01100 10010 00100 01000 11110 00000 00000 00000',
+    '³': '11100 00010 01100 00010 11100 00000 00000 00000',
+    '±': '00100 00100 11111 00100 00100 00000 11111 00000',
+    '×': '00000 10001 01010 00100 01010 10001 00000 00000',
+    '÷': '00000 00100 00000 11111 00000 00100 00000 00000',
+    '≤': '00011 01100 10000 01100 00011 00000 11111 00000',
+    '≥': '11000 00110 00001 00110 11000 00000 11111 00000',
+    '≠': '00001 00010 11111 00100 11111 01000 10000 00000',
+    '≈': '00000 01000 10101 00010 01000 10101 00010 00000',
+    '→': '00000 00100 00010 11111 00010 00100 00000 00000',
+    '←': '00000 00100 01000 11111 01000 00100 00000 00000',
+    '↑': '00100 01110 10101 00100 00100 00100 00100 00000',
+    '↓': '00100 00100 00100 00100 10101 01110 00100 00000',
+    '√': '00111 00100 00100 00100 10100 01100 00100 00000',
+    '∞': '00000 00000 01010 10101 10101 01010 00000 00000',
+    '½': '10000 10010 10100 01000 10110 00001 00010 00111',
+    '¼': '10000 10010 10100 01000 10101 00111 00001 00000',
+
+    # Greek
+    'α': '00000 00000 01001 10101 10010 10010 01101 00000',
+    'β': '01100 10010 10100 10010 10001 11110 10000 10000',
+    'γ': '00000 00000 10001 10001 01010 00100 01010 00100',
+    'δ': '01110 01000 00100 01110 10001 10001 01110 00000',
+    'ε': '00000 00000 01111 10000 01110 10000 01111 00000',
+    'θ': '01110 10001 10001 11111 10001 10001 01110 00000',
+    'λ': '01000 00100 00100 01010 01010 10001 10001 00000',
+    'μ': '00000 00000 10001 10001 10001 11110 10000 10000',
+    'π': '00000 00000 11111 01010 01010 01010 10011 00000',
+    'σ': '00000 00000 01111 10010 10001 10001 01110 00000',
+    'φ': '00100 00100 01110 10101 10101 01110 00100 00100',
+    'ω': '00000 00000 01010 10001 10101 10101 01010 00000',
+    'Δ': '00100 00100 01010 01010 10001 10001 11111 00000',
+    'Σ': '11111 10000 01000 00100 01000 10000 11111 00000',
+    'Ω': '01110 10001 10001 10001 01010 01010 11011 00000',
 }
+
+ACCENTS = {
+    'grave': '01000 00100',
+    'acute': '00010 00100',
+    'circumflex': '00100 01010',
+    'diaeresis': '01010 00000',
+    'tilde': '01101 10010',
+}
+
+# Five-row bodies for the letters the accents go on.
+BODIES = {
+    'a': '01110 00001 01111 10001 01111',
+    'e': '01110 10001 11111 10000 01110',
+    'i': '01100 00100 00100 00100 01110',
+    'o': '01110 10001 10001 10001 01110',
+    'u': '10001 10001 10001 10011 01101',
+    'n': '11110 10001 10001 10001 10001',
+    'A': '01110 10001 11111 10001 10001',
+    'E': '11111 10000 11110 10000 11111',
+    'I': '01110 00100 00100 00100 01110',
+    'O': '01110 10001 10001 10001 01110',
+    'U': '10001 10001 10001 10001 01110',
+    'N': '10001 11001 10101 10011 10001',
+}
+
+COMPOSED = {
+    'á': ('acute', 'a'), 'í': ('acute', 'i'), 'ó': ('acute', 'o'), 'ú': ('acute', 'u'),
+    'â': ('circumflex', 'a'), 'ê': ('circumflex', 'e'), 'î': ('circumflex', 'i'),
+    'ô': ('circumflex', 'o'), 'û': ('circumflex', 'u'),
+    'ä': ('diaeresis', 'a'), 'ë': ('diaeresis', 'e'), 'ï': ('diaeresis', 'i'),
+    'ö': ('diaeresis', 'o'), 'ü': ('diaeresis', 'u'),
+    'ñ': ('tilde', 'n'),
+    'À': ('grave', 'A'), 'È': ('grave', 'E'), 'É': ('acute', 'E'), 'Ì': ('grave', 'I'),
+    'Ò': ('grave', 'O'), 'Ù': ('grave', 'U'),
+    'Ä': ('diaeresis', 'A'), 'Ö': ('diaeresis', 'O'), 'Ü': ('diaeresis', 'U'),
+    'Ñ': ('tilde', 'N'),
+}
+
+for ch, (accent, body) in COMPOSED.items():
+    assert ch not in EXTRA, ch
+    EXTRA[ch] = f"{ACCENTS[accent]} {BODIES[body]} 00000"
+
+# The same glyph under a second code point, for what text pasted from a
+# PC is full of: a no-break space, a minus sign that is not a hyphen, and
+# the micro, ohm and increment signs that are not Greek letters.
+ALIASES = {'\u00a0': ' ', '−': '–', 'µ': 'μ', '\u2126': 'Ω', '∆': 'Δ'}
 
 
 def rows(bitmap):
@@ -134,6 +234,11 @@ def main():
     assert set(chars) == set(ASCII), "ASCII table must cover U+0020-U+007E"
     extra = sorted(EXTRA, key=ord)
     glyphs = [(c, rows(ASCII[c])) for c in chars] + [(c, rows(EXTRA[c])) for c in extra]
+    assert len(glyphs) <= 256, "a glyph number is one byte"
+    index = {c: i for i, c in enumerate(chars)}
+    index.update((c, len(chars) + i) for i, c in enumerate(extra))
+    mapped = sorted([(c, index[c]) for c in extra] + [(a, index[g]) for a, g in ALIASES.items()],
+                    key=lambda e: ord(e[0]))
 
     print("/* Generated by tools/mkfont.py from the PIXELTAPE 5x7 font. Do not edit. */")
     print("#pragma once\n\n#include <stdint.h>\n")
@@ -148,9 +253,10 @@ def main():
         label = "\\\\" if c == "\\" else c
         print(f"\t{{ {', '.join(f'0x{v:02x}' for v in r)} }},\t/* {label} */")
     print("};\n")
+    print("/* sorted by code point, for a binary search */")
     print("static const struct {\n\tuint16_t cp;\n\tuint8_t glyph;\n} font_extra[] = {")
-    for i, c in enumerate(extra):
-        print(f"\t{{ 0x{ord(c):04x}, {len(chars) + i} }},\t/* {c} */")
+    for c, g in mapped:
+        print(f"\t{{ 0x{ord(c):04x}, {g} }},\t/* {'no-break space' if c == chr(0xa0) else c} */")
     print("};")
 
 

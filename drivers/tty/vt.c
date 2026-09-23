@@ -224,11 +224,20 @@ static void put_codepoint(uint32_t cp)
 		put_glyph(cp - FONT_FIRST);
 		return;
 	}
-	for (size_t i = 0; i < sizeof(font_extra) / sizeof(font_extra[0]); i++) {
-		if (font_extra[i].cp == cp) {
-			put_glyph(font_extra[i].glyph);
+	/* the table is sorted by code point */
+	size_t lo = 0, hi = sizeof(font_extra) / sizeof(font_extra[0]);
+
+	while (lo < hi) {
+		size_t mid = (lo + hi) / 2;
+
+		if (font_extra[mid].cp == cp) {
+			put_glyph(font_extra[mid].glyph);
 			return;
 		}
+		if (font_extra[mid].cp < cp)
+			lo = mid + 1;
+		else
+			hi = mid;
 	}
 	put_glyph(FONT_UNKNOWN);
 }
