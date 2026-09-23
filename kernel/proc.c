@@ -366,6 +366,7 @@ static int resolve(const char *cmd, const char *cwd, const char *env,
 {
 	*prog = NULL;
 	*loader = NULL;
+	path[0] = '\0';	/* a built-in has none, and spawn copies it all the same */
 
 	if (strchr(cmd, '/')) {
 		int err = path_normalize(cwd, cmd, path, PT_PATH_MAX);
