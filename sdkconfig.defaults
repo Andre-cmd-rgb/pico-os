@@ -28,6 +28,16 @@ CONFIG_LWIP_MAX_SOCKETS=6
 # alone: SPIRAM_TRY_ALLOCATE_WIFI_LWIP cost 36 KB of internal RAM rather
 # than saving any, and trimming the RX/TX buffer counts gained 2 KB,
 # which is not worth the throughput it would cost.
+#
+# Code kept in IRAM comes out of the same internal SRAM as the heap. With
+# Wi-Fi up and two terminals open, the heap was down to 26 KB: too little
+# to start `curl | tr | head`. So the Wi-Fi driver's fast paths (27 KB)
+# and the Bluetooth controller (20 KB) run from flash. The network here is
+# a phone's hotspot, not a line that could use the extra speed, and the
+# pad only needs a report every few milliseconds.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
 
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
