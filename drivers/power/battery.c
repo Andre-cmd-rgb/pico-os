@@ -260,13 +260,6 @@ static void battery_task(void *arg)
 			bat.state = BATTERY_USB;
 			continue;	/* no cell: the board is on USB */
 		}
-		/*
-		 * A cell with the charger plugged in is charging, whatever
-		 * the trend says about the last few minutes: there is no
-		 * warning to give and nothing to switch off.
-		 */
-		if (usb_serial_jtag_is_connected() && bat.state != BATTERY_FULL)
-			bat.state = BATTERY_CHARGING;
 		bat.smooth = bat.smooth ? bat.smooth + ((mv - bat.smooth) >> SMOOTH_SHIFT) : mv;
 		if (bat.state == BATTERY_NONE)
 			bat.state = BATTERY_UNKNOWN;	/* until the trend says */
@@ -274,6 +267,15 @@ static void battery_task(void *arg)
 			last_minute = now;
 			update_trend(bat.smooth);
 		}
+		/*
+		 * A cell with the charger plugged in is charging, whatever
+		 * the trend says about the last few minutes: there is no
+		 * warning to give and nothing to switch off. This has to
+		 * come after the trend, which would otherwise call it
+		 * discharging again once a minute -- as it did.
+		 */
+		if (usb_serial_jtag_is_connected() && bat.state != BATTERY_FULL)
+			bat.state = BATTERY_CHARGING;
 		if (now - last_save >= SAVE_EVERY_MS * 1000LL) {
 			last_save = now;
 			learn_save();
@@ -291,7 +293,7 @@ static void battery_task(void *arg)
 		 */
 		if (CONFIG_PT_BATTERY_OFF_MV && mv <= CONFIG_PT_BATTERY_OFF_MV &&
 		    bat.state == BATTERY_DISCHARGING && bat.samples >= 3 && bat.trend < 0) {
-			say("\nbattery empty (%d.%02d V): saving and powering off\n", mv);
+			say("empty at %d.%02d V: saving and powering off", mv);
 			bat.empty_mv = mv;	/* this is where this cell ends */
 			bat.dirty = true;
 			learn_save();
@@ -302,7 +304,7 @@ static void battery_task(void *arg)
 		if (mv <= CONFIG_PT_BATTERY_WARN_MV && bat.state != BATTERY_CHARGING &&
 		    esp_timer_get_time() - last_warn > WARN_EVERY_MS * 1000LL) {
 			last_warn = esp_timer_get_time();
-			say("\nbattery low (%d.%02d V): charge it soon\n", mv);
+			say("low at %d.%02d V: charge it soon", mv);
 		}
 	}
 }

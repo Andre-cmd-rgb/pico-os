@@ -1,9 +1,10 @@
 /*
  * Wi-Fi.
  *
- * The radio is brought up at boot but connects to nothing until it is
- * told to, either by `wifi connect` or by /etc/wifi, which holds one
- * network per line:
+ * The radio comes up at boot only if there is somewhere to connect to --
+ * idle, it holds 34 KB of internal memory -- and otherwise waits for `wifi
+ * on` or `wifi connect`. The saved networks are in /etc/wifi, one per
+ * line:
  *
  *	# my networks
  *	homenet          secretpassword

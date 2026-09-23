@@ -12,8 +12,6 @@
 
 #if CONFIG_PT_KBD_CARDKB
 
-
-
 #define CARDKB_ADDR	0x5f
 #define PROBE_MS	2000
 /*
@@ -104,13 +102,13 @@ static i2c_master_bus_handle_t bus;
 static i2c_master_dev_handle_t dev;
 static TaskHandle_t task;
 static unsigned errors;		/* reads that failed and then recovered */
+static SemaphoreHandle_t stopped;
+static volatile bool stopping;
 
 unsigned cardkb_errors(void)
 {
 	return errors;
 }
-static SemaphoreHandle_t stopped;
-static volatile bool stopping;
 
 static void cardkb_task(void *arg)
 {
