@@ -358,7 +358,7 @@ PT_PROGRAM(uname, "print system information\n"
 PT_PROGRAM(date, "show or set the date and time\n"
 	   "usage: date [+format]\n"
 	   "       date -s \"YYYY-MM-DD HH:MM[:SS]\"\n"
-	   "The clock resets on power loss; set it after boot.")
+	   "Wi-Fi sets the clock by itself; -s is for when there is none.")
 {
 	char out[128];
 	struct tm tm = { 0 };
@@ -377,6 +377,7 @@ PT_PROGRAM(date, "show or set the date and time\n"
 		tm.tm_isdst = -1;
 		struct timeval tv = { .tv_sec = mktime(&tm) };
 		settimeofday(&tv, NULL);
+		clock_changed(false);
 	}
 
 	time_t now = time(NULL);
@@ -670,11 +671,11 @@ PT_PROGRAM(battery, "show the battery level\n"
 	return 0;
 }
 
-PT_PROGRAM(suspend, "deep sleep until a key is pressed\n"
+PT_PROGRAM(suspend, "deep sleep until the side button is pressed\n"
 	   "usage: suspend [-t seconds]\n"
-	   "The low-power core watches the CardKB and wakes the system; -t also\n"
-	   "wakes it after that many seconds. Waking is a fresh boot: running\n"
-	   "programs and anything not saved are gone.")
+	   "The side button wakes it, and so does -t after that many seconds.\n"
+	   "Waking is a fresh boot: running programs and anything not saved\n"
+	   "are gone.")
 {
 	uint32_t seconds = 0;
 

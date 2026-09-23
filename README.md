@@ -195,9 +195,15 @@ Two more ways to save battery. Neither has been measured with a meter yet.
   while a PC is connected to the native USB console or a USB keyboard is
   plugged in, and on the COM-port console the first key after a quiet spell can
   be lost. `power` prints how much time was spent in each mode.
-- **`suspend`**: deep sleep. The low-power RISC-V core reads the CardKB every
-  100 ms and wakes the system on a key; `suspend -t 60` also wakes after a
-  minute. Waking is a fresh boot (under a second to the shell), so save first.
+- **`suspend`**: deep sleep until the side button is pressed; `suspend -t 60`
+  also wakes after a minute. Waking is a fresh boot (under a second to the
+  shell), so save first. On a board whose CardKB is wired to GPIO 0-3 the
+  low-power RISC-V core reads it every 100 ms and any key wakes it too.
+
+The clock sets itself from the network whenever Wi-Fi connects, and again
+every hour. The chip keeps time through sleep and restarts; for a power cut
+the time is saved in `/etc/clock` every hour and before `poweroff` and
+`suspend`, so the next boot starts from there rather than from 1970.
 
 `bench` on this board, at 240 MHz:
 
@@ -234,12 +240,16 @@ open on the card.
 
 Be aware of these before relying on it:
 
-- **Waking from `suspend` with a key** is still untested.
+- **A key cannot wake the Freenove board from `suspend`**: its CardKB is on
+  SDA 16 / SCL 15, which the low-power core cannot reach, so the side button
+  does it.
 - **A terminal cannot say when a key is released**, so in games a press
-  counts as held for 150 ms. Fine for menus, poor for platformers; a
-  Bluetooth pad is the fix and is not written yet. Everything else on the
-  Freenove board has now been run on the real thing: display, speaker,
-  microphone, SD card, battery sensing, Wi-Fi (`make hwtest`, 86 checks).
+  counts as held for 150 ms. Fine for menus, poor for platformers. A
+  Bluetooth pad is the fix, and the driver is written (`pad scan`, `pad
+  connect`, the buttons mapped in `/etc/gamepad`), but it has not met a real
+  pad yet. Everything else on the Freenove board has been run on the real
+  thing: display, speaker, microphone, SD card, battery sensing, Wi-Fi
+  (`make hwtest`, 86 checks).
 - **The CardKB is only as good as its wiring.** It shares SDA 16 / SCL 15
   with the codec on the chip's weak internal pull-ups; a long or loose
   Grove cable drops reads. The driver rides out short runs of them.
@@ -250,7 +260,6 @@ Be aware of these before relying on it:
   (it says so and gets out of the way), but nothing has been plugged in.
 - **MP3 decoding is not ours.** FLAC and WAV are (`codec/`); MP3 leans on
   minimp3 in `third_party/`, which says why.
-- **The clock starts at 1970 on every boot.** Set it with `date -s`.
 
 ## Source tree
 

@@ -127,6 +127,12 @@ void	mem_release_all(struct proc *p);
 void	*pt_malloc_caps(size_t n, uint32_t caps);
 void	dir_release_all(struct proc *p);	/* sys.c: what the program left open */
 
+/* clock.c: the time kept in /etc/clock, for a boot after the power was cut */
+void	clock_restore(void);		/* at boot, once / is mounted */
+void	clock_save(void);		/* now: the power is about to go */
+void	clock_changed(bool network);	/* it was set: save it soon */
+void	clock_tick(void);		/* once a second, from a task that may write files */
+
 /* auth.c: the password the network shell asks for, kept hashed in /etc/shadow */
 bool	auth_is_set(void);
 int	auth_check(const char *password);	/* 0, -EACCES, or -ENOENT with none set */

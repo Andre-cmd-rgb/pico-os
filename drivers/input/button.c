@@ -21,7 +21,9 @@
 
 static void button_task(void *arg)
 {
-	bool was_down = false;
+	/* down already: the press that woke the board from suspend, not a
+	 * request to switch terminals */
+	bool was_down = gpio_get_level(CONFIG_PT_BUTTON_GPIO) == 0, woke = was_down;
 	int64_t down_at = 0;
 
 	for (;;) {
@@ -33,7 +35,9 @@ static void button_task(void *arg)
 		} else if (!down && was_down) {
 			int64_t held = (now - down_at) / 1000;
 
-			if (held >= HOLD_MS)
+			if (woke)
+				woke = false;
+			else if (held >= HOLD_MS)
 				tty_switch(0);
 			else if (held >= DEBOUNCE_MS)
 				tty_switch((tty_front() + 1) % vt_count());

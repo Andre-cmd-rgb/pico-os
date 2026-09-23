@@ -1,11 +1,14 @@
 /*
- * Suspend: deep sleep, with the low-power RISC-V core watching the CardKB.
+ * Suspend: deep sleep, woken by the side button, or by a CardKB key where
+ * the wiring lets the low-power RISC-V core watch it.
  *
  * Deep sleep switches off the main cores and their RAM, so waking up is a
  * fresh boot, not a resume. The low-power core can only use the RTC I2C
- * controller, which exists on GPIO1/3 (SDA) and GPIO0/2 (SCL); with the CardKB
- * anywhere else only the timer or the reset button wakes the board.
+ * controller, which exists on GPIO1/3 (SDA) and GPIO0/2 (SCL); a CardKB
+ * anywhere else -- on the Freenove board it is on 16/15 -- cannot wake the
+ * board, but the side button, on a pin the RTC domain watches, can.
  */
+#include "driver/rtc_io.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "sdkconfig.h"
@@ -63,6 +66,30 @@ static int watch_keyboard(void)
 
 #endif
 
+#define BUTTON_WAKE	(CONFIG_PT_BUTTON_GPIO >= 0)
+
+/*
+ * The side button pulls its pin low when pressed. Waking on it takes the
+ * RTC domain's own pull-up, which only holds if the RTC peripherals stay
+ * powered through the sleep.
+ */
+static int watch_button(void)
+{
+#if BUTTON_WAKE
+	const gpio_num_t pin = CONFIG_PT_BUTTON_GPIO;
+
+	if (!esp_sleep_is_valid_wakeup_gpio(pin))
+		return -ENOTSUP;
+	if (esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON) ||
+	    rtc_gpio_pullup_en(pin) || rtc_gpio_pulldown_dis(pin) ||
+	    esp_sleep_enable_ext1_wakeup_io(1ULL << pin, ESP_EXT1_WAKEUP_ANY_LOW))
+		return -EIO;
+	return 0;
+#else
+	return -ENOTSUP;
+#endif
+}
+
 /*
  * Everything that draws current and cannot switch itself off once the
  * cores stop. The backlight is the big one -- it is brighter than the
@@ -72,6 +99,7 @@ static int watch_keyboard(void)
  */
 void power_quiesce(void)
 {
+	clock_save();		/* the reset button, after this, starts it at 1970 */
 	audio_stop();
 	vfs_sync_all();
 	sd_unmount();
@@ -81,13 +109,14 @@ void power_quiesce(void)
 
 int power_suspend(uint32_t wake_after_s)
 {
-	int key = watch_keyboard();
+	int key = watch_keyboard(), button = watch_button();
 
 	power_quiesce();
 	if (wake_after_s)
 		esp_sleep_enable_timer_wakeup((uint64_t)wake_after_s * 1000000);
-	klog("suspend: sleeping; wake with %s%s", key ? "the reset button" : "any CardKB key",
-	     wake_after_s ? " or the timer" : "");
+	klog("suspend: sleeping; wake with %s%s%s",
+	     !key ? "any CardKB key" : !button ? "the side button" : "the reset button",
+	     !key && !button ? " or the side button" : "", wake_after_s ? " or the timer" : "");
 	vTaskDelay(pdMS_TO_TICKS(150));		/* let the LED and the log get out */
 	esp_deep_sleep_start();
 	return -EIO;
@@ -105,6 +134,15 @@ void power_boot_reason(void)
 		ulp_riscv_halt();
 	if (causes & BIT(ESP_SLEEP_WAKEUP_ULP)) {
 		klog("power: woke from suspend, key 0x%02lx", (unsigned long)ulp_key);
+		return;
+	}
+#endif
+#if BUTTON_WAKE
+	/* the pin is the RTC domain's until it is handed back */
+	if (esp_reset_reason() == ESP_RST_DEEPSLEEP)
+		rtc_gpio_deinit(CONFIG_PT_BUTTON_GPIO);
+	if (causes & BIT(ESP_SLEEP_WAKEUP_EXT1)) {
+		klog("power: woke from suspend, the side button");
 		return;
 	}
 #endif

@@ -360,12 +360,16 @@ config PT_NTP_SERVER
 	string "Time server"
 	default "pool.ntp.org"
 	help
-	  Where `ntp` asks for the time. The clock has no battery, so
-	  without this every boot starts in 1970.
+	  Where the clock is set from. The chip keeps time through sleep
+	  and restarts but not through a power cut, after which it starts
+	  from the time last saved in /etc/clock.
 
 config PT_NTP_AT_BOOT
-	bool "Set the clock as soon as a network is joined"
+	bool "Set the clock whenever a network is joined"
 	default y
+	help
+	  And every hour while it stays joined. Without it only `ntp`
+	  sets the clock from the network.
 
 endif
 

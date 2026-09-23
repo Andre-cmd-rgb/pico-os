@@ -14,6 +14,9 @@
  * A supplicant task does what wpa_supplicant does and no more: try the
  * saved networks in turn, and when a connection drops, wait a few seconds
  * and try again. Everything it does goes to dmesg.
+ *
+ * Whenever an address arrives the clock is set from CONFIG_PT_NTP_SERVER,
+ * and lwIP asks again every hour while the network stays up.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +47,7 @@ static TaskHandle_t	 supplicant;
 static bool		 started, want_connection;
 static char		 current[33];	/* the network we are on or trying */
 static int		 last_reason;
+static bool		 sntp_ready;
 
 #define BIT_GOT_IP	BIT0
 #define BIT_FAILED	BIT1
@@ -75,6 +79,10 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 		klog("wifi: %s, " IPSTR, current, IP2STR(&e->ip_info.ip));
 		xEventGroupClearBits(events, BIT_FAILED);
 		xEventGroupSetBits(events, BIT_GOT_IP);
+#if CONFIG_PT_NTP_AT_BOOT
+		if (sntp_ready)
+			esp_netif_sntp_start();		/* a new network: ask for the time now */
+#endif
 	}
 }
 
@@ -374,21 +382,34 @@ static int gen_proc_net(char *b, size_t n)
 
 /* ------------------------------------------------------------ the clock */
 
-int wifi_ntp_sync(int timeout_ms)
+/* On lwIP's task: nothing slow here, the saving is clock.c's to do. */
+static void on_time(struct timeval *tv)
+{
+	(void)tv;
+	clock_changed(true);
+}
+
+static void sntp_setup(void)
 {
 	esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(CONFIG_PT_NTP_SERVER);
-	int ret = 0;
 
+	cfg.start = false;		/* not before there is a network */
+	cfg.server_from_dhcp = false;
+	cfg.sync_cb = on_time;
+	sntp_ready = !esp_netif_sntp_init(&cfg);
+}
+
+/* Asks now, rather than at the next hourly turn, and waits for the answer. */
+int wifi_ntp_sync(int timeout_ms)
+{
 	if (!wifi_up())
 		return -ENETDOWN;
-	cfg.start = true;
-	cfg.server_from_dhcp = false;
-	if (esp_netif_sntp_init(&cfg))
+	if (!sntp_ready)
 		return -EIO;
-	if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(timeout_ms)))
-		ret = -ETIMEDOUT;
-	esp_netif_sntp_deinit();
-	return ret;
+	esp_netif_sntp_sync_wait(0);		/* forget an earlier answer */
+	if (esp_netif_sntp_start())
+		return -EIO;
+	return esp_netif_sntp_sync_wait(pdMS_TO_TICKS(timeout_ms)) ? -ETIMEDOUT : 0;
 }
 
 /* ------------------------------------------------------------ boot */
@@ -460,6 +481,7 @@ int wifi_init(void)
 	    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
 						on_event, NULL, NULL))
 		return -EIO;
+	sntp_setup();
 	proc_register("net", gen_proc_net);
 	return 0;			/* the radio waits for a reason to start */
 }

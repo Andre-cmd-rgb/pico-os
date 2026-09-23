@@ -120,14 +120,7 @@ static int do_connect(int argc, char **argv)
 	}
 	if ((ret = wifi_save(ssid, pass)))
 		pt_dprintf(PT_STDERR, "wifi: cannot save the network (%s)\n", strerror(-ret));
-#if CONFIG_PT_NTP_AT_BOOT
-	if (!wifi_ntp_sync(5000)) {
-		time_t now = time(NULL);
-
-		pt_printf("clock set: %s", ctime(&now));
-	}
-#endif
-	return show_status();
+	return show_status();		/* the clock sets itself: see dmesg */
 }
 
 PT_PROGRAM(wifi, "join a wireless network\n"
@@ -168,10 +161,10 @@ PT_PROGRAM(wifi, "join a wireless network\n"
 	return 2;
 }
 
-PT_PROGRAM(ntp, "set the clock from the network\n"
+PT_PROGRAM(ntp, "set the clock from the network now\n"
 	   "usage: ntp\n"
-	   "The board has no battery-backed clock, so every boot starts in\n"
-	   "1970 until this runs. The server is set in menuconfig.")
+	   "It is set by itself whenever Wi-Fi connects, and every hour\n"
+	   "after; this asks at once. The server is set in menuconfig.")
 {
 	int ret;
 	time_t now;

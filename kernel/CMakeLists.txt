@@ -1,6 +1,7 @@
 idf_component_register(
 	SRCS
 		auth.c
+		clock.c
 		devfs.c
 		file.c
 		keys.c

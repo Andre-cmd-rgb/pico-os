@@ -773,15 +773,20 @@ static void force_kill(struct proc *p, int64_t now)
 	teardown(p, 128 + PT_SIGKILL);
 }
 
-/* The kernel's own task on core 0: kills what SIGKILL did not end. */
+/*
+ * The kernel's own task on core 0: kills what SIGKILL did not end, ten
+ * times a second, and once a second the clock's chores.
+ */
 static void reaper(void *arg)
 {
-	for (;;) {
+	for (int tick = 0;; tick++) {
 		vTaskDelay(pdMS_TO_TICKS(100));
 		int64_t now = esp_timer_get_time();
 
 		for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++)
 			force_kill(&procs[i], now);
+		if (tick % 10 == 0)
+			clock_tick();
 	}
 }
 

@@ -189,9 +189,13 @@ reason.
   spent in each mode; a lock stuck at 100% is what keeps the CPU at 240 MHz.
   Drivers must hold locks only while working (the LED enables its RMT channel
   just for each update for this reason).
-- `drivers/power/suspend.c` and `drivers/power/ulp/wake.c`: deep sleep with a
-  program on the low-power RISC-V core that reads the CardKB over the RTC I2C
-  controller every 100 ms and wakes the main cores on a key.
+- `drivers/power/suspend.c` and `drivers/power/ulp/wake.c`: deep sleep, woken
+  by the side button (ext1, with the RTC domain's pull-up), or -- where the
+  CardKB is wired to GPIO 0-3 -- by a program on the low-power RISC-V core
+  that reads it over the RTC I2C controller every 100 ms.
+- `kernel/clock.c`: the time saved to `/etc/clock` hourly and before sleep,
+  put back at boot after a power cut; `wifi.c` starts SNTP on every new
+  address.
 
 ## Processes
 

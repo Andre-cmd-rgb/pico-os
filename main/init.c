@@ -219,8 +219,10 @@ void app_main(void)
 	cardkb_init();
 	usbkbd_init();
 	usbmsc_init();
-	if (!rootfs_init())
+	if (!rootfs_init()) {
 		root_layout();	/* mount points must exist before mounting on them */
+		clock_restore();
+	}
 	tmpfs_init();
 	sd_init();
 	wifi_start_supplicant();	/* now that /etc/wifi can be read */
