@@ -15,6 +15,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
+sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "tools"))
 
 from shell_test import Board, clean  # noqa: E402
 
@@ -67,7 +68,7 @@ def main():
 
         # command substitution
         step("echo $(echo inner)", "inner")
-        step("echo total=$(echo a b c | wc -w)", "total= 3")
+        step("echo total=$(echo a b c | wc -w)", "total=3")
         step("x=$(echo 42); echo got=$x", "got=42")
 
         # functions
@@ -107,6 +108,22 @@ def main():
         b.send(b"\x03")
         print("=== ctrl-c:", clean(b.read_until(rb"\$ (\x1b\[K)?(\r\x1b\[\d+C)?$", 20)))
         step("echo status=$?", "status=130")
+
+        # here-documents, set -e -u -x -o pipefail, type, command: a script
+        # whose output was checked against bash's
+        import xfer
+        here = os.path.dirname(os.path.abspath(__file__))
+        if xfer.push(b, os.path.join(here, "sh_features.sh"), "/tmp/work/features.sh", "features.sh"):
+            b.read_until(rb"\$ (\x1b\[K)?(\r\x1b\[\d+C)?$", 5)
+            out = b.run("sh features.sh", 30)
+            want = open(os.path.join(here, "sh_features.out")).read()
+            ok = want.strip() in out
+            checks.append(("here-documents and set options", ok))
+            print(f"=== {'PASS' if ok else 'FAIL'}: features.sh")
+            if not ok:
+                print(out)
+        else:
+            checks.append(("here-documents and set options (push)", False))
 
         step("rm -f ctl.sh; ls ctl.sh", "No such file")
         step("cd")

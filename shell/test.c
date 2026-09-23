@@ -34,6 +34,7 @@ static bool binary_op(const char *s)
 {
 	static const char *const ops[] = {
 		"=", "==", "!=", "<", ">", "-eq", "-ne", "-lt", "-le", "-gt", "-ge",
+		"-nt", "-ot",
 	};
 
 	for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++)
@@ -106,6 +107,15 @@ static bool binary(struct test *t, const char *a, const char *op, const char *b)
 		return strcmp(a, b) < 0;
 	if (is(op, ">"))
 		return strcmp(a, b) > 0;
+	if (is(op, "-nt") || is(op, "-ot")) {
+		/* newer or older: a file that is not there is older than one that is */
+		struct pt_stat sa, sb;
+		bool ha = !pt_stat(a, &sa), hb = !pt_stat(b, &sb);
+
+		if (is(op, "-ot"))
+			return hb && (!ha || sa.mtime < sb.mtime);
+		return ha && (!hb || sa.mtime > sb.mtime);
+	}
 	if (!integer(t, a, &x) || !integer(t, b, &y))
 		return false;
 	switch (op[1] << 8 | op[2]) {
@@ -235,6 +245,7 @@ int sh_test(int argc, char **argv)
 	"  -z -n string       empty, not empty\n"			\
 	"  s1 = s2   s1 != s2\n"					\
 	"  n1 -eq n2          also -ne -lt -le -gt -ge\n"		\
+	"  f1 -nt f2          f1 newer than f2 (-ot: older)\n"	\
 	"  ! expr   expr -a expr   expr -o expr   ( expr )"
 
 PT_PROGRAM(test, TEST_HELP)

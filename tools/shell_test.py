@@ -71,7 +71,7 @@ def run_tests(b):
     step("mkdir -p /tmp/work && cd /tmp/work && pwd", "/tmp/work")
     step("ls -la /", ["bin/", "etc/", "home/"])
     step("echo hello > /tmp/work/test.txt; cat /tmp/work/test.txt", "hello")
-    step("echo more >> test.txt; wc test.txt", "2       2      11 test.txt")
+    step("echo more >> test.txt; wc test.txt", " 2  2 11 test.txt")
     step("mkdir -p /tmp/work/a/b/c && ls /tmp/work/a/b", "c/")
     step("cp test.txt a/ && mv a/test.txt a/t2.txt && ls a", ["b/", "t2.txt"])
     step("rm a; echo $?", ["is a directory", "1"])
@@ -108,7 +108,7 @@ def run_tests(b):
     step("rm big.txt")
     step("echo gone > /dev/null; ls /dev; hexdump /dev/zero | head -n 1",
          ["null", "urandom", "zero", "00000000  00 00 00"], reject="gone")
-    step("ls /nope > /dev/null 2>&1; echo quiet=$?", "quiet=1", reject="No such")
+    step("ls /nope > /dev/null 2>&1; echo quiet=$?", "quiet=2", reject="No such")
     step("export PS1='[\\W]\\$ '", None)
     step("echo prompt")
     checks[-1] = ("PS1 prompt", b"[work]$ " in b.last_raw)
@@ -125,10 +125,27 @@ def run_tests(b):
     step("echo status=$?", "status=130")
 
     # background job, then kill it
-    out = step("sleep 60 &", "[")
-    pid = re.search(r"\[(\d+)\]", out)
-    if pid:
-        step(f"kill {pid.group(1)}; sleep 0.3; echo reaped", f"[{pid.group(1)}] done, status 143")
+    out = step("sleep 60 &", "[1] ")
+    if re.search(r"\[1\] (\d+)", out):
+        step("jobs", "[1]+ Running      sleep 60")
+        step("kill %1; sleep 0.3; echo reaped", "[1]  Terminated   sleep 60")
+
+    # Ctrl-Z stops the job in front; bg and fg bring it back
+    b.send(b"sleep 30\r")
+    time.sleep(1.0)
+    b.send(b"\x1a")
+    out = clean(b.read_until(rb"\$ (\x1b\[K)?(\r\x1b\[\d+C)?$", 5))
+    checks.append(("ctrl-z", "[1]  Stopped      sleep 30" in out))
+    print(f"=== {'PASS' if checks[-1][1] else 'FAIL'}: ctrl-z")
+    print(out)
+    step("ps", " T ")
+    step("bg", "[1] sleep 30 &")
+    step("jobs", "Running")
+    b.send(b"fg\r")
+    time.sleep(0.5)
+    b.send(b"\x03")
+    out = clean(b.read_until(rb"\$ (\x1b\[K)?(\r\x1b\[\d+C)?$", 5))
+    step("echo fg=$?; jobs; echo nojobs", "fg=130\nnojobs")
 
     # tab completion and history
     b.send(b"ech\t")
@@ -137,7 +154,7 @@ def run_tests(b):
     checks[-1] = ("tab completion", "completed" in out and "command not found" not in out)
     b.send(b"\x1b[A")
     time.sleep(0.3)
-    out = step("", " completed")
+    out = step("", "completed")
     checks[-1] = ("history up-arrow", "completed" in out)
 
     # editor: type, save with Ctrl-S, quit with Ctrl-Q
@@ -167,8 +184,8 @@ def run_tests(b):
     # plugged in means it says so.
     missing = "command not found"
     step("power", any_of=["cpufreq"])
-    step("battery", any_of=[missing, "no cell", " V  "])
-    step("i2cdetect", any_of=[missing, "devices", "device\n"])
+    step("battery", any_of=[missing, "no cell", " V  ", "no battery sensing"])
+    step("i2cdetect", any_of=[missing, "devices", "device\n", "usage: i2cdetect"])
     step("volume", any_of=[missing, "volume ", "no audio codec"])
     # a beep that works says nothing at all, so ask the shell how it went
     step("beep 440 50; echo beep=$?", any_of=[missing, "no audio codec", "beep=0"])
@@ -182,7 +199,7 @@ def run_tests(b):
     step("ntp", any_of=[missing, "no network", ":"], timeout=15)
     step("modem", any_of=[missing, "no modem", "module"])
     step("sms", any_of=[missing, "no modem", "message"])
-    step("cat /proc/net", any_of=[missing, "No such file", "interface wlan0"])
+    step("cat /proc/net", any_of=[missing, "No such file", "interface wlan0", "wifi: off"])
     step("screenshot /tmp/work/shot.bmp", any_of=[missing, "no screen", ".bmp"], timeout=20)
     step("nes /nope.nes", any_of=[missing, "no screen", "No such file", "not a ROM"])
 

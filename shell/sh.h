@@ -108,6 +108,7 @@ enum redir_type {
 	R_OUT,		/* n>file */
 	R_APPEND,	/* n>>file */
 	R_DUP,		/* n>&m, n<&m */
+	R_HEREDOC,	/* n<<WORD, n<<-WORD: the lines that follow */
 };
 
 /* Text as written, quotes and $ intact: expanded only when it runs. */
@@ -121,6 +122,8 @@ struct redir {
 	enum redir_type	 type;
 	int		 fd;
 	struct word	*target;
+	const char	*body;		/* R_HEREDOC: its text, delimiter line left out */
+	bool		 quoted;	/* R_HEREDOC: the delimiter was quoted: no expansion */
 };
 
 struct case_item {
@@ -142,6 +145,8 @@ struct node {
 	const char	 *name;
 	const char	 *src;		/* the command's source text, for child shells */
 	size_t		  src_len;
+	const char	 *here;		/* here-document bodies after its line, for them too */
+	size_t		  here_len;
 };
 
 /* parse.c */
@@ -203,6 +208,28 @@ struct local_var {
 	char		  name[];
 };
 
+/* A job: what one command line started, in the background or stopped. */
+#define MAX_JOBS	16
+#define MAX_STAGES	8
+
+struct job {
+	int		 id;		/* %1, %2 ...; 0 is a free slot */
+	int		 pgid;
+	int		 pid[MAX_STAGES];
+	bool		 done[MAX_STAGES];
+	int		 n, status;	/* the last process's status */
+	bool		 stopped;
+	char		*cmd;		/* as it was typed */
+};
+
+struct alias {
+	struct alias	*next;
+	char		*value;
+	char		 name[];
+};
+
+enum { TRAP_EXIT, TRAP_INT, TRAP_TERM, NTRAPS };
+
 struct sh {
 	int		  status;
 	int		  subst_status;	/* of the last $(...) */
@@ -220,6 +247,17 @@ struct sh {
 	int		  loops;	/* loop depth in the current function */
 	int		  funcs;	/* function call depth */
 	int		  sourcing;
+	/* set -e -u -x -o pipefail */
+	bool		  errexit, nounset, xtrace, pipefail;
+	int		  no_errexit;	/* inside a condition: a failure is an answer */
+	struct job	  jobs[MAX_JOBS];
+	int		  current_job;	/* the id %% and fg with nothing mean */
+	bool		  warned_stopped;	/* exit once with stopped jobs: a warning */
+	char		 *traps[NTRAPS];	/* NULL: as usual; "": ignored */
+	bool		  in_trap;
+	struct alias	 *aliases;
+	const char	 *expanding[8];	/* aliases being expanded, not again */
+	int		  nexpanding;
 	uintptr_t	  stack_limit;	/* lowest safe stack address */
 	struct local_var *locals;
 	struct function	 *functions;
@@ -227,10 +265,28 @@ struct sh {
 	struct history	  history;
 };
 
+/* jobs.c */
+struct job *job_add(struct sh *sh, int pgid, const int *pids, int n, const char *cmd, size_t len);
+struct job *job_find(struct sh *sh, const char *spec, const char *who);
+void	job_free(struct job *j);
+void	job_ended(struct sh *sh, int pid, int st, bool report);
+void	jobs_reap(struct sh *sh);
+void	job_report(struct job *j, const char *what);
+bool	jobs_stopped(struct sh *sh);
+int	job_wait(struct sh *sh, struct job *j, bool cont);
+int	jobs_expand(struct sh *sh, struct fields *args, const char *who);
+int	builtin_jobs(struct sh *sh, int argc, char **argv);
+int	builtin_fg(struct sh *sh, int argc, char **argv);
+int	builtin_bg(struct sh *sh, int argc, char **argv);
+
 /* exec.c */
 int	exec_node(struct sh *sh, struct node *n);
+void	sh_caught(struct sh *sh);		/* a signal arrived: its trap, or stop */
+int	sh_take_signal(void);			/* which, and it is no longer pending */
+void	sh_signal(struct sh *sh, int sig);
 int	run_text(struct sh *sh, const char *text, const char *where);
 int	capture(struct sh *sh, const char *text, struct strbuf *out);
+int	run_command_argv(struct sh *sh, int argc, char **argv);
 bool	sh_stack_low(struct sh *sh);
 bool	sh_unwinding(struct sh *sh);
 void	sh_parse_error(const char *where, int line, const char *text,
@@ -248,6 +304,7 @@ struct builtin {
 };
 
 const struct builtin *builtin_find(const char *name);
+struct alias *alias_find(struct sh *sh, const char *name);
 
 /* test.c */
 int	sh_test(int argc, char **argv);

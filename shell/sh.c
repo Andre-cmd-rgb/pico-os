@@ -7,6 +7,7 @@
  *                ${NAME%suffix} ${NAME%%suffix} ${NAME#prefix} ${NAME##prefix}
  *   substitution $(command) `command` $((arithmetic))
  *   redirection  < file   > file   >> file   2> file   2>&1   >&2
+ *                <<WORD here-documents (<<-WORD strips tabs, <<'WORD' expands nothing)
  *   pipelines    a | b | c    ! a
  *   lists        a ; b    a && b    a || b    a &    a newline is a ;
  *   compound     if a; then b; elif c; then d; else e; fi
@@ -16,14 +17,18 @@
  *                { a; b; }    ( a; b )
  *   functions    name() { a; }   with $1..., $#, $@, return [n], local
  *   builtins     cd exit export unset source . history break continue return
- *                local shift read eval set wait test [ true false :
+ *                local shift read eval set wait test [ true false : type command
+ *                alias unalias trap jobs fg bg
+ *   options      set -e (stop on failure) -u (unset is an error) -x (trace)
+ *                -o pipefail
+ *   traps        trap 'cmd' EXIT INT TERM    trap - INT    trap '' INT
+ *   jobs         Ctrl-Z stops the job in front; jobs, fg %n, bg %n; kill %n
  *
  * Every variable is an environment variable, so child processes see them.
  * Commands are parsed into a tree and expanded only when they run, so
  * `cd /mnt/sd; ls $PWD` sees the new directory and loops see variables
  * change. A line that leaves a construct open (if without fi, a trailing |,
  * an open quote) continues at a "> " prompt; Ctrl-C there drops it all.
- * Not supported: here-documents, aliases, job control commands, set options.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -116,9 +121,9 @@ static int run_fd(struct sh *sh, int fd, const char *where)
 		}
 	}
 	if (n == -EINTR) {
-		pt_sigcatch(true);
-		sh->interrupted = true;
-		sh->status = 130;
+		sh_caught(sh);
+		if (sh->interrupted)
+			sh->status = 130;
 	}
 	if (text.len && !stopped(sh))
 		run_chunk(sh, &text, where, &line, true);
@@ -271,13 +276,12 @@ static int interactive(struct sh *sh)
 	pt_ioctl(PT_STDIN, PT_TTY_SETPGRP, &sh->pgid);
 	history_load(sh);
 	while (!sh->exit_requested) {
-		int pid, st, first = 1;
+		int first = 1;
 
 		pt_sigcatch(true);
 		sh->interrupted = false;
 		if (!text.len) {
-			while ((pid = pt_wait(-1, &st, true)) > 0)
-				pt_printf("[%d] done, status %d\n", pid, st);
+			jobs_reap(sh);		/* what finished or stopped meanwhile */
 			build_prompt(prompt, sizeof(prompt));
 		} else {
 			const char *ps2 = pt_getenv("PS2");
@@ -413,6 +417,26 @@ void candidates_free(struct candidates *c)
 
 /* ------------------------------------------------------------ entry points */
 
+/*
+ * The shell is ending with `status`: its EXIT trap runs first, whatever
+ * brought the end about -- the last line, `exit`, a failure under set -e --
+ * and the shell ends with the status it had, unless the trap exits itself.
+ */
+static int finish(struct sh *sh, int status)
+{
+	char *trap = sh->traps[TRAP_EXIT];
+
+	if (!trap || !*trap)
+		return status;
+	sh->traps[TRAP_EXIT] = NULL;		/* once */
+	sh->exit_requested = sh->interrupted = sh->returning = false;
+	sh->breaking = sh->continuing = 0;
+	sh->status = status;
+	run_text(sh, trap, "trap");
+	pt_free(trap);
+	return sh->exit_requested ? sh->status : status;
+}
+
 static struct sh *sh_new(int argc, char **argv)
 {
 	struct sh *sh = pt_calloc(1, sizeof(*sh));
@@ -463,9 +487,9 @@ PT_PROGRAM_STACK(sh, SH_STACK_KB, "command interpreter\n"
 		return 1;
 	}
 	if (command)
-		return run_text(sh, command, NULL);
+		return finish(sh, run_text(sh, command, NULL));
 	if (i < argc)
-		return run_file(sh, argv[i]);
+		return finish(sh, run_file(sh, argv[i]));
 
 	if (login) {
 		struct pt_stat st;
@@ -480,7 +504,7 @@ PT_PROGRAM_STACK(sh, SH_STACK_KB, "command interpreter\n"
 			run_file(sh, profile);
 		pt_setenv("PWD", pt_getcwd());
 	}
-	return pt_isatty(PT_STDIN) ? interactive(sh) : run_fd(sh, PT_STDIN, NULL);
+	return finish(sh, pt_isatty(PT_STDIN) ? interactive(sh) : run_fd(sh, PT_STDIN, NULL));
 }
 
 /* ------------------------------------------------------------ script loader */
@@ -498,7 +522,7 @@ static int script_exec(const char *path, int argc, char **argv)
 
 	if (!sh)
 		return 1;
-	return run_file(sh, path);
+	return finish(sh, run_file(sh, path));
 }
 
 static struct pt_loader script_loader = {

@@ -1,0 +1,50 @@
+hello world
+  kept "quotes" and $dollar and \"esc\"
+sum 3 and sub
+literal $name $(echo no)
+tabs gone world
+first A
+second B
+[1|one]
+[2|two]
+in function arg
+PIPED WORLD
+subshell
+x=captured
+pipefail=1
+nopipefail=0
+default
+sh: undefined_var: parameter not set
++ echo traced
+traced
++ set +x
+cd is a shell builtin
+ls is a program built into the system
+f is a function
+nosuch: not found
+type=1
+ls
+notfunc
+e1=1
+reached
+e2=0
+reached2
+e3=0
+e4=1
+newer
+done
+hi
+bye 1
+rc=1
+caught INT
+after
+ignored
+cleanup
+rc=3
+on-exit
+rc=1
+trap -- 'echo x' EXIT
+alias hi='echo hello'
+gone
+st=143
+end

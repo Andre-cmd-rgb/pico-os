@@ -363,6 +363,18 @@ static const char *param_value(struct sh *sh, const char *name, size_t len, char
 	return pt_getenv(buf);
 }
 
+/* set -u: an unset parameter, used bare, is an error -- and ends a script. */
+static bool unset_error(struct xstate *xs, const char *name, size_t len)
+{
+	if (!xs->sh->nounset)
+		return false;
+	pt_dprintf(PT_STDERR, "sh: %.*s: parameter not set\n", (int)len, name);
+	xs->err = true;
+	if (!xs->sh->interactive)
+		xs->sh->exit_requested = true;
+	return true;
+}
+
 /* $@ and $*: one field per parameter where splitting applies. */
 static void positional(struct xstate *xs, bool at, bool quoted)
 {
@@ -435,6 +447,8 @@ static void param_brace(struct xstate *xs, const char *p, const char *end, bool 
 	if (op == end) {
 		if (v)
 			add_value(xs, v, quoted);
+		else
+			unset_error(xs, p, len);
 		return;
 	}
 
@@ -590,6 +604,8 @@ static const char *expand_dollar(struct xstate *xs, const char *p, const char *e
 		const char *v = param_value(xs->sh, p + 1, len, buf);
 		if (v)
 			add_value(xs, v, quoted);
+		else if (p[1] != '!')
+			unset_error(xs, p + 1, len);
 	}
 	return p + 1 + len;
 }

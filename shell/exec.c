@@ -19,8 +19,10 @@
 #include "sdkconfig.h"
 #include "sh.h"
 
-#define MAX_STAGES	8
 #define MAX_OPENED	8
+
+static void errexit(struct sh *sh);
+static char *alias_text(struct sh *sh, const struct node *n);
 
 static void sh_error(const char *what, int err)
 {
@@ -119,7 +121,7 @@ void function_remove(struct sh *sh, const char *name)
 /* The tree being run is freed afterwards: the function keeps its own copy. */
 static int define_function(struct sh *sh, struct node *n)
 {
-	struct function *f = pt_calloc(1, sizeof(*f) + n->src_len + 1);
+	struct function *f = pt_calloc(1, sizeof(*f) + n->src_len + 1 + n->here_len + 1);
 	struct parse_error err;
 	struct node *root;
 
@@ -128,6 +130,10 @@ static int define_function(struct sh *sh, struct node *n)
 		return 1;
 	}
 	memcpy(f->src, n->src, n->src_len);
+	if (n->here_len) {		/* the bodies of its last line's here-documents */
+		f->src[n->src_len] = '\n';
+		memcpy(f->src + n->src_len + 1, n->here, n->here_len);
+	}
 	if (parse(sh, &f->arena, f->src, &root, &err) || !root || root->type != N_FUNCDEF) {
 		pt_dprintf(PT_STDERR, "sh: %s: cannot define function\n", n->name);
 		arena_release(&f->arena, (struct arena_mark) { 0 });
@@ -240,6 +246,15 @@ static int spawn_shell(struct sh *sh, const char *text, size_t len, int argc, ch
 	char **av;
 	int pid = -ENOMEM;
 
+	/* the options and the functions come along, as a fork would bring them */
+	if (sh->errexit)
+		sb_puts(&script, "set -e\n");
+	if (sh->nounset)
+		sb_puts(&script, "set -u\n");
+	if (sh->xtrace)
+		sb_puts(&script, "set -x\n");
+	if (sh->pipefail)
+		sb_puts(&script, "set -o pipefail\n");
 	for (struct function *f = sh->functions; f; f = f->next) {
 		sb_puts(&script, f->src);
 		sb_putc(&script, '\n');
@@ -265,40 +280,70 @@ static int spawn_shell(struct sh *sh, const char *text, size_t len, int argc, ch
 	return pid;
 }
 
-static int terminal(void)
+/* A command from the tree in a child shell: its source, and after it the
+ * bodies of its here-documents, which come after the line it is on. */
+static int spawn_node(struct sh *sh, const struct node *n, int fd[3], int pgid)
 {
-	static const int fds[] = { PT_STDIN, PT_STDERR, PT_STDOUT };
+	struct strbuf text = { 0 };
+	int pid;
 
-	for (int i = 0; i < 3; i++)
-		if (pt_isatty(fds[i]))
-			return fds[i];
-	return -1;
+	if (!n->here_len)
+		return spawn_shell(sh, n->src, n->src_len, 0, NULL, fd, pgid);
+	sb_add(&text, n->src, n->src_len);
+	sb_putc(&text, '\n');
+	sb_add(&text, n->here, n->here_len);
+	pid = text.oom ? -ENOMEM : spawn_shell(sh, text.s, text.len, 0, NULL, fd, pgid);
+	if (text.oom)
+		sh_error("sh", pid);
+	sb_free(&text);
+	return pid;
 }
 
-/* Waits for a job; the status is the last process's. */
-static int wait_job(struct sh *sh, const int *pids, int n, int pgid, bool foreground)
+/*
+ * Waits for what a command line started: in front of an interactive shell
+ * a job, which Ctrl-Z can stop (jobs.c); anywhere else just processes. The
+ * status is the last process's, or with -o pipefail the last that failed.
+ */
+static int wait_job(struct sh *sh, const int *pids, int n, int pgid, bool foreground,
+		    const char *cmd, size_t len)
 {
-	int tty = foreground && sh->interactive ? terminal() : -1;
-	int status = 0;
+	int status = 0, failed = 0, sig = 0;
 
-	if (tty >= 0)
-		pt_ioctl(tty, PT_TTY_SETPGRP, &pgid);
+	if (foreground && sh->interactive) {
+		struct job j = { .pgid = pgid, .n = n };
+		char *copy = pt_malloc(len + 1);
+
+		memcpy(j.pid, pids, n * sizeof(*pids));
+		if (copy) {
+			memcpy(copy, cmd, len);
+			copy[len] = '\0';
+		}
+		j.cmd = copy ? copy : "";
+		status = job_wait(sh, &j, false);
+		pt_free(copy);
+		return status;
+	}
 	for (int i = 0; i < n; i++) {
 		int st = 0;
 
 		while (pt_wait(pids[i], &st, false) == -EINTR) {
-			/* Ctrl-C reached the shell: make sure the job has it too */
+			/* a signal reached the shell: make sure the job has it too */
+			sig = sh_take_signal();
 			for (int k = i; k < n; k++)
-				pt_kill(pids[k], PT_SIGINT);
-			pt_sigcatch(true);
+				pt_kill(pids[k], sig);
 		}
 		status = st;
+		if (st)
+			failed = st;
 	}
-	if (tty >= 0)
-		pt_ioctl(tty, PT_TTY_SETPGRP, &sh->pgid);
+	/* set -o pipefail: the last stage to fail speaks for the pipeline */
+	if (sh->pipefail && failed)
+		status = failed;
 	/* the job died of Ctrl-C: stop whatever loop or script ran it */
-	if (status == 128 + PT_SIGINT)
-		sh->interrupted = true;
+	if (status == 128 + PT_SIGINT && !sig)
+		sig = PT_SIGINT;
+	if (sig)
+		sh_signal(sh, sig);	/* the shell's own trap, now the job is over */
 	return status;
 }
 
@@ -320,8 +365,7 @@ int capture(struct sh *sh, const char *text, struct strbuf *out)
 	while (pid > 0 && (n = pt_read(pipefd[0], buf, 512)) != 0) {
 		if (n == -EINTR) {
 			pt_kill(pid, PT_SIGINT);
-			pt_sigcatch(true);
-			sh->interrupted = true;
+			sh_caught(sh);
 		} else if (n < 0) {
 			break;
 		} else {
@@ -330,17 +374,53 @@ int capture(struct sh *sh, const char *text, struct strbuf *out)
 	}
 	pt_close(pipefd[0]);
 	pt_free(buf);
-	return pid < 0 ? spawn_status(pid) : wait_job(sh, &pid, 1, pid, false);
+	return pid < 0 ? spawn_status(pid) : wait_job(sh, &pid, 1, pid, false, NULL, 0);
 }
 
 /* ------------------------------------------------------------ redirection */
 
+/*
+ * A here-document's text: as it stands if its delimiter was quoted,
+ * otherwise with $ and ` expanded as inside double quotes -- which is what
+ * it becomes for expand_word, with its own double quotes escaped, and the
+ * backslash of a \" kept, as a here-document keeps it.
+ */
+static char *here_text(struct sh *sh, const struct redir *r)
+{
+	struct strbuf word = { 0 };
+	char *text;
+
+	if (r->quoted)
+		return pt_strdup(r->body);
+	sb_putc(&word, '"');
+	for (const char *p = r->body; *p; p++) {
+		if (*p == '"')
+			sb_putc(&word, '\\');
+		else if (*p == '\\' && p[1] == '"')
+			sb_putc(&word, '\\');
+		sb_putc(&word, *p);
+	}
+	sb_putc(&word, '"');
+	text = word.oom ? NULL : expand_word(sh, word.s, 0);
+	sb_free(&word);
+	return text;
+}
+
 static int open_target(struct sh *sh, struct redir *r)
 {
-	char *path = expand_word(sh, r->target->text, 0);
+	char *path;
 	int fd;
 
-	if (!path)
+	if (r->type == R_HEREDOC) {
+		char *text = here_text(sh, r);
+
+		fd = text ? pt_memfd(text, strlen(text)) : -ENOMEM;
+		pt_free(text);
+		if (fd < 0)
+			sh_error("here-document", fd);
+		return fd < 0 ? -1 : fd;
+	}
+	if (!(path = expand_word(sh, r->target->text, 0)))
 		return -1;
 	if (r->type == R_DUP)
 		fd = pt_open("/dev/null", r->fd ? O_WRONLY : O_RDONLY);
@@ -556,8 +636,13 @@ static int spawn_stage(struct sh *sh, struct node *n, int fd[3], int pgid, int *
 	int pid = 0;
 
 	*status = 0;
-	if (n->type != N_SIMPLE) {
-		pid = spawn_shell(sh, n->src, n->src_len, 0, NULL, fd, pgid);
+	char *alias = n->type == N_SIMPLE ? alias_text(sh, n) : NULL;
+
+	if (alias) {
+		pid = spawn_shell(sh, alias, strlen(alias), 0, NULL, fd, pgid);
+		pt_free(alias);
+	} else if (n->type != N_SIMPLE) {
+		pid = spawn_node(sh, n, fd, pgid);
 	} else if (expand_command(sh, n->words, &args) || assign(sh, n->words, &saved) ||
 		   map_redirs(sh, n->redirs, &m)) {
 		*status = 1;
@@ -582,7 +667,8 @@ static int spawn_stage(struct sh *sh, struct node *n, int fd[3], int pgid, int *
 	return pid;
 }
 
-static int run_pipeline(struct sh *sh, struct node *first, bool single, bool background)
+static int run_pipeline(struct sh *sh, struct node *first, bool single, bool background,
+			const char *src, size_t len)
 {
 	int pids[MAX_STAGES], n = 0, prev = -1, status = 0, last = 0;
 	int pgid = sh->interactive ? 0 : sh->pgid;
@@ -624,19 +710,22 @@ static int run_pipeline(struct sh *sh, struct node *first, bool single, bool bac
 
 	if (background) {
 		if (n) {
+			struct job *j = job_add(sh, pgid, pids, n, src, len);
+
 			sh->last_bg = pids[n - 1];
 			if (sh->interactive)
-				pt_printf("[%d]\n", pids[n - 1]);
+				pt_printf("[%d] %d\n", j ? j->id : 0, pids[n - 1]);
 		}
 		return status;
 	}
 	if (!n)
 		return status;
-	int job = wait_job(sh, pids, n, pgid, true);
+	int job = wait_job(sh, pids, n, pgid, true, src, len);
 	return last > 0 ? job : status;
 }
 
-static int run_program(struct sh *sh, struct fields *args, struct redir *redirs)
+static int run_program(struct sh *sh, struct fields *args, struct redir *redirs,
+		       const char *src, size_t len)
 {
 	struct fdmap m = { .fd = { PT_STDIN, PT_STDOUT, PT_STDERR } };
 
@@ -646,7 +735,50 @@ static int run_program(struct sh *sh, struct fields *args, struct redir *redirs)
 	}
 	int pid = spawn_argv(args->n, args->v, m.fd, sh->interactive ? 0 : sh->pgid);
 	unmap_redirs(&m);
-	return pid < 0 ? spawn_status(pid) : wait_job(sh, &pid, 1, pid, true);
+	return pid < 0 ? spawn_status(pid) : wait_job(sh, &pid, 1, pid, true, src, len);
+}
+
+/* A program by name, passing over any function of that name: `command`. */
+int run_command_argv(struct sh *sh, int argc, char **argv)
+{
+	struct fields args = { .v = argv, .n = argc };
+
+	return run_program(sh, &args, NULL, argv[0], strlen(argv[0]));
+}
+
+/*
+ * An alias: the command's first word, if it names one that is not being
+ * expanded already, replaced by its text, and the rest of the command as
+ * it was written after it. NULL for none. Only an interactive shell uses
+ * them, as bash does unless told otherwise.
+ */
+static char *alias_text(struct sh *sh, const struct node *n)
+{
+	const struct word *w = n->words;
+	struct strbuf text = { 0 };
+	struct alias *a;
+	size_t len;
+
+	if (!sh->interactive || !w || strpbrk(w->text, "\"'\\$`=") ||
+	    !(a = alias_find(sh, w->text)) || sh->nexpanding == 8)
+		return NULL;
+	len = strlen(w->text);
+	if (n->src_len < len || memcmp(n->src, w->text, len))
+		return NULL;			/* an assignment or a redirection comes first */
+	for (int i = 0; i < sh->nexpanding; i++)
+		if (!strcmp(sh->expanding[i], a->name))
+			return NULL;
+	sb_puts(&text, a->value);
+	sb_add(&text, n->src + len, n->src_len - len);
+	if (n->here_len) {
+		sb_putc(&text, '\n');
+		sb_add(&text, n->here, n->here_len);
+	}
+	if (text.oom) {
+		sb_free(&text);
+		return NULL;
+	}
+	return text.s;
 }
 
 static int exec_simple(struct sh *sh, struct node *n)
@@ -654,11 +786,22 @@ static int exec_simple(struct sh *sh, struct node *n)
 	struct fields args = { 0 };
 	struct local_var *saved = NULL;
 	struct saved_fds fds;
+	char *alias = alias_text(sh, n);
 	int status;
 
+	if (alias) {
+		sh->expanding[sh->nexpanding++] = n->words->text;
+		run_text(sh, alias, NULL);
+		sh->nexpanding--;
+		pt_free(alias);
+		return sh->status;
+	}
 	sh->subst_status = 0;
 	if (expand_command(sh, n->words, &args)) {
 		status = 1;
+	} else if (args.n && (!strcmp(args.v[0], "kill") || !strcmp(args.v[0], "wait")) &&
+		   jobs_expand(sh, &args, args.v[0])) {
+		status = 1;			/* %N named no job */
 	} else if (!args.n) {
 		status = assign(sh, n->words, NULL);
 		if (!status && n->redirs) {
@@ -672,10 +815,28 @@ static int exec_simple(struct sh *sh, struct node *n)
 		status = 1;
 	} else {
 		const struct builtin *b = builtin_find(args.v[0]);
+
+		if (sh->xtrace) {		/* set -x: what runs, as it runs */
+			const char *ps4 = pt_getenv("PS4");
+			struct strbuf line = { 0 };
+
+			sb_puts(&line, ps4 ? ps4 : "+ ");
+			for (int i = 0; i < args.n; i++) {
+				if (i)
+					sb_putc(&line, ' ');
+				sb_puts(&line, args.v[i]);
+			}
+			sb_putc(&line, '\n');
+			if (line.s)
+				pt_write(PT_STDERR, line.s, line.len);
+			sb_free(&line);
+		}
 		struct function *f = b && b->special ? NULL : function_find(sh, args.v[0]);
 
+		if (strcmp(args.v[0], "exit"))
+			sh->warned_stopped = false;	/* exit twice in a row: it means it */
 		if (!b && !f)
-			status = run_program(sh, &args, n->redirs);
+			status = run_program(sh, &args, n->redirs, n->src, n->src_len);
 		else if (push_redirs(sh, n->redirs, &fds))
 			status = 1;
 		else {
@@ -708,7 +869,9 @@ static void exec_loop(struct sh *sh, struct node *n)
 
 	sh->loops++;
 	for (;;) {
+		sh->no_errexit++;
 		exec_node(sh, n->cond);
+		sh->no_errexit--;
 		if (sh_unwinding(sh) ? loop_done(sh) : (sh->status == 0) != (n->type == N_WHILE))
 			break;
 		exec_node(sh, n->body);
@@ -780,9 +943,10 @@ static void run_subshell(struct sh *sh, struct node *body)
 {
 	int fd[3] = { PT_STDIN, PT_STDOUT, PT_STDERR };
 	int pgid = sh->interactive ? 0 : sh->pgid;
-	int pid = spawn_shell(sh, body->src, body->src_len, 0, NULL, fd, pgid);
+	int pid = spawn_node(sh, body, fd, pgid);
 
-	sh->status = pid < 0 ? spawn_status(pid) : wait_job(sh, &pid, 1, pgid ? pgid : pid, true);
+	sh->status = pid < 0 ? spawn_status(pid)
+		   : wait_job(sh, &pid, 1, pgid ? pgid : pid, true, body->src, body->src_len);
 }
 
 static void exec_compound(struct sh *sh, struct node *n)
@@ -799,9 +963,12 @@ static void exec_compound(struct sh *sh, struct node *n)
 		break;
 	case N_SUBSHELL:
 		run_subshell(sh, n->body);
+		errexit(sh);
 		break;
 	case N_IF:
+		sh->no_errexit++;
 		exec_node(sh, n->cond);
+		sh->no_errexit--;
 		if (sh_unwinding(sh))
 			break;
 		if (sh->status == 0)
@@ -833,24 +1000,70 @@ static void run_background(struct sh *sh, struct node *n)
 
 	if (n->type == N_PIPELINE || n->type == N_SIMPLE) {
 		sh->status = run_pipeline(sh, n->type == N_PIPELINE ? n->body : n,
-					  n->type == N_SIMPLE, true);
+					  n->type == N_SIMPLE, true, n->src, n->src_len);
 		return;
 	}
-	int pid = spawn_shell(sh, n->src, n->src_len, 0, NULL, fd, sh->interactive ? 0 : sh->pgid);
+	int pid = spawn_node(sh, n, fd, sh->interactive ? 0 : sh->pgid);
 	sh->status = pid < 0 ? spawn_status(pid) : 0;
 	if (pid > 0) {
+		struct job *j = job_add(sh, pid, &pid, 1, n->src, n->src_len);
+
 		sh->last_bg = pid;
 		if (sh->interactive)
-			pt_printf("[%d]\n", pid);
+			pt_printf("[%d] %d\n", j ? j->id : 0, pid);
 	}
+}
+
+/*
+ * A signal reached the shell, or a job it waited for died of one: its
+ * trap runs, or with none the shell stops what it is doing, and a script
+ * ends, as usual. An empty trap means the signal is ignored.
+ */
+void sh_signal(struct sh *sh, int sig)
+{
+	char *trap = sh->traps[sig == PT_SIGTERM ? TRAP_TERM : TRAP_INT];
+
+	if (!trap) {
+		sh->interrupted = true;
+		return;
+	}
+	if (*trap && !sh->in_trap) {
+		int status = sh->status;
+
+		sh->in_trap = true;
+		run_text(sh, trap, "trap");
+		sh->in_trap = false;
+		if (!sh->exit_requested)
+			sh->status = status;	/* $? is what it was before the trap */
+	}
+}
+
+/* Which signal is pending for the shell itself, SIGTERM or SIGINT, taken. */
+int sh_take_signal(void)
+{
+	unsigned pending = pt_sigpending();
+
+	pt_sigcatch(true);
+	return pending & (1u << PT_SIGTERM) ? PT_SIGTERM : PT_SIGINT;
+}
+
+/* A signal is pending for the shell itself: taken, then handled. */
+void sh_caught(struct sh *sh)
+{
+	sh_signal(sh, sh_take_signal());
+}
+
+/* set -e: a command that failed, where a failure is not an answer, ends the shell. */
+static void errexit(struct sh *sh)
+{
+	if (sh->errexit && sh->status && !sh->no_errexit && !sh_unwinding(sh))
+		sh->exit_requested = true;
 }
 
 int exec_node(struct sh *sh, struct node *n)
 {
-	if (pt_interrupted()) {
-		pt_sigcatch(true);
-		sh->interrupted = true;
-	}
+	if (pt_interrupted())
+		sh_caught(sh);
 	if (sh->interrupted)
 		return sh->status = 130;
 	if (!n || sh_unwinding(sh))
@@ -863,18 +1076,28 @@ int exec_node(struct sh *sh, struct node *n)
 	switch (n->type) {
 	case N_SIMPLE:
 		sh->status = exec_simple(sh, n);
+		errexit(sh);
 		break;
 	case N_PIPELINE:
+		if (n->negate)
+			sh->no_errexit++;	/* ! makes a failure the answer wanted */
 		if (n->body->next)
-			sh->status = run_pipeline(sh, n->body, false, false);
+			sh->status = run_pipeline(sh, n->body, false, false, n->src, n->src_len);
 		else
 			exec_node(sh, n->body);
-		if (n->negate && !sh->interrupted)
-			sh->status = !sh->status;
+		if (n->negate) {
+			sh->no_errexit--;
+			if (!sh->interrupted)
+				sh->status = !sh->status;
+		} else {
+			errexit(sh);
+		}
 		break;
 	case N_AND:
 	case N_OR:
+		sh->no_errexit++;		/* only the last of an && || list counts */
 		exec_node(sh, n->cond);
+		sh->no_errexit--;
 		if (!sh_unwinding(sh) && (sh->status == 0) == (n->type == N_AND))
 			exec_node(sh, n->body);
 		break;

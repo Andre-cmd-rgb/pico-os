@@ -39,18 +39,17 @@ def main():
         return out
 
     def sample(label):
-        out = run("free; uptime; ps")
+        # /proc/uptime, not uptime: that one says "up 12 min"
+        out = run("free; cat /proc/uptime; uptime; ps")
         internal = re.search(r"internal\s+\d+\s+\d+\s+(\d+)", out)
         psram = re.search(r"psram\s+\d+\s+\d+\s+(\d+)", out)
-        up = re.search(r"up (\d+):(\d+)(?::(\d+))?", out)
-        procs = re.search(r"(\d+) processes", out)
+        up = re.search(r"^(\d+)\.\d+$", out, re.M)
+        procs = re.search(r"(\d+) process(es)?\b", out)
         if not (internal and psram and up and procs):
             problems.append(("sample " + label, out.strip()[-300:]))
             return None
-        parts = [int(x) for x in up.groups() if x is not None]
-        seconds = parts[0] * 60 + parts[1] if len(parts) == 2 else parts[0] * 3600 + parts[1] * 60 + parts[2]
         s = dict(t=time.time(), internal=int(internal.group(1)), psram=int(psram.group(1)),
-                 up=seconds, procs=int(procs.group(1)), label=label)
+                 up=int(up.group(1)), procs=int(procs.group(1)), label=label)
         samples.append(s)
         return s
 
@@ -74,7 +73,7 @@ def main():
         spawns += 8
 
         out = run("sleep 30 &")
-        pid = re.search(r"\[(\d+)\]", out)
+        pid = re.search(r"\[\d+\] (\d+)", out)
         if pid:
             run("kill %s" % pid.group(1))
 
@@ -90,7 +89,7 @@ def main():
 
         if rounds % 8 == 0:
             out = run("bench hog &")
-            pid = re.search(r"\[(\d+)\]", out)
+            pid = re.search(r"\[\d+\] (\d+)", out)
             if pid:
                 time.sleep(1.0)
                 run("kill -9 %s" % pid.group(1))

@@ -95,6 +95,10 @@ struct parser {
 	struct token		 tok;
 	bool			 peeked;
 	struct parse_error	 err;
+	/* here-documents on the line being read: their bodies come after it */
+	const char		*here_op;	/* the first << on the line */
+	const char		*here_start;	/* where its body begins */
+	const char		*here_end;	/* past the last body read so far */
 };
 
 static struct node *parse_list(struct parser *ps);
@@ -293,6 +297,8 @@ static struct token *peek(struct parser *ps)
 	switch (*r) {
 	case '\n':
 		t->type = T_NEWLINE;
+		if (ps->here_end)
+			t->end = ps->here_end;	/* the bodies are not commands */
 		break;
 	case ';':
 		t->type = p[1] == ';' ? T_DSEMI : T_SEMI;
@@ -318,8 +324,8 @@ static struct token *peek(struct parser *ps)
 		t->fd = r > p ? *p - '0' : *r == '<' ? 0 : 1;
 		t->end = r + 2;
 		if (r[0] == '<' && r[1] == '<') {
-			fail(ps, PARSE_ERROR, "here-documents are not supported");
-			t->type = T_EOF;
+			t->redir = R_HEREDOC;
+			t->end = r + 2 + (r[2] == '-');
 		} else if (r[0] == '>' && r[1] == '>') {
 			t->redir = R_APPEND;
 		} else if (r[1] == '&') {
@@ -347,6 +353,8 @@ static struct token *next(struct parser *ps)
 
 	ps->peeked = false;
 	ps->p = ps->last = t->end;
+	if (t->type == T_NEWLINE)
+		ps->here_op = ps->here_start = ps->here_end = NULL;
 	return t;
 }
 
@@ -410,6 +418,11 @@ static struct node *new_node(struct parser *ps, enum node_type type)
 static struct node *end_node(struct parser *ps, struct node *n)
 {
 	n->src_len = ps->last - n->src;
+	/* a here-document of this command's has its body after the line */
+	if (ps->here_op && ps->here_op >= n->src) {
+		n->here = ps->here_start;
+		n->here_len = ps->here_end - ps->here_start;
+	}
 	return n;
 }
 
@@ -442,6 +455,70 @@ static bool at_list_end(struct parser *ps)
 	return false;
 }
 
+/*
+ * The body of a here-document whose << is at `op`, with delimiter `word`:
+ * the lines after the one being read -- after the bodies of any earlier
+ * here-documents on it -- up to a line that is the delimiter. With <<- the
+ * tabs that start each line go. The delimiter is taken with its quotes
+ * removed, and any quoting in it means the body is not expanded.
+ */
+static bool here_body(struct parser *ps, struct redir *r, const struct token *op,
+		      const struct word *word)
+{
+	bool strip = op->end[-1] == '-';
+	char delim[128];
+	size_t n = 0;
+	const char *p, *line;
+	struct strbuf body = { 0 };
+
+	for (const char *w = word->text; *w; w++) {
+		if (*w == '\\' && w[1])
+			w++;
+		else if (*w == '\\' || *w == '"' || *w == '\'')
+			continue;
+		if (n + 1 < sizeof(delim))
+			delim[n++] = *w;
+	}
+	delim[n] = '\0';
+	r->quoted = strpbrk(word->text, "\"'\\") != NULL;
+	if (!ps->here_end) {
+		const char *nl = strchr(ps->p, '\n');
+
+		if (!nl) {
+			incomplete(ps);
+			return false;
+		}
+		ps->here_op = op->start;
+		ps->here_start = ps->here_end = nl + 1;
+	}
+	for (p = ps->here_end;; p = line) {
+		const char *eol = strchr(p, '\n');
+
+		if (!*p) {
+			sb_free(&body);
+			incomplete(ps);		/* the delimiter has not come yet */
+			return false;
+		}
+		line = eol ? eol + 1 : p + strlen(p);
+		if (strip)
+			while (*p == '\t')
+				p++;
+		size_t len = (eol ? eol : line) - p;
+
+		if (len == n && !memcmp(p, delim, n))
+			break;
+		sb_add(&body, p, line - p);
+	}
+	ps->here_end = line;
+	r->body = arena_alloc(ps->arena, body.len + 1);
+	if (r->body)
+		memcpy((char *)r->body, body.s ? body.s : "", body.len);
+	sb_free(&body);
+	if (!r->body)
+		fail(ps, PARSE_ERROR, "out of memory");
+	return r->body != NULL;
+}
+
 static bool parse_redir(struct parser *ps, struct redir ***tail)
 {
 	const struct token op = *next(ps);
@@ -459,6 +536,8 @@ static bool parse_redir(struct parser *ps, struct redir ***tail)
 	r->fd = op.fd;
 	r->target = make_word(ps, peek(ps));
 	next(ps);
+	if (r->target && r->type == R_HEREDOC && !here_body(ps, r, &op, r->target))
+		return false;
 	**tail = r;
 	*tail = &r->next;
 	return r->target;

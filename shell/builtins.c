@@ -3,12 +3,16 @@
  * change it: its variables, directory, parameters or flow of control.
  */
 #include <ctype.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "pt/program.h"
 #include "sh.h"
+
+static void print_quoted(const char *s);
+static void alias_print(const struct alias *a);
 
 static int b_cd(struct sh *sh, int argc, char **argv)
 {
@@ -27,11 +31,19 @@ static int b_cd(struct sh *sh, int argc, char **argv)
 	}
 	pt_setenv("OLDPWD", old);
 	pt_setenv("PWD", pt_getcwd());
+	if (argc > 1 && !strcmp(argv[1], "-"))
+		pt_printf("%s\n", pt_getcwd());	/* as every shell does for cd - */
 	return 0;
 }
 
 static int b_exit(struct sh *sh, int argc, char **argv)
 {
+	/* stopped jobs end with the shell: say so once, as other shells do */
+	if (sh->interactive && jobs_stopped(sh) && !sh->warned_stopped) {
+		pt_dprintf(PT_STDERR, "There are stopped jobs: `exit` again ends them.\n");
+		sh->warned_stopped = true;
+		return 1;
+	}
 	sh->exit_requested = true;
 	return argc > 1 ? atoi(argv[1]) & 255 : sh->status;
 }
@@ -189,33 +201,87 @@ static int b_shift(struct sh *sh, int argc, char **argv)
 	return 0;
 }
 
-/* set -- args: replace the positional parameters */
+/*
+ * set [-eux] [+eux] [-o NAME] [+o NAME] [--] [args]: the options, then
+ * the positional parameters. With nothing, the variables; with -o alone,
+ * the options.
+ */
 static int b_set(struct sh *sh, int argc, char **argv)
 {
+	static const struct {
+		char		 letter;
+		const char	*name;
+		size_t		 offset;
+	} options[] = {
+		{ 'e', "errexit", offsetof(struct sh, errexit) },
+		{ 'u', "nounset", offsetof(struct sh, nounset) },
+		{ 'x', "xtrace", offsetof(struct sh, xtrace) },
+		{ 0, "pipefail", offsetof(struct sh, pipefail) },
+	};
 	const char *entry;
-	int first = argc > 1 && !strcmp(argv[1], "--") ? 2 : 1;
+	int i = 1;
 
 	if (argc == 1) {
-		for (int i = 0; pt_environ(i, &entry); i++)
+		for (int k = 0; pt_environ(k, &entry); k++)
 			pt_printf("%s\n", entry);
 		return 0;
 	}
-	if (first == 1 && (argv[1][0] == '-' || argv[1][0] == '+')) {
-		pt_dprintf(PT_STDERR, "set: %s: options are not supported\n", argv[1]);
-		return 2;
-	}
+	for (; i < argc && (argv[i][0] == '-' || argv[i][0] == '+') && argv[i][1]; i++) {
+		bool on = argv[i][0] == '-';
 
-	int count = argc - first + 1;
+		if (!strcmp(argv[i], "--")) {
+			i++;
+			goto params;
+		}
+		if (!strcmp(argv[i] + 1, "o")) {
+			if (i + 1 == argc) {
+				for (size_t k = 0; k < sizeof(options) / sizeof(options[0]); k++)
+					pt_printf("%-10s %s\n", options[k].name,
+						  *(bool *)((char *)sh + options[k].offset) ? "on" : "off");
+				return 0;
+			}
+			const char *name = argv[++i];
+			size_t k = 0;
+
+			while (k < sizeof(options) / sizeof(options[0]) && strcmp(options[k].name, name))
+				k++;
+			if (k == sizeof(options) / sizeof(options[0])) {
+				pt_dprintf(PT_STDERR, "set: %s: no such option\n", name);
+				return 2;
+			}
+			*(bool *)((char *)sh + options[k].offset) = on;
+			continue;
+		}
+		for (const char *c = argv[i] + 1; *c; c++) {
+			size_t k = 0;
+
+			while (k < sizeof(options) / sizeof(options[0]) && options[k].letter != *c)
+				k++;
+			if (!*c || k == sizeof(options) / sizeof(options[0])) {
+				pt_dprintf(PT_STDERR, "set: -%c: no such option (e u x, -o pipefail)\n", *c);
+				return 2;
+			}
+			*(bool *)((char *)sh + options[k].offset) = on;
+		}
+	}
+	if (i == argc)
+		return 0;
+params:;
+	/* what is left replaces $1 $2 ... */
+	int count = argc - i + 1;
 	size_t size = (count + 1) * sizeof(char *) + strlen(sh->argv[0]) + 1;
-	for (int i = first; i < argc; i++)
-		size += strlen(argv[i]) + 1;
+
+	for (int k = i; k < argc; k++)
+		size += strlen(argv[k]) + 1;
 	char **block = pt_malloc(size);
+
 	if (!block)
 		return 1;
 	char *s = (char *)(block + count + 1);
-	for (int i = 0; i < count; i++) {
-		block[i] = s;
-		s = stpcpy(s, i ? argv[first + i - 1] : sh->argv[0]) + 1;
+
+	for (int k = 0; k < count; k++) {
+		block[k] = s;
+		s = stpcpy(s, k ? argv[i + k - 1] : sh->argv[0]) + 1;
 	}
 	block[count] = NULL;
 	pt_free(sh->params);
@@ -282,8 +348,7 @@ static int b_read(struct sh *sh, int argc, char **argv)
 		ssize_t n = pt_read(PT_STDIN, &c, 1);
 
 		if (n == -EINTR) {
-			pt_sigcatch(true);
-			sh->interrupted = true;
+			sh_caught(sh);
 			sb_free(&line);
 			return 130;
 		}
@@ -351,40 +416,323 @@ static int b_read(struct sh *sh, int argc, char **argv)
 	return eof ? 1 : 0;
 }
 
+/* Where `name` is found on $PATH, into `out`: false if nowhere. */
+static bool in_path(const char *name, char *out, size_t size)
+{
+	const char *path = pt_getenv("PATH");
+	struct pt_stat st;
+
+	if (strchr(name, '/'))
+		return !pt_stat(name, &st) && !st.is_dir && snprintf(out, size, "%s", name) > 0;
+	for (const char *dir = path ? path : ""; *dir;) {
+		size_t len = strcspn(dir, ":");
+
+		if ((size_t)snprintf(out, size, "%.*s/%s", (int)len, dir, name) < size &&
+		    !pt_stat(out, &st) && !st.is_dir)
+			return true;
+		dir += len + (dir[len] == ':');
+	}
+	return false;
+}
+
+/*
+ * What a command name means, in the order the shell looks: a special
+ * builtin, a function, a builtin, a program built into the system, a file
+ * on $PATH. `verbose` says it as type does; otherwise as command -v does.
+ */
+static bool describe(struct sh *sh, const char *name, bool verbose)
+{
+	const struct builtin *b = builtin_find(name);
+	struct alias *a = sh->interactive ? alias_find(sh, name) : NULL;
+	char path[PT_PATH_MAX];
+	const char *what = NULL;
+
+	if (a) {
+		if (verbose) {
+			pt_printf("%s is aliased to ", name);
+			print_quoted(a->value);
+			pt_puts("\n");
+		} else {
+			alias_print(a);
+		}
+		return true;
+	}
+	if (b && b->special)
+		what = "a special shell builtin";
+	else if (function_find(sh, name))
+		what = "a function";
+	else if (b)
+		what = "a shell builtin";
+	else if (program_find(name))
+		what = "a program built into the system";
+	if (what) {
+		if (verbose)
+			pt_printf("%s is %s\n", name, what);
+		else
+			pt_printf("%s\n", name);
+		return true;
+	}
+	if (in_path(name, path, sizeof(path))) {
+		if (verbose)
+			pt_printf("%s is %s\n", name, path);
+		else
+			pt_printf("%s\n", path);
+		return true;
+	}
+	if (verbose)
+		pt_dprintf(PT_STDERR, "%s: not found\n", name);
+	return false;
+}
+
+static int b_type(struct sh *sh, int argc, char **argv)
+{
+	int status = 0;
+
+	for (int i = 1; i < argc; i++)
+		if (!describe(sh, argv[i], true))
+			status = 1;
+	return status;
+}
+
+/*
+ * command -v NAME: what NAME would run. command NAME ARGS: run it, as a
+ * builtin or a program, passing over a function of that name.
+ */
+static int b_command(struct sh *sh, int argc, char **argv)
+{
+	if (argc > 1 && (!strcmp(argv[1], "-v") || !strcmp(argv[1], "-V"))) {
+		int status = 0;
+
+		for (int i = 2; i < argc; i++)
+			if (!describe(sh, argv[i], argv[1][1] == 'V'))
+				status = 1;
+		return status;
+	}
+	if (argc < 2)
+		return 0;
+	const struct builtin *b = builtin_find(argv[1]);
+
+	if (b)
+		return b->fn(sh, argc - 1, argv + 1);
+	return run_command_argv(sh, argc - 1, argv + 1);
+}
+
 static int b_wait(struct sh *sh, int argc, char **argv)
 {
 	int status = 0, st, r;
 
 	if (argc == 1) {
-		while ((r = pt_wait(-1, &st, false)) > 0 || r == -EINTR)
+		while ((r = pt_wait(-1, &st, false)) > 0 || r == -EINTR) {
 			if (r == -EINTR)
 				goto interrupted;
+			job_ended(sh, r, st, false);
+		}
 		return 0;
 	}
 	for (int i = 1; i < argc; i++) {
 		if ((r = pt_wait(atoi(argv[i]), &st, false)) == -EINTR)
 			goto interrupted;
+		if (r > 0)
+			job_ended(sh, r, st, false);
 		status = r > 0 ? st : 127;
 	}
 	return status;
 interrupted:
-	pt_sigcatch(true);
-	sh->interrupted = true;
+	sh_caught(sh);
 	return 130;
+}
+
+/* ------------------------------------------------------------ trap */
+
+static const char *const trap_names[NTRAPS] = { "EXIT", "INT", "TERM" };
+
+static int trap_index(const char *s)
+{
+	if (!strncmp(s, "SIG", 3))
+		s += 3;
+	if (!strcmp(s, "EXIT") || !strcmp(s, "0"))
+		return TRAP_EXIT;
+	if (!strcmp(s, "INT") || !strcmp(s, "2"))
+		return TRAP_INT;
+	if (!strcmp(s, "TERM") || !strcmp(s, "15"))
+		return TRAP_TERM;
+	return -1;
+}
+
+/* 'text' as the shell reads it back: quoted, its own quotes made safe. */
+static void print_quoted(const char *s)
+{
+	pt_puts("'");
+	for (; *s; s++)
+		pt_puts(*s == '\'' ? "'\\''" : (char[]){ *s, 0 });
+	pt_puts("'");
+}
+
+/*
+ * trap 'commands' SIG...: run them when SIG arrives -- INT (Ctrl-C), TERM,
+ * or EXIT, when the shell ends. trap '' SIG ignores it, trap - SIG (or
+ * trap SIG) puts it back, trap alone lists them.
+ */
+static int b_trap(struct sh *sh, int argc, char **argv)
+{
+	int i = 1, status = 0;
+	const char *action;
+
+	if (argc == 1) {
+		for (int k = 0; k < NTRAPS; k++) {
+			if (!sh->traps[k])
+				continue;
+			pt_puts("trap -- ");
+			print_quoted(sh->traps[k]);
+			pt_printf(" %s\n", trap_names[k]);
+		}
+		return 0;
+	}
+	if (!strcmp(argv[1], "-l")) {
+		pt_printf(" 0) EXIT   2) INT   15) TERM\n");
+		return 0;
+	}
+	if (!strcmp(argv[i], "--"))
+		i++;
+	if (i == argc)
+		return 0;
+	action = argv[i];
+	/* a lone signal, or one first: those go back to what they were */
+	if (!strcmp(action, "-"))
+		i++;
+	else if (trap_index(action) >= 0 && (argc - i == 1 || isdigit((unsigned char)*action)))
+		action = "-";
+	else
+		i++;
+	for (; i < argc; i++) {
+		int k = trap_index(argv[i]);
+
+		if (k < 0) {
+			pt_dprintf(PT_STDERR, "trap: %s: not a signal it knows (trap -l)\n", argv[i]);
+			status = 1;
+			continue;
+		}
+		pt_free(sh->traps[k]);
+		sh->traps[k] = strcmp(action, "-") ? pt_strdup(action) : NULL;
+	}
+	return status;
+}
+
+/* ------------------------------------------------------------ alias */
+
+struct alias *alias_find(struct sh *sh, const char *name)
+{
+	for (struct alias *a = sh->aliases; a; a = a->next)
+		if (!strcmp(a->name, name))
+			return a;
+	return NULL;
+}
+
+static void alias_remove(struct sh *sh, const char *name)
+{
+	for (struct alias **pp = &sh->aliases; *pp; pp = &(*pp)->next) {
+		if (!strcmp((*pp)->name, name)) {
+			struct alias *a = *pp;
+
+			*pp = a->next;
+			pt_free(a->value);
+			pt_free(a);
+			return;
+		}
+	}
+}
+
+static void alias_print(const struct alias *a)
+{
+	pt_printf("alias %s=", a->name);
+	print_quoted(a->value);
+	pt_puts("\n");
+}
+
+/* alias NAME='text' ...: NAME at the start of a command stands for text. */
+static int b_alias(struct sh *sh, int argc, char **argv)
+{
+	int status = 0;
+
+	if (argc == 1) {
+		for (struct alias *a = sh->aliases; a; a = a->next)
+			alias_print(a);
+		return 0;
+	}
+	for (int i = 1; i < argc; i++) {
+		const char *eq = strchr(argv[i], '=');
+		size_t len = eq ? (size_t)(eq - argv[i]) : strlen(argv[i]);
+
+		if (!eq) {
+			struct alias *a = alias_find(sh, argv[i]);
+
+			if (a) {
+				alias_print(a);
+			} else {
+				pt_dprintf(PT_STDERR, "alias: %s: not found\n", argv[i]);
+				status = 1;
+			}
+			continue;
+		}
+		if (!len || strcspn(argv[i], "\"'\\$`/ \t") < len) {
+			pt_dprintf(PT_STDERR, "alias: %.*s: not a name for an alias\n", (int)len, argv[i]);
+			status = 1;
+			continue;
+		}
+		struct alias *a = pt_malloc(sizeof(*a) + len + 1);
+		char *value = pt_strdup(eq + 1);
+
+		if (!a || !value) {
+			pt_free(a);
+			pt_free(value);
+			return 1;
+		}
+		memcpy(a->name, argv[i], len);
+		a->name[len] = '\0';
+		a->value = value;
+		alias_remove(sh, a->name);
+		a->next = sh->aliases;
+		sh->aliases = a;
+	}
+	return status;
+}
+
+static int b_unalias(struct sh *sh, int argc, char **argv)
+{
+	int status = 0;
+
+	if (argc > 1 && !strcmp(argv[1], "-a")) {
+		while (sh->aliases)
+			alias_remove(sh, sh->aliases->name);
+		return 0;
+	}
+	for (int i = 1; i < argc; i++) {
+		if (!alias_find(sh, argv[i])) {
+			pt_dprintf(PT_STDERR, "unalias: %s: not found\n", argv[i]);
+			status = 1;
+		}
+		alias_remove(sh, argv[i]);
+	}
+	return status;
 }
 
 static const struct builtin builtins[] = {
 	{ ".", b_source, true },
 	{ ":", b_true, true },
 	{ "[", b_test, false },
+	{ "alias", b_alias, false },
+	{ "bg", builtin_bg, false },
 	{ "break", b_loop, true },
 	{ "cd", b_cd, false },
+	{ "command", b_command, false },
 	{ "continue", b_loop, true },
 	{ "eval", b_eval, true },
 	{ "exit", b_exit, true },
 	{ "export", b_export, true },
 	{ "false", b_false, false },
+	{ "fg", builtin_fg, false },
 	{ "history", b_history, false },
+	{ "jobs", builtin_jobs, false },
 	{ "local", b_local, true },
 	{ "read", b_read, false },
 	{ "return", b_return, true },
@@ -392,7 +740,10 @@ static const struct builtin builtins[] = {
 	{ "shift", b_shift, true },
 	{ "source", b_source, true },
 	{ "test", b_test, false },
+	{ "trap", b_trap, true },
 	{ "true", b_true, false },
+	{ "type", b_type, false },
+	{ "unalias", b_unalias, false },
 	{ "unset", b_unset, true },
 	{ "wait", b_wait, false },
 };
@@ -429,5 +780,31 @@ SHELL_ONLY(read, "read a line into variables\n"
 	   "Splits on spaces; the last NAME gets the rest.\n"
 	   "No NAME: the line goes to $REPLY. -r keeps \\.")
 SHELL_ONLY(eval, "run arguments as a command\nusage: eval text ...")
-SHELL_ONLY(set, "list variables, or set $1 $2 ...\nusage: set [-- args ...]")
-SHELL_ONLY(wait, "wait for background jobs\nusage: wait [pid ...]")
+SHELL_ONLY(set, "set options, or $1 $2 ..., or list variables\n"
+	   "usage: set [-eux] [+eux] [-o pipefail] [-- args ...]\n"
+	   "  -e  stop at a command that fails (not in if, while, && ||)\n"
+	   "  -u  an unset variable is an error   -x  show each command\n"
+	   "  -o pipefail  a pipeline fails if any part of it does\n"
+	   "+ turns one off; set -o lists them.")
+SHELL_ONLY(wait, "wait for background jobs\nusage: wait [pid | %N ...]")
+SHELL_ONLY(type, "say what a command name is: builtin, function,\n"
+	   "program or file\nusage: type name ...")
+SHELL_ONLY(trap, "run commands when a signal comes, or at the end\n"
+	   "usage: trap 'commands' INT|TERM|EXIT ...\n"
+	   "  trap '' INT    ignore Ctrl-C   trap - INT   as usual again\n"
+	   "  trap 'rm -f /tmp/x.$$' EXIT     tidy up at the end\n"
+	   "trap alone lists them.")
+SHELL_ONLY(alias, "give a command a short name\n"
+	   "usage: alias [name='text' ...]\n"
+	   "  alias ll='ls -l'   then ll /tmp is ls -l /tmp\n"
+	   "Put them in ~/.profile. Alone, lists them.")
+SHELL_ONLY(unalias, "forget aliases\nusage: unalias name ... | -a")
+SHELL_ONLY(jobs, "list the jobs: what runs in the background or\n"
+	   "was stopped with Ctrl-Z")
+SHELL_ONLY(fg, "bring a job to the front\nusage: fg [%N]\n"
+	   "A stopped one carries on. %N is job N; without it, the\n"
+	   "last one stopped or started.")
+SHELL_ONLY(bg, "let a stopped job carry on in the background\n"
+	   "usage: bg [%N]")
+SHELL_ONLY(command, "run a command passing over functions, or say\n"
+	   "what it is\nusage: command [-v | -V] name [args ...]")

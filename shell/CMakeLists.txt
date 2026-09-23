@@ -4,6 +4,7 @@ idf_component_register(
 		builtins.c
 		exec.c
 		expand.c
+		jobs.c
 		lineedit.c
 		parse.c
 		sh.c
