@@ -251,8 +251,6 @@ Be aware of these before relying on it:
 - **MP3 decoding is not ours.** FLAC and WAV are (`codec/`); MP3 leans on
   minimp3 in `third_party/`, which says why.
 - **The clock starts at 1970 on every boot.** Set it with `date -s`.
-- **`kill -9` of a process stuck in a tight loop** deletes its task after half a
-  second and can leak whatever it held.
 
 ## Source tree
 

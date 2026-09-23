@@ -89,6 +89,7 @@ struct proc {
 	bool			 sigcatch;
 	atomic_bool		 exiting;
 	int64_t			 kill_deadline_us;
+	bool			 kill_waiting;	/* past it, but holding a lock */
 	int64_t			 start_us;
 	uint32_t		 stack_kb;
 	const struct pt_program	*prog;

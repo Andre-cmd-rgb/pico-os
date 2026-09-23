@@ -9,7 +9,9 @@
  *
  * Signals are delivered at safe points, when the process enters a system
  * call. SIGKILL gets half a second to be noticed; after that the reaper
- * deletes the task outright, which can leak whatever it was holding.
+ * deletes the task outright -- though never while it holds a lock, a file
+ * system's or a driver's, which would then never be let go. Its memory
+ * and files go the usual way, since the kernel keeps count of them.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -296,6 +298,7 @@ static void teardown(struct proc *p, int status)
 	p->status = status;
 	p->task = NULL;
 	p->kill_deadline_us = 0;
+	p->kill_waiting = false;
 	xSemaphoreGive(p->exited);
 	p->state = parent ? PROC_ZOMBIE : PROC_FREE;
 	UNLOCK();
@@ -722,30 +725,63 @@ void pt_sigcatch(bool on)
 		proc_check_signals();
 }
 
-/* Deletes processes that ignored SIGKILL past their grace period. */
+/*
+ * Whether a task holds a FreeRTOS mutex: a file system's, a driver's, the
+ * terminal's. FreeRTOS counts them, for priority inheritance, in a field
+ * of the task's control block that StaticTask_t mirrors field for field --
+ * it has to, being what a statically created task's control block is.
+ */
+_Static_assert(configUSE_MUTEXES == 1, "the count of mutexes held is what tells");
+
+static bool holds_lock(TaskHandle_t task)
+{
+	return ((const StaticTask_t *)task)->uxDummy12[1] != 0;
+}
+
+/*
+ * A process that ignored SIGKILL past its grace period -- a loop that makes
+ * no system call -- is stopped and, unless it is holding a lock, deleted.
+ * One that holds a lock is let go on until it has put it down.
+ */
+static void force_kill(struct proc *p, int64_t now)
+{
+	TaskHandle_t task = NULL;
+
+	LOCK();
+	if (p->state == PROC_RUNNING && p->kill_deadline_us && now > p->kill_deadline_us &&
+	    !atomic_load(&p->exiting) && p->task) {
+		task = p->task;
+		vTaskSuspend(task);
+	}
+	UNLOCK();
+	if (!task)
+		return;
+	/* on the other core it stops at the interrupt the suspend sends */
+	vTaskDelay(1);
+	if (holds_lock(task)) {
+		vTaskResume(task);
+		if (!p->kill_waiting)
+			klog("kill: pid %d (%s) holds a lock; waiting for it to let go", p->pid, p->name);
+		p->kill_waiting = true;
+		return;
+	}
+	LOCK();
+	vTaskDelete(task);
+	p->task = NULL;
+	UNLOCK();
+	klog("kill: pid %d (%s) ignored SIGKILL, task deleted", p->pid, p->name);
+	teardown(p, 128 + PT_SIGKILL);
+}
+
+/* The kernel's own task on core 0: kills what SIGKILL did not end. */
 static void reaper(void *arg)
 {
 	for (;;) {
 		vTaskDelay(pdMS_TO_TICKS(100));
 		int64_t now = esp_timer_get_time();
 
-		for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++) {
-			struct proc *p = &procs[i];
-			bool forced = false;
-
-			LOCK();
-			if (p->state == PROC_RUNNING && p->kill_deadline_us && now > p->kill_deadline_us &&
-			    !atomic_load(&p->exiting) && p->task) {
-				vTaskDelete(p->task);
-				p->task = NULL;
-				forced = true;
-			}
-			UNLOCK();
-			if (forced) {
-				klog("kill: pid %d (%s) ignored SIGKILL, task deleted", p->pid, p->name);
-				teardown(p, 128 + PT_SIGKILL);
-			}
-		}
+		for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++)
+			force_kill(&procs[i], now);
 	}
 }
 

@@ -116,7 +116,7 @@ static void build_palette(void)
 
 		palette[i] = (uint16_t)(c << 8 | c >> 8);
 	}
-	free(src);			/* the core built it for us to keep */
+	pt_free(src);			/* the core built it for us to keep */
 }
 
 /* ------------------------------------------------------------ the joypad */
@@ -202,10 +202,12 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 
 	/* The row buffer goes to the display by DMA, so it has to be
 	 * internal; the picture buffer is only touched by the CPU and is
-	 * 64 KB, so it goes to PSRAM. */
-	rowbuf = lcd_alloc_buffer(NES_SCREEN_WIDTH * ROWS_PER_DRAW * 2);
-	vidbuf = heap_caps_malloc(NES_SCREEN_PITCH * NES_SCREEN_HEIGHT,
-				  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+	 * 64 KB, so it goes to PSRAM. Both are counted as the program's, so
+	 * a kill -9 from another terminal frees them. */
+	rowbuf = pt_malloc_caps(NES_SCREEN_WIDTH * ROWS_PER_DRAW * 2,
+				MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	vidbuf = pt_malloc_caps(NES_SCREEN_PITCH * NES_SCREEN_HEIGHT,
+				MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	if (!rowbuf || !vidbuf) {
 		ret = -ENOMEM;
 		goto out;
@@ -312,8 +314,8 @@ out:
 	nes_shutdown();
 	if (opt->sound)
 		audio_stop();
-	heap_caps_free(rowbuf);
-	heap_caps_free(vidbuf);
+	pt_free(rowbuf);
+	pt_free(vidbuf);
 	rowbuf = vidbuf = NULL;
 	apu = NULL;
 	return ret;

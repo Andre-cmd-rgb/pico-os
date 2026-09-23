@@ -214,7 +214,10 @@ runaway program can't freeze the screen or keyboards.
 - **Signals** are delivered when the process makes its next system call.
   SIGINT and SIGTERM end it with status 128+signal unless it called
   `pt_sigcatch(true)`. SIGKILL gets 500 ms; after that the reaper task deletes
-  it.
+  it, unless it holds a FreeRTOS mutex (a filesystem's or a driver's): then it
+  is let run until it has put the lock down, since a lock taken to the grave
+  hangs everyone after it. Code a program runs -- a library such as the NES
+  core included -- should allocate with `pt_malloc`, so a kill frees it all.
 - Ctrl-C (or Esc on the CardKB) signals the terminal's foreground process
   group, which the shell sets to each pipeline it runs.
 

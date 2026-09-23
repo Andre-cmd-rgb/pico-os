@@ -25,6 +25,10 @@ endif()
 idf_component_register(SRCS ${srcs} INCLUDE_DIRS . port)
 
 if(srcs)
-	# Built as it comes, with RETRO_GO selecting the hooks in port/.
+	# Built as it comes, with RETRO_GO selecting the hooks in port/. Its
+	# memory is the nes program's own, counted as a program's is (pt/sys.h),
+	# so a game killed from another terminal gives all of it back.
 	target_compile_options(${COMPONENT_LIB} PRIVATE -w -DRETRO_GO)
+	target_compile_definitions(${COMPONENT_LIB} PRIVATE
+		malloc=pt_malloc calloc=pt_calloc realloc=pt_realloc free=pt_free strdup=pt_strdup)
 endif()
