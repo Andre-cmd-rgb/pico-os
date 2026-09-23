@@ -4,13 +4,44 @@ Commands
 `help NAME` explains any of these in detail.
 
 FILES
-  ls cat cp mv rm mkdir rmdir touch pwd
-  df mount umount sync mkfs
-  head tail wc grep hexdump more edit
+  ls cat cp mv rm mkdir rmdir touch pwd stat
+  df du mount umount sync mkfs realpath edit
+  find DIR -name '*.txt'   look for files; -type,
+                    -size, -mtime, -exec, -delete
   push/pull are on the PC side (see `man intro`)
+
+TEXT
+  head tail wc more hexdump cmp
+  grep PATTERN      regular expressions: -E -i -v
+                    -w -x -o -n -c -l -r -A -B -C
+  sed 's/old/new/g'  edit text as it goes by; -i
+                    edits files in place, -n with p
+                    picks lines: sed -n '/todo/p'
+  sort uniq cut tr tee
+  diff -u A B       what changed between two files
+  sha256sum FILE    also md5sum sha1sum sha512sum and
+                    cksum; -c checks a saved list
+  xargs CMD         run CMD on the words coming in:
+                    find . -name '*.bak' | xargs rm
+
+SCRIPTS
+  echo printf seq expr test basename dirname
+  true false sleep yes env
+  type NAME         what a command name is
+  set -e -u -x      stop on errors, trace commands
+  trap 'CMD' EXIT   run CMD at the end; also INT TERM
+  alias ll='ls -l'  a short name for a command
+
+JOBS
+  CMD &             run CMD in the background
+  Ctrl-Z            stop the program in front
+  jobs              what is stopped or behind
+  fg [%N] / bg [%N] bring one to the front / let it
+                    go on behind; kill %N ends it
 
 SYSTEM
   ps top kill free dmesg uptime uname date time
+  whoami hostname
   sleep env which clear reboot chvt screenshot
   i2cdetect keytest bench lcdtest backlight
 
@@ -39,8 +70,12 @@ NETWORK
   ping [-c N] HOST
   modem             the SIM module, if one is wired
   sms               text messages
-  A shell is also waiting on port 23, so the board can
-  be used over the network with the USB port free.
+  passwd            set the password the network
+                    shell asks for (-d removes it)
+  A shell is also waiting on port 23 (telnet), so
+  the board can be used over the network with the
+  USB port free. Nobody gets in until a password
+  is set.
 
 VIDEO
   video             pick a clip from ~/video
@@ -50,19 +85,20 @@ VIDEO
 
 PICTURES
   view              pick one from ~/photos
-  view FILE...      BMP or baseline JPEG, scaled to fit;
-                    left and right move between them,
-                    s saves a copy of the screen, q quits
+  view FILE...      BMP or baseline JPEG, scaled to
+                    fit; left and right move between
+                    them, s saves a copy of the
+                    screen, q quits
 
 GAMES
   nes               pick a game from ~/roms
-  nes ROM.nes       a NES emulator; q quits, p saves a
-                    screenshot
+  nes ROM.nes       a NES emulator; q quits, p saves
+                    a screenshot
   pad on            the Bluetooth radio
   pad scan          look for a gamepad
   pad connect N     join one
-  pad watch         see what a pad sends, to map it in
-                    /etc/gamepad
+  pad watch         see what a pad sends, to map it
+                    in /etc/gamepad
 
 THE LANGUAGE
   a FILE.al     compile and run in one step

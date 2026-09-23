@@ -282,10 +282,11 @@ WebAssembly for instance, would be one more loader registered the same way.
 ## Testing
 
 ```sh
-make hosttest                      # the a compiler and VM on the PC (50 tests)
-make -C lang asan                  # the same under AddressSanitizer and UBSan
+make hosttest                      # the a compiler and VM, JPEG, the text programs
+make -C lang asan                  # the a tests under AddressSanitizer and UBSan
 make test                          # hosttest, then QEMU: no board needed
 make hwtest PORT=/dev/ttyACM0      # the shell suite on a board
+make progtest PORT=/dev/ttyACM0    # the text programs on a board, against GNU's
 make scripttest PORT=/dev/ttyACM0  # if/for/while/case, functions, scripts
 make langtest PORT=/dev/ttyACM0    # the a language on the board
 make stress PORT=/dev/ttyACM0      # 10 minutes of process, file and signal churn
@@ -314,3 +315,16 @@ sudo pacman -S libslirp
 takes its path from `$QEMU`.
 
 Add a check to `run_tests()` in `tools/shell_test.py` whenever you add a command.
+
+### The text programs on the PC
+
+`grep`, `sort`, `find`, `cut`, `tr`, `printf`, `expr` and the other programs
+that need nothing but system calls also build for the PC: `tools/host_pt.c`
+supplies the calls over POSIX, and `tools/programs_test.py` compiles them
+with it under the sanitizers, runs each case in `CASES` through bash with
+ours first on `PATH` and then with GNU's, and compares. A case that means
+to differ from GNU gives its own expected output. Then a few hundred random
+regular expressions go through our `grep` and GNU's.
+
+`make progtest` runs the same cases on a board, through its own shell. A
+new text program goes into `SOURCES` and `PROGRAMS` there, with cases.

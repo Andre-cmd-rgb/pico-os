@@ -1,9 +1,9 @@
 The `a` language
 ================
 
-C-like, statically typed, with automatic memory and no
-pointers. A mistake stops with the line it happened on
-rather than corrupting something.
+C-like, statically typed, with automatic memory and
+no pointers. A mistake stops with the line it
+happened on rather than corrupting something.
 
   a hello.al        compile and run
   ac hello.al       compile to ./hello
@@ -11,7 +11,8 @@ rather than corrupting something.
 A PROGRAM
 
   int main(str[] args) {
-      println("hello ", len(args) > 1 ? args[1] : "world");
+      str who = len(args) > 1 ? args[1] : "world";
+      println("hello ", who);
       return 0;
   }
 
@@ -20,7 +21,7 @@ TYPES
   int     32-bit signed        float   32-bit
   bool    true or false        str     UTF-8 text
   T[]     growable array       struct  named fields
-  File    an open file         void    returns nothing
+  File    an open file         void    no value
 
   struct Point { int x; int y; }
   Point p = Point{x: 3, y: 4};

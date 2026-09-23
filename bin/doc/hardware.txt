@@ -1,10 +1,10 @@
 This board
 ==========
 
-Freenove ESP32-S3 Display (FNK0104A/B): a 240 MHz dual
-core with 8 MB of PSRAM and 16 MB of flash, a 2.8"
-320x240 screen, a card slot, a codec and a battery
-charger.
+Freenove ESP32-S3 Display (FNK0104A/B): a 240 MHz
+dual core with 8 MB of PSRAM and 16 MB of flash, a
+2.8" 320x240 screen, a card slot, a codec and a
+battery charger.
 
 WHAT IS WIRED TO WHAT
 
@@ -34,14 +34,15 @@ CHECKING IT
 
 THINGS WORTH KNOWING
 
-  The battery sense hangs off the charger, so with USB
-  plugged in and no cell it reads about 5 V. The system
-  treats anything above 4.3 V as "no battery, on USB".
+  The battery sense hangs off the charger, so with
+  USB plugged in and no cell it reads about 5 V. The
+  system treats anything above 4.3 V as "no battery,
+  on USB".
 
   The panel is driven at 80 MHz, which is faster than
   its datasheet allows. It is reliable on this board;
-  if a screen ever shows noise, drop PT_LCD_SPI_HZ back
-  to 40000000.
+  if a screen ever shows noise, drop PT_LCD_SPI_HZ
+  back to 40000000.
 
   A CardKB on the I2C header shares those wires with
   the codec, so power it from 3V3, never 5 V.
@@ -51,6 +52,6 @@ THINGS WORTH KNOWING
   needs a powered hub, and the console has to move to
   the network first.
 
-  A SIM module needs its own supply. They pull two amps
-  for a moment when they talk to a tower, which browns
-  out anything sharing their power.
+  A SIM module needs its own supply. They pull two
+  amps for a moment when they talk to a tower, which
+  browns out anything sharing their power.

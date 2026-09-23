@@ -7,8 +7,9 @@
 #   make term          serial console (Ctrl-] to quit)
 #   make flash term    both
 #   make test          PC tests, then the QEMU image with the device suites
-#   make hosttest      only the "a" compiler and VM, built for this PC
+#   make hosttest      the "a" compiler and VM, and the JPEG decoder, built for this PC
 #   make hwtest        the shell suite on the board at PORT
+#   make progtest      the text programs on the board, against GNU's on this PC
 #   make scripttest    shell control flow (if/for/while/case, functions)
 #   make langtest      the "a" language on the device
 #   make push FILE=... [DEST=...]   copy a file to the board (default ~/name)
@@ -32,7 +33,7 @@ IDF      := $(EXPORT) && idf.py -B $(BUILD) -D SDKCONFIG=$(BUILD)/sdkconfig \
 	    -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/$(BOARD).defconfig"
 
 .PHONY: all build defconfig menuconfig flash term monitor clean distclean size font boards \
-	test hosttest hwtest scripttest langtest push pull video stress need-port need-board
+	test hosttest hwtest progtest scripttest langtest push pull video stress need-port need-board
 
 all: build
 
@@ -94,6 +95,8 @@ need-port:
 
 hosttest:
 	@$(MAKE) -s -C lang test
+	@python3 tools/jpeg_test.py | tail -2
+	@python3 tools/programs_test.py
 
 # QEMU emulates neither the display, the card slot, USB nor the flash
 # filesystems, so the qemu board leaves those out and puts / in RAM.
@@ -107,6 +110,9 @@ test: hosttest
 
 hwtest: need-port
 	@$(EXPORT) && python3 tools/shell_test.py $(PORT)
+
+progtest: need-port
+	@$(EXPORT) && python3 tools/programs_test.py --board $(PORT)
 
 scripttest: need-port
 	@$(EXPORT) && python3 tools/script_test.py $(PORT)

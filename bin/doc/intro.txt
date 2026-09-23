@@ -1,14 +1,15 @@
 PocketType
 ==========
 
-A small Unix-like system for this board. It has processes,
-pipes, signals, /dev and /proc, a shell, about ninety
-commands, a full-screen editor and its own language.
+A small Unix-like system for this board. It has
+processes, pipes, signals, /dev and /proc, a shell,
+about ninety commands, a full-screen editor and its
+own language.
 
 GETTING AROUND
 
   ls  cd  cat  cp  mv  rm  mkdir  df        files
-  edit FILE                                 the editor
+  edit FILE                                the editor
   help            list the commands
   help COMMAND    what one command does
   man             these pages
@@ -19,39 +20,42 @@ GETTING AROUND
 
 THE KEYBOARD
 
-  The CardKB has no control key, so Fn stands in for it.
-  Fn is sticky: press it, let go, then press the key.
+  The CardKB has no control key, so Fn stands in for
+  it. Fn is sticky: press it, let go, then press the
+  key.
 
-  Fn C          Ctrl-C, and Fn plus any other letter is
-                that letter's control code -- Fn D ends
-                input, Fn A goes to the start of a line
+  Fn C          Ctrl-C, and Fn plus any other letter
+                is that letter's control code -- Fn
+                D ends input, Fn A goes to the start
+                of a line
   Fn 1 .. Fn 4  go to that terminal
   Fn left/right the terminal before or after this one
   Fn up/down    start and end of the line
-  Fn del        delete forwards, and so does Shift del
+  Fn del        delete forwards, as Shift del does
   Sym           the symbols printed on the keys
   Shift         capitals; press it twice to lock
 
 FOUR TERMINALS
 
   Fn 1 to Fn 4 switches between them, Fn left and Fn
-  right step through them, and so does `chvt 2`. On a USB
-  keyboard it is Ctrl-A then a digit, and the button next
-  to the screen steps through them too. Each terminal
-  keeps its own screen and its own shell; a shell starts
-  the first time you switch to one. The bar along the top
-  says which one you are on, the time, and what the
-  battery is doing.
+  right step through them, and so does `chvt 2`. On a
+  USB keyboard it is Ctrl-A then a digit, and the
+  button next to the screen steps through them too.
+  Each terminal keeps its own screen and its own
+  shell; a shell starts the first time you switch to
+  one. The bar along the top says which one you are
+  on, the time, and what the battery is doing.
 
 WHERE THINGS ARE
 
   Two filesystems, with one job each. The 13 MB of
-  internal flash holds the system, so the machine boots
-  and every command works with an empty card slot. The SD
-  card holds everything you make: it IS your home
-  directory, mounted at /home/andre as well as /mnt/sd.
-  Take the card to a PC and your files are at the top of
-  it; put a blank card in and it is laid out for you.
+  internal flash holds the system, so the machine
+  boots and every command works with an empty card
+  slot. The SD card holds everything you make: it IS
+  your home directory, mounted at /home/andre as well
+  as /mnt/sd. Take the card to a PC and your files
+  are at the top of it; put a blank card in and it is
+  laid out for you.
 
   ~/bin        your scripts, on PATH
   ~/music      .wav .flac .mp3
@@ -62,40 +66,50 @@ WHERE THINGS ARE
 
   /            13 MB of the flash: the system
   /home/andre  the SD card, FAT32, readable on a PC
-  /tmp         2 MB of RAM, empty after every boot, and
-               it only takes the memory it is using
+  /tmp         2 MB of RAM, empty after every boot,
+               and it only takes the memory it uses
   /mnt/sd      the same card, under its own name
   /mnt/usb     a memory stick, when one is plugged in
-  /dev         null zero urandom audio
+  /dev         null zero urandom audio, and stdin
+               stdout stderr tty
   /proc        cpuinfo meminfo mounts uptime version
                net modem
 
-  With no card in, /home/andre is an empty directory on
-  the flash and nothing else changes.
+  With no card in, /home/andre is an empty directory
+  on the flash and nothing else changes.
 
-  At boot the system runs /etc/rc if it exists, then a
-  login shell which prints /etc/motd. Put your own
+  At boot the system runs /etc/rc if it exists, then
+  a login shell which prints /etc/motd. Put your own
   scripts in /bin or ~/bin; both are on PATH.
 
-  `factory-reset -y` puts both filesystems back to empty,
-  keeping only your Wi-Fi settings, and reboots.
+  `factory-reset -y` puts both filesystems back to
+  empty, keeping only your Wi-Fi settings, and
+  reboots.
 
 THE SHELL
 
-  Pipes (|), redirection (< > >> 2> 2>&1), lists
-  (; && ||), background jobs (&), variables ($HOME $?
-  ${NAME}), quoting, ~ and * globbing. Scripts run with
-  `sh file`, or on their own if they start with #! or
-  end in .sh. if, for, while, until, case and functions
-  all work.
+  Pipes (|), redirection (< > >> 2> 2>&1) and
+  here-documents (<<EOF), lists (; && ||), background
+  jobs (&), variables ($HOME $? ${NAME:-default}),
+  $(command) and $((1 + 2)), quoting, ~ and *
+  globbing. if, for, while, until, case, functions,
+  and set -e -u -x -o pipefail all work, and so do
+  trap and alias. Scripts run with `sh file`, or on
+  their own if they start with #! or end in .sh.
+  `help set` has the options.
+
+  Ctrl-C ends the program in front, Ctrl-Z stops it.
+  `jobs` lists the stopped and background ones, `fg`
+  brings one back to the front, `bg` lets it go on
+  behind, and %1 names job 1 for kill and wait.
 
 MOVING FILES
 
   From the PC, over the serial line:
      make push FILE=thing.txt
      make pull FILE=/home/andre/notes/todo.txt
-  The transfer is base64 with a CRC, so anything binary
-  survives and corruption is noticed.
+  The transfer is base64 with a CRC, so anything
+  binary survives and corruption is noticed.
 
 WHEN SOMETHING IS WRONG
 
@@ -104,4 +118,4 @@ WHEN SOMETHING IS WRONG
   free         memory, including the least there has
                ever been free since boot
   bench        how fast this board is at everything
-  power        the frequency policy and where time went
+  power        the frequency policy, where time went

@@ -1,27 +1,32 @@
 # PocketType
 
 A small Unix-like system for the ESP32-S3: a kernel with processes, pipes,
-signals, `/dev` and `/proc`, a shell, 50-odd commands and a full-screen editor,
+signals, `/dev` and `/proc`, a POSIX shell, over a hundred commands (grep, sed,
+find, sort and the rest behave like GNU's) and a full-screen editor,
 drawn in PIXELTAPE's amber CRT colors on an ILI9341 screen.
 
 ```
-[    0.002749] PocketType 0.1.0 (esp-idf v6.1) #1 SMP
-[    0.053037] mem: 289 KB internal, 8173 KB psram available
-[    0.104262] memtest: 8064 KB PSRAM ok (51 ms)
-[    0.105169] serial: console on native USB
-[    0.105771] proc: 16 process slots, programs on core 1
-[    0.106322] cpufreq: ondemand, 80-240 MHz, idle sleep off
-[    0.107601] battery: no cell on GPIO9, running from USB
-[    0.437069] lcd: ili9341 on SPI2 at 40 MHz, 320x240
-[    0.437716] vt: 53x24 console
-[    0.474360] es8311: no codec at 0x18 on SDA 16 / SCL 15
-[    0.547696] rootfs: / is littlefs on flash:storage, 13136 KB free of 13248 KB
-[    0.625613] tmpfs: /tmp is 2048 KB of RAM
-[    0.655412] sd: no usable card (ESP_ERR_TIMEOUT)
-[    0.655631] init: 74 programs, starting shell
+[0.00] PocketType 0.1.0 (esp-idf v6.1) #1 SMP Sep 23 2026 13:58:56
+[0.05] mem: 183 KB internal, 8173 KB psram available
+[0.10] memtest: 8064 KB PSRAM ok (51 ms)
+[0.10] serial: console on native USB
+[0.10] proc: 16 process slots, programs on core 1
+[0.10] cpufreq: ondemand, 80-240 MHz, idle sleep off
+[0.10] battery: 3.56 V (8%) on GPIO9
+[0.45] lcd: ili9341 (alt init) on SPI2 at 80 MHz, 320x240
+[0.45] vt: 53x23 console
+[0.51] es8311: codec at 0x18, 16000 Hz
+[0.51] audio: 16000 Hz mono, speaker and microphone
+[0.51] button: GPIO0 switches terminals (hold for the first)
+[0.51] cardkb: keyboard found at 0x5f
+[0.54] rootfs: / is littlefs on flash:storage, 13168 KB free of 13248 KB
+[0.56] tmpfs: /tmp holds up to 2048 KB, taken from RAM as it is used
+[0.63] sd: AGGCE 60906 MB on 4-bit sdmmc, mounted on /mnt/sd and /home/andre
+[0.63] wifi: radio off, no saved network; `wifi on` starts it
+[0.63] init: 124 programs, starting shell
 ```
-(a real boot, on a bare S3 with none of the board's parts attached: each
-missing driver says so and the system comes up anyway)
+(a real boot of the Freenove board, under two thirds of a second to the
+shell; a board with parts missing says so for each and comes up anyway)
 
 ## Hardware
 
@@ -55,8 +60,9 @@ make                # build
 make flash          # flash and reset
 make term           # serial console; Ctrl-] quits
 make test           # PC tests, then QEMU with the device suites
-make hosttest       # just the "a" compiler and VM tests, on the PC
+make hosttest       # the PC tests: the "a" language, JPEG, the text programs
 make hwtest         # the shell suite on the board
+make progtest       # grep, sort, find and the rest on the board, against GNU's
 make scripttest     # shell control flow (if/for/while/case, functions)
 make langtest       # the "a" language on the device
 make push FILE=...  # copy a file to the board's home (DEST=... elsewhere)
@@ -103,20 +109,28 @@ in `edit`.
 
 | | |
 |---|---|
-| files | `ls cat cp mv rm mkdir rmdir touch pwd df mount umount sync` |
-| text | `echo head tail wc grep hexdump more edit` |
-| system | `ps top kill free dmesg uptime uname date time sleep env which clear reboot` |
+| files | `ls cat cp mv rm mkdir rmdir touch pwd stat find du df mount umount sync` |
+| text | `head tail wc grep sed sort uniq cut tr tee diff cmp hexdump more edit` |
+| checksums | `cksum md5sum sha1sum sha256sum sha512sum` |
+| scripts | `echo printf seq expr xargs basename dirname realpath yes` |
+| system | `ps top kill free dmesg uptime uname whoami hostname date time sleep env which clear reboot` |
 | power | `cpufreq power suspend poweroff led battery` |
-| shell | `cd exit export unset source history sh true false` |
+| shell | `cd exit export unset set local read eval source type command alias unalias trap jobs fg bg history sh` |
 | sound | `play rec beep volume` |
 | network | `wifi ntp ping modem sms` |
 | hardware | `bench lcdtest keytest backlight i2cdetect mkfs screenshot chvt` |
 | games | `nes` |
 
-The shell has pipes (`|`), redirection (`<`, `>`, `>>`, `2>`, `2>&1`),
-lists (`;`, `&&`, `||`), background jobs (`&`), variables (`$HOME`, `$?`,
-`${NAME}`), quoting, `~` and `*`/`?` globbing. Scripts run with `sh file` or
-directly, if they start with `#!` or end in `.sh`.
+The shell is a POSIX sh: pipes (`|`), redirection (`<`, `>`, `>>`, `2>`,
+`2>&1`) and here-documents (`<<EOF`), lists (`;`, `&&`, `||`), background
+jobs (`&`), variables and parameter expansion (`$HOME`, `$?`, `${NAME:-x}`,
+`${NAME%.txt}`), `$(...)` and `$((...))`, quoting, `~` and `*`/`?`/`[...]`
+globbing, `if`/`while`/`until`/`for`/`case`, functions with `local`, and
+`set -e`, `-u`, `-x` and `-o pipefail`, `trap` (EXIT, INT, TERM) and
+aliases. Job control is there too: Ctrl-Z stops the program in front,
+`jobs` lists what is stopped or in the background, `fg` and `bg` bring
+one back, and `%1` names one for `kill` and `wait`. Scripts run with
+`sh file` or directly, if they start with `#!` or end in `.sh`.
 
 ### Filesystem
 
@@ -126,7 +140,7 @@ directly, if they start with `#!` or end in `.sh`.
 | `/home/andre` | your home directory |
 | `/tmp` | 2 MB RAM disk: fast, and empty after every boot |
 | `/mnt/sd` | the microSD card (FAT32, readable on a PC); `umount /mnt/sd` before removing it |
-| `/dev` | `null zero urandom`, plus `audio` where there is a codec: raw 16-bit mono, write to play it, read to record |
+| `/dev` | `null zero urandom stdin stdout stderr tty`, plus `audio` where there is a codec: raw 16-bit mono, write to play it, read to record |
 | `/proc` | `cpuinfo kmsg meminfo mounts uptime version`, plus `net` and `modem` where those drivers are on |
 
 At boot the kernel runs `/etc/rc` if it exists, then a login shell prints
@@ -220,13 +234,12 @@ open on the card.
 
 Be aware of these before relying on it:
 
-- **The modem has never seen a module**, and waking from `suspend` with a
-  key is still untested.
+- **Waking from `suspend` with a key** is still untested.
 - **A terminal cannot say when a key is released**, so in games a press
   counts as held for 150 ms. Fine for menus, poor for platformers; a
-  Bluetooth pad is the fix and is not written yet. Everything else on the Freenove board has now
-  been run on the real thing: display, speaker, microphone, SD card,
-  battery sensing, Wi-Fi (`make hwtest`, 78 checks).
+  Bluetooth pad is the fix and is not written yet. Everything else on the
+  Freenove board has now been run on the real thing: display, speaker,
+  microphone, SD card, battery sensing, Wi-Fi (`make hwtest`, 86 checks).
 - **The CardKB is only as good as its wiring.** It shares SDA 16 / SCL 15
   with the codec on the chip's weak internal pull-ups; a long or loose
   Grove cable drops reads. The driver rides out short runs of them.
@@ -237,7 +250,6 @@ Be aware of these before relying on it:
   (it says so and gets out of the way), but nothing has been plugged in.
 - **MP3 decoding is not ours.** FLAC and WAV are (`codec/`); MP3 leans on
   minimp3 in `third_party/`, which says why.
-- **`grep` matches plain text**, not regular expressions.
 - **The clock starts at 1970 on every boot.** Set it with `date -s`.
 - **`kill -9` of a process stuck in a tight loop** deletes its task after half a
   second and can leak whatever it held.

@@ -2,8 +2,8 @@
 # filesystem in RAM. QEMU emulates neither the flash filesystems nor octal
 # PSRAM, so those are swapped out here.
 
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
-CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
+# The console stays on UART0, the default: QEMU emulates the UART, and
+# its USB Serial/JTAG goes nowhere -- a console there boots in silence.
 
 CONFIG_PT_LCD_NONE=y
 CONFIG_PT_SD_NONE=y
