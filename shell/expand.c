@@ -105,90 +105,10 @@ static void unescape(char *s)
 
 /* ------------------------------------------------------------ patterns */
 
-/* A [...] expression at p: its end, or NULL if it is not one. */
-static const char *bracket(const char *p, unsigned char c, bool *matched)
-{
-	bool negate = false, found = false;
-	const char *first;
-
-	p++;
-	if (*p == '!' || *p == '^') {
-		negate = true;
-		p++;
-	}
-	for (first = p; *p && (*p != ']' || p == first);) {
-		unsigned char lo = *p == CTLESC && p[1] ? *++p : *p;
-		unsigned char hi = lo;
-
-		p++;
-		if (p[0] == '-' && p[1] && p[1] != ']') {
-			p++;
-			hi = *p == CTLESC && p[1] ? *++p : *p;
-			p++;
-		}
-		found |= c >= lo && c <= hi;
-	}
-	if (*p != ']')
-		return NULL;
-	*matched = found != negate;
-	return p + 1;
-}
-
-bool pattern_match(const char *pat, const char *s)
-{
-	const char *star = NULL, *resume = NULL;
-
-	for (;;) {
-		if (*pat == '*') {
-			while (*pat == '*')
-				pat++;
-			if (!*pat)
-				return true;
-			star = pat;
-			resume = s;
-			continue;
-		}
-		if (!*s && !*pat)
-			return true;
-
-		const char *next = pat + 1;
-		bool ok = false;
-		if (!*s || !*pat) {
-			ok = false;
-		} else if (*pat == '?') {
-			ok = true;
-		} else if (*pat == '[' && (next = bracket(pat, *s, &ok))) {
-			/* matched or not, next is past the brackets */
-		} else if (*pat == CTLESC && pat[1]) {
-			ok = pat[1] == *s;
-			next = pat + 2;
-		} else {
-			ok = *pat == *s;
-			next = pat + 1;
-		}
-		if (ok) {
-			pat = next;
-			s++;
-			continue;
-		}
-		if (!star || !*resume)
-			return false;
-		pat = star;
-		s = ++resume;
-	}
-}
-
+/* Quoted characters are marked with CTLESC: to the matcher, an escape. */
 static bool has_magic(const char *s)
 {
-	bool dummy;
-
-	for (; *s; s++) {
-		if (*s == CTLESC && s[1])
-			s++;
-		else if (*s == '*' || *s == '?' || (*s == '[' && bracket(s, 0, &dummy)))
-			return true;
-	}
-	return false;
+	return pt_glob_magic(s, CTLESC);
 }
 
 /* ------------------------------------------------------------ expansion */
@@ -226,59 +146,126 @@ static void add_plain(struct xstate *xs, char c)
 	xs->field = true;
 }
 
+/*
+ * The next component of a pattern, marks and all, into `out`: where the
+ * pattern goes on, past the slashes after it. A slash divides components
+ * whether it was quoted or not, as POSIX has it.
+ */
+static const char *component(const char *p, struct strbuf *out, bool *dir_only)
+{
+	out->len = 0;
+	if (out->s)
+		out->s[0] = '\0';
+	while (*p && *p != '/' && !(*p == CTLESC && p[1] == '/')) {
+		if (*p == CTLESC && p[1])
+			sb_putc(out, *p++);
+		sb_putc(out, *p++);
+	}
+	*dir_only = false;
+	while (*p == '/' || (*p == CTLESC && p[1] == '/')) {
+		p += *p == CTLESC ? 2 : 1;
+		*dir_only = true;		/* something follows, or a trailing slash */
+	}
+	return p;
+}
+
+/* Every entry of directory `prefix` ("" for here) that matches `pattern`. */
+static void glob_dir(const char *prefix, const char *pattern, bool dir_only,
+		     struct fields *out, struct pt_dirent *ent)
+{
+	bool dot = pattern[0] == '.' || (pattern[0] == CTLESC && pattern[1] == '.');
+	pt_dir_t *d;
+
+	if (pt_opendir(*prefix ? prefix : ".", &d))
+		return;
+	while (pt_readdir(d, ent) == 1) {
+		const char *name = ent->name;
+
+		if (!strcmp(name, ".") || !strcmp(name, "..") || (name[0] == '.' && !dot))
+			continue;
+		if ((dir_only && !ent->is_dir) || !pattern_match(pattern, name))
+			continue;
+		struct strbuf path = { 0 };
+
+		sb_puts(&path, prefix);
+		sb_puts(&path, name);
+		if (dir_only)
+			sb_putc(&path, '/');
+		fields_take(out, path.oom ? NULL : path.s);
+	}
+	pt_closedir(d);
+}
+
 static int compare_names(const void *a, const void *b)
 {
 	return strcmp(*(char *const *)a, *(char *const *)b);
 }
 
-/* Expand `*`, `?` and `[...]` in the last path component. */
+/*
+ * Pathname expansion, a component at a time: each one with a wildcard is
+ * matched in every directory the components before it found, and each one
+ * without is taken as it is, if it exists. `*' + '/' + `*.txt' works, as
+ * in any other shell, and a trailing slash asks for directories only.
+ * Nothing found and the word stays as it was typed.
+ */
 static bool glob_field(struct xstate *xs, const char *pattern)
 {
-	const char *slash = strrchr(pattern, '/');
-	const char *base = slash ? slash + 1 : pattern;
-	struct fields matches = { 0 };
-	struct strbuf dir = { 0 };
-	struct pt_dirent *ent;
-	pt_dir_t *d;
+	struct fields paths = { 0 }, next = { 0 };
+	struct strbuf comp = { 0 };
+	struct pt_dirent *ent = pt_malloc(sizeof(*ent));
+	const char *p = pattern;
+	bool found;
 
-	sb_add(&dir, pattern, slash ? (size_t)(slash - pattern) : 0);
-	if (has_magic(dir.s ? dir.s : "") || !(ent = pt_malloc(sizeof(*ent)))) {
-		sb_free(&dir);
+	if (!ent)
 		return false;
-	}
-	if (dir.s)
-		unescape(dir.s);
-	if (pt_opendir(slash ? (slash == pattern ? "/" : dir.s) : ".", &d)) {
-		pt_free(ent);
-		sb_free(&dir);
-		return false;
-	}
-	bool dot = base[0] == '.' || (base[0] == CTLESC && base[1] == '.');
-	while (pt_readdir(d, ent) == 1) {
-		if ((ent->name[0] == '.' && !dot) || !pattern_match(base, ent->name))
-			continue;
-		struct strbuf path = { 0 };
-		if (slash) {
-			sb_add(&path, dir.s ? dir.s : "", dir.len);
-			sb_putc(&path, '/');
+	fields_add(&paths, *p == '/' ? "/" : "");
+	while (*p == '/')
+		p++;
+	while (*p && paths.n && !paths.oom && !next.oom) {
+		bool dir_only;
+
+		p = component(p, &comp, &dir_only);
+		if (comp.oom)
+			break;
+		for (int i = 0; i < paths.n; i++) {
+			if (has_magic(comp.s)) {
+				glob_dir(paths.v[i], comp.s, dir_only, &next, ent);
+				continue;
+			}
+			/* no wildcard: the name itself, if it is there */
+			struct strbuf path = { 0 };
+			struct pt_stat st;
+
+			sb_puts(&path, paths.v[i]);
+			sb_puts(&path, comp.s);
+			if (path.s)
+				unescape(path.s + strlen(paths.v[i]));
+			if (!path.oom && !pt_stat(path.s, &st) && (!dir_only || st.is_dir)) {
+				if (dir_only)
+					sb_putc(&path, '/');
+				fields_take(&next, path.oom ? NULL : path.s);
+			} else {
+				sb_free(&path);
+			}
 		}
-		sb_puts(&path, ent->name);
-		fields_take(&matches, path.oom ? NULL : path.s);
+		fields_free(&paths);
+		paths = next;
+		memset(&next, 0, sizeof(next));
 	}
-	pt_closedir(d);
+	xs->err |= paths.oom || next.oom || comp.oom;
+	found = !*p && paths.n > 0 && !xs->err;
+	if (found) {
+		qsort(paths.v, paths.n, sizeof(paths.v[0]), compare_names);
+		for (int i = 0; i < paths.n; i++) {
+			fields_take(xs->out, paths.v[i]);
+			paths.v[i] = NULL;
+		}
+		paths.n = 0;
+	}
+	fields_free(&paths);
+	fields_free(&next);
+	sb_free(&comp);
 	pt_free(ent);
-	sb_free(&dir);
-
-	if (matches.n)
-		qsort(matches.v, matches.n, sizeof(matches.v[0]), compare_names);
-	for (int i = 0; i < matches.n; i++) {
-		fields_take(xs->out, matches.v[i]);
-		matches.v[i] = NULL;
-	}
-	bool found = matches.n > 0;
-	xs->err |= matches.oom;
-	matches.n = 0;
-	fields_free(&matches);
 	return found;
 }
 

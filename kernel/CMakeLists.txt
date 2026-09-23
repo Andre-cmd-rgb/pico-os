@@ -5,6 +5,7 @@ idf_component_register(
 		file.c
 		keys.c
 		klog.c
+		match.c
 		mem.c
 		mount.c
 		path.c

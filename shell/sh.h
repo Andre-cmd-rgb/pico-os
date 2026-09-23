@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pt/match.h"
 #include "pt/sys.h"
 
 #define SH_LINE_MAX	512
@@ -176,7 +177,11 @@ enum {
 /* expand.c: both print their own errors */
 int	expand_words(struct sh *sh, struct word *w, struct fields *out);
 char	*expand_word(struct sh *sh, const char *text, int flags);
-bool	pattern_match(const char *pattern, const char *s);
+/* A pattern as the shell holds it, quoted characters marked with CTLESC. */
+static inline bool pattern_match(const char *pattern, const char *s)
+{
+	return pt_glob_match(pattern, s, CTLESC, 0);
+}
 
 /* arith.c */
 int	arith_eval(struct sh *sh, const char *expr, long long *result);
