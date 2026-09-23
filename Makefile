@@ -36,7 +36,13 @@ IDF      := $(EXPORT) && idf.py -B $(BUILD) -D SDKCONFIG=$(BUILD)/sdkconfig \
 
 all: build
 
+# The build date `uname` and the boot log show is compiled into ESP-IDF's
+# app description, which is otherwise only rebuilt when IDF changes: so
+# every build compiles it again, and the date says which firmware this is.
+APP_DESC := $(BUILD)/esp-idf/esp_app_format/CMakeFiles/__idf_esp_app_format.dir/esp_app_desc.c.obj
+
 build: need-board stale-config
+	@rm -f $(APP_DESC)
 	@$(IDF) build
 
 # The board file only seeds a configuration that does not exist yet, so

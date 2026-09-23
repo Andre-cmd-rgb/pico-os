@@ -20,7 +20,7 @@
 #define VFS_PATH_MAX	(PT_PATH_MAX + 16)
 
 static const char motd[] =
-	" \x1b[2mtype 'help' for a list of commands, 'help <cmd>' for one\x1b[0m\n\n";
+	" \x1b[2mtype 'help' for the commands, 'help <cmd>' for one\x1b[0m\n\n";
 
 static void banner(void)
 {
@@ -44,15 +44,14 @@ static const char *const art[] = {
 #define ART_LINES	(sizeof(art) / sizeof(art[0]))
 
 /*
- * The name, printed under whatever the kernel has just said. Booting
- * takes well under a second, so the log is a handful of lines rather
- * than a wall, and leaving it on screen is more use than hiding it.
+ * The name, on a clean screen: the boot log has scrolled past while the
+ * system came up, and `dmesg` keeps it for whoever wants it.
  */
 static void logo(void)
 {
 	char line[96];
 
-	vt_write("\n", 1);
+	vt_write("\x1b[2J\x1b[H\n", 8);
 	for (size_t i = 0; i < ART_LINES; i++) {
 		int n = snprintf(line, sizeof(line), "%s\n", art[i]);
 
@@ -81,6 +80,24 @@ static const char *vfs(const char *path, char *buf)
 	return mount_resolve(path, buf, VFS_PATH_MAX) ? buf : NULL;
 }
 
+/*
+ * Whether /etc/motd is an old one of ours -- the hint about help, worded
+ * as it used to be -- rather than the current one or somebody's own.
+ */
+static bool motd_is_ours(const char *path)
+{
+	char text[160];
+	FILE *f = fopen(path, "r");
+	size_t n;
+
+	if (!f)
+		return false;
+	n = fread(text, 1, sizeof(text) - 1, f);
+	fclose(f);
+	text[n] = '\0';
+	return n < sizeof(text) - 1 && strstr(text, "type 'help'") && strcmp(text, motd);
+}
+
 /* Directories every system has, mount points included, as on Linux. */
 static void root_layout(void)
 {
@@ -97,8 +114,8 @@ static void root_layout(void)
 	if (vfs(path, buf))
 		mkdir(buf, 0777);
 
-	if (vfs("/etc/motd", buf) && (stat(buf, &st) || st.st_size > (off_t)sizeof(motd))) {
-		FILE *f = fopen(buf, "w");	/* missing, or from an older version */
+	if (vfs("/etc/motd", buf) && (stat(buf, &st) || motd_is_ours(buf))) {
+		FILE *f = fopen(buf, "w");	/* missing, or ours from an older version */
 
 		if (f) {
 			fputs(motd, f);

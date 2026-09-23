@@ -245,9 +245,20 @@ int proc_list(struct pt_procinfo *out, int max)
 	return n;
 }
 
-static void deliver(struct proc *p, int sig);
+bool proc_alive(int pid)
+{
+	bool alive = false;
+
+	LOCK();
+	for (int i = 0; i < CONFIG_PT_MAX_PROCS && !alive; i++)
+		alive = procs[i].state == PROC_RUNNING && procs[i].pid == pid;
+	UNLOCK();
+	return alive;
+}
 
 /* ------------------------------------------------------------ exit */
+
+static void deliver(struct proc *p, int sig);
 
 static void teardown(struct proc *p, int status)
 {

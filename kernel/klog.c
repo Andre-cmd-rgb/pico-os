@@ -50,10 +50,10 @@ static void emit(const char *msg, size_t len)
 {
 	char line[256];
 	int64_t us = esp_timer_get_time();
-	/* Milliseconds, not microseconds, and three columns for the
-	 * seconds: a boot log needs no more, and the screen is 53 wide. */
-	int n = snprintf(line, sizeof(line), "[%3lu.%03lu] %.*s\n",
-			 (unsigned long)(us / 1000000), (unsigned long)(us % 1000000 / 1000),
+	/* Hundredths, and no padding: the screen is 53 wide, and a boot
+	 * that takes under a second needs no more than [0.23]. */
+	int n = snprintf(line, sizeof(line), "[%lu.%02lu] %.*s\n",
+			 (unsigned long)(us / 1000000), (unsigned long)(us % 1000000 / 10000),
 			 (int)len, msg);
 
 	if (n < 0)

@@ -56,21 +56,28 @@ static bool tty_ready(const struct tty *tty)
 
 /* ------------------------------------------------------------ output */
 
-/* The serial copy of the output, with LF turned into CRLF. */
+/*
+ * The serial copy of the output, with LF turned into CRLF. A line goes out
+ * as one write, not as its text and then its line ending: every write is a
+ * trip through the USB driver's lock and ring buffer, and a line split in
+ * two is a line the other end can get half of.
+ */
 static void mirror_crlf(const char *s, size_t n)
 {
-	size_t start = 0;
+	char buf[128];
+	size_t at = 0;
 
 	for (size_t i = 0; i < n; i++) {
-		if (s[i] != '\n')
-			continue;
-		if (i > start)
-			mirror(s + start, i - start);
-		mirror("\r\n", 2);
-		start = i + 1;
+		if (at + 2 > sizeof(buf)) {
+			mirror(buf, at);
+			at = 0;
+		}
+		if (s[i] == '\n')
+			buf[at++] = '\r';
+		buf[at++] = s[i];
 	}
-	if (start < n)
-		mirror(s + start, n - start);
+	if (at)
+		mirror(buf, at);
 }
 
 /*

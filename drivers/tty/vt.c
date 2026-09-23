@@ -19,6 +19,7 @@
 
 #include "drivers/drivers.h"
 #include "font5x8.h"
+#include "pt/kernel.h"
 
 #if CONFIG_PT_FONT_LARGE
 #define SCALE		2
@@ -506,6 +507,7 @@ static void draw_cell(uint8_t *px, int span_w, int cell_x, uint8_t glyph, uint8_
 }
 
 static volatile bool held_by_program;
+static volatile int hold_pid;		/* the program holding it, 0 for none */
 
 static volatile bool repaint_all;	/* the screen changed under us */
 
@@ -584,8 +586,17 @@ static void render_task(void *arg)
 		ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(blink_us ? CONFIG_PT_CURSOR_BLINK_MS : 1000));
 		vTaskDelay(pdMS_TO_TICKS(8));	/* let a burst of output land in one frame */
 		ulTaskNotifyTake(pdTRUE, 0);
-		if (held_by_program)
-			continue;	/* something else owns the screen */
+		if (held_by_program) {
+			if (!hold_pid || proc_alive(hold_pid))
+				continue;	/* something else owns the screen */
+			held_by_program = false;	/* and has gone without giving it back */
+			hold_pid = 0;
+			klog("vt: a program ended holding the screen; taking it back");
+			xSemaphoreTake(lock, portMAX_DELAY);
+			mark_all();
+			xSemaphoreGive(lock);
+			repaint_all = true;
+		}
 
 		int64_t now = esp_timer_get_time();
 		if (blink_us && now >= next_blink) {
@@ -783,8 +794,17 @@ int vt_switch(int which)
 	return 0;
 }
 
+/*
+ * A program that draws on the panel itself -- a picture, a clip, a game --
+ * holds the screen while it does. The renderer notices if it ends without
+ * letting go (killed from another terminal, say) and takes the screen back,
+ * rather than leave the console frozen behind a picture.
+ */
 void vt_hold_screen(bool held)
 {
+	struct proc *p = proc_current();
+
+	hold_pid = held && p ? p->pid : 0;
 	held_by_program = held;
 	if (!held)
 		vt_redraw();
