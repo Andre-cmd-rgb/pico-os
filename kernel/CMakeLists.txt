@@ -1,5 +1,6 @@
 idf_component_register(
 	SRCS
+		auth.c
 		devfs.c
 		file.c
 		keys.c
@@ -13,5 +14,5 @@ idf_component_register(
 		sys.c
 	INCLUDE_DIRS include
 	REQUIRES freertos log
-	PRIV_REQUIRES esp_app_format esp_hw_support esp_psram esp_timer heap spi_flash vfs
+	PRIV_REQUIRES esp_app_format esp_hw_support esp_psram esp_timer heap mbedtls spi_flash vfs
 )

@@ -348,7 +348,8 @@ config PT_NETCONSOLE
 	help
 	  Listens for a telnet connection and runs a login shell on it, so
 	  the board can be used with the USB port doing something else.
-	  One session at a time; the screen keeps its own shell.
+	  One session at a time; the screen keeps its own shell. Nobody
+	  gets in until a password is set with `passwd` on the board.
 
 config PT_NETCONSOLE_PORT
 	int "Port"

@@ -8,6 +8,7 @@ idf_component_register(
 		man.c
 		nes.c
 		net.c
+		passwd.c
 		pick.c
 		sysutils.c
 		textutils.c

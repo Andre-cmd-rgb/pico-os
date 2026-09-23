@@ -32,6 +32,7 @@
 #define IAC		255
 #define WILL		251
 #define DO		253
+#define DONT		254
 #define SB		250
 #define SE		240
 #define OPT_ECHO	1
@@ -156,6 +157,119 @@ static const struct pt_file_ops net_ops = {
 	.ioctl = net_ioctl,
 };
 
+/* ------------------------------------------------------------ logging in */
+
+/*
+ * Nobody gets the shell without the password kept by kernel/auth.c, and
+ * with none set nobody gets it at all: a shell open to anyone on the same
+ * network -- a cafe's, a school's, a phone's hotspot -- is the whole card
+ * and every saved Wi-Fi password handed out. Each wrong password makes the
+ * next attempt, from anyone, wait twice as long, up to a minute, which
+ * makes guessing slower than it is worth.
+ */
+#define MAX_WAIT_S	60
+
+static int failures;
+
+static int recv_byte(int sock)
+{
+	uint8_t c;
+
+	return recv(sock, &c, 1, 0) == 1 ? c : -1;
+}
+
+static void say(int sock, const char *s)
+{
+	send(sock, s, strlen(s), 0);
+}
+
+/* A line from the client, telnet's own bytes left out and nothing echoed. */
+static int recv_line(int sock, char *buf, int size)
+{
+	int n = 0;
+
+	for (;;) {
+		int c = recv_byte(sock);
+
+		if (c < 0)
+			return -1;
+		if (c == IAC) {
+			int cmd = recv_byte(sock);
+
+			if (cmd == SB) {
+				while ((c = recv_byte(sock)) >= 0 && c != SE)
+					;
+				if (c < 0)
+					return -1;
+				continue;
+			}
+			if (cmd < 0)
+				return -1;
+			if (cmd >= WILL && cmd <= DONT && recv_byte(sock) < 0)
+				return -1;
+			if (cmd != IAC)
+				continue;	/* negotiation, NOP and the like */
+			c = IAC;		/* an escaped 255 */
+		}
+		if (c == '\r' || c == '\n') {
+			uint8_t next;
+
+			/* telnet ends a line with CR LF or CR NUL: all of it */
+			if (c == '\r' && recv(sock, &next, 1, MSG_PEEK | MSG_DONTWAIT) == 1 &&
+			    (next == '\n' || next == 0))
+				recv(sock, &next, 1, 0);
+			break;
+		}
+		if (c == 0x7f || c == '\b') {
+			if (n)
+				n--;
+		} else if (c >= ' ' && n < size - 1) {
+			buf[n++] = (char)c;
+		}
+	}
+	buf[n] = '\0';
+	return n;
+}
+
+static bool login(int sock, const char *who)
+{
+	struct timeval tv = { .tv_sec = 60 };
+	char pw[64], line[80];
+
+	if (!auth_is_set()) {
+		say(sock, "No password has been set, so the network shell is closed.\r\n"
+			  "Set one on the board itself with: passwd\r\n");
+		return false;
+	}
+	if (failures) {
+		int wait = failures >= 6 ? MAX_WAIT_S : 1 << failures;
+
+		snprintf(line, sizeof(line), "(a wrong password was given: waiting %d s)\r\n", wait);
+		say(sock, line);
+		vTaskDelay(pdMS_TO_TICKS(wait * 1000));
+	}
+	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	for (int tries = 0; tries < 3; tries++) {
+		bool ok;
+
+		say(sock, "password: ");
+		if (recv_line(sock, pw, sizeof(pw)) < 0)
+			break;
+		say(sock, "\r\n");
+		ok = !auth_check(pw);
+		memset(pw, 0, sizeof(pw));
+		if (ok) {
+			failures = 0;
+			return true;
+		}
+		failures++;
+		klog("netconsole: wrong password from %s", who);
+		say(sock, "wrong password\r\n");
+		vTaskDelay(pdMS_TO_TICKS(2000));
+	}
+	return false;
+}
+
 /* ------------------------------------------------------------ the server */
 
 static void greet(int sock)
@@ -164,7 +278,7 @@ static void greet(int sock)
 		IAC, WILL, OPT_ECHO,	/* we echo, so the client must not */
 		IAC, WILL, OPT_SGA,	/* and must send each key as it comes */
 	};
-	static const char hello[] = "\r\nPocketType on the network.\r\n\r\n";
+	static const char hello[] = "\r\nPocketType on the network.\r\n";
 
 	send(sock, negotiate, sizeof(negotiate), 0);
 	send(sock, hello, sizeof(hello) - 1, 0);
@@ -172,7 +286,7 @@ static void greet(int sock)
 
 static void serve(int sock)
 {
-	char *login[] = { "sh", "-l", NULL };
+	char *shell[] = { "sh", "-l", NULL };
 	struct pt_file *console;
 	int pid;
 
@@ -186,8 +300,7 @@ static void serve(int sock)
 		return;
 	}
 	console->is_tty = true;
-	greet(sock);
-	pid = proc_spawn_console(2, login, console);
+	pid = proc_spawn_console(2, shell, console);
 	if (pid >= 0) {
 		shell_pid = pid;
 		proc_wait_orphan(pid);
@@ -242,11 +355,14 @@ static void netconsole_task(void *arg)
 			continue;
 		}
 		busy = true;
-		klog("netconsole: %s connected", inet_ntoa(from.sin_addr));
-		serve(sock);
+		greet(sock);
+		if (login(sock, inet_ntoa(from.sin_addr))) {
+			klog("netconsole: %s logged in", inet_ntoa(from.sin_addr));
+			serve(sock);
+			klog("netconsole: disconnected");
+		}
 		close(sock);
 		busy = false;
-		klog("netconsole: disconnected");
 	}
 }
 
