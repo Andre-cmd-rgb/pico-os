@@ -277,6 +277,16 @@ int pt_open(const char *path, int flags)
 	return fd;
 }
 
+/*
+ * FAT refuses a name with * ? " < > | in it as invalid, where Linux's vfat,
+ * asked to find one, says it is not there -- which is true, and is what
+ * `ls *.txt` with nothing to match should print. Making one is still EINVAL.
+ */
+static int not_there(int err)
+{
+	return err == -EINVAL ? -ENOENT : err;
+}
+
 int pt_stat(const char *path, struct pt_stat *st)
 {
 	proc_check_signals();
@@ -303,7 +313,7 @@ int pt_stat(const char *path, struct pt_stat *st)
 	if ((err = to_vfs(abs, vfs)))
 		return err;
 	if (stat(vfs, &s))
-		return -errno;
+		return not_there(-errno);
 	st->size = s.st_size;
 	st->mtime = s.st_mtime;
 	st->is_dir = S_ISDIR(s.st_mode);
@@ -338,12 +348,12 @@ int pt_mkdir(const char *path)
 
 int pt_rmdir(const char *path)
 {
-	return path_op(path, rmdir);
+	return not_there(path_op(path, rmdir));
 }
 
 int pt_unlink(const char *path)
 {
-	return path_op(path, unlink);
+	return not_there(path_op(path, unlink));
 }
 
 int pt_rename(const char *from, const char *to)
@@ -450,7 +460,7 @@ int pt_opendir(const char *path, pt_dir_t **out)
 		d->kind = DIR_VFS;
 		d->vfs = opendir(d->path);
 		if (!d->vfs) {
-			err = errno ? -errno : -ENOENT;
+			err = errno ? not_there(-errno) : -ENOENT;
 			free(d);
 			return err;
 		}

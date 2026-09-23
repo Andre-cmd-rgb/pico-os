@@ -247,7 +247,8 @@ struct pt_file *vfs_file_open(const struct pt_mount *m, const char *vfspath, int
 	int fd = open(vfspath, flags, 0666);
 
 	if (fd < 0) {
-		*err = -errno;
+		/* a name FAT could never hold is not there (see sys.c) */
+		*err = errno == EINVAL && !(flags & O_CREAT) ? -ENOENT : -errno;
 		return NULL;
 	}
 	struct vfs_file *v = calloc(1, sizeof(*v));
