@@ -3,7 +3,8 @@
  *
  * The decoding is in canvas.c, which the video player uses too; this is
  * the program around it: which files, the keys, and putting the terminal
- * back afterwards.
+ * back afterwards. Switching to another terminal leaves the picture where
+ * it is; coming back paints it again.
  */
 #include "sdkconfig.h"
 
@@ -25,6 +26,14 @@ static bool is_jpeg(int fd)
 	return magic[0] == 0xff && magic[1] == 0xd8;
 }
 
+/* The picture, onto the panel -- if this terminal is the one in front. */
+static void paint(struct canvas *c)
+{
+	if (vt_screen_begin())
+		canvas_blit(c);
+	vt_screen_end();
+}
+
 static int show(const char *path, struct canvas *c)
 {
 	int fd = pt_open(path, O_RDONLY);
@@ -36,7 +45,7 @@ static int show(const char *path, struct canvas *c)
 	ret = is_jpeg(fd) ? canvas_jpeg(c, fd) : canvas_bmp(c, fd);
 	pt_close(fd);
 	if (!ret)
-		canvas_blit(c);
+		paint(c);
 	return ret;
 }
 
@@ -73,7 +82,15 @@ PT_PROGRAM_STACK(view, 8, "look at a picture\n"
 	vt_hold_screen(true);
 	pt_tty_raw(PT_STDIN, true);
 	while (!(ret = show(files[at], &c))) {
-		int key = pt_readkey(PT_STDIN);
+		unsigned gen = vt_screen_gen();
+		int key;
+
+		/* back from another terminal, which painted over the picture */
+		while ((key = pt_readkey_timeout(PT_STDIN, 200)) == PT_KEY_NONE)
+			if (gen != vt_screen_gen()) {
+				gen = vt_screen_gen();
+				paint(&c);
+			}
 
 		if (key == 'q' || key == PT_KEY_ESC || key == PT_CTRL('c') ||
 		    key == PT_KEY_EOF || key == '\r' || key == '\n')
@@ -82,8 +99,11 @@ PT_PROGRAM_STACK(view, 8, "look at a picture\n"
 			at++;
 		else if (key == PT_KEY_LEFT && at > 0)
 			at--;
-		else if (key == 's')
-			canvas_save(&c, sd_mounted() ? PHOTOS : "/tmp", shot, sizeof(shot));
+		else if (key == 's') {
+			if (vt_screen_begin())
+				canvas_save(&c, sd_mounted() ? PHOTOS : "/tmp", shot, sizeof(shot));
+			vt_screen_end();
+		}
 	}
 	pt_tty_raw(PT_STDIN, false);
 	canvas_close(&c);

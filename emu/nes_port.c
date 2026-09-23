@@ -10,6 +10,9 @@
  * Sound is what paces the whole thing: audio_write() blocks until the
  * codec has taken the samples, which happens at exactly the rate the NES
  * produces them.
+ *
+ * Switched to another terminal, the game pauses, silent, and carries on
+ * where it was when its terminal comes back.
  */
 #include <stdarg.h>
 #include <stdio.h>
@@ -84,6 +87,10 @@ static void blit(uint8_t *vidbuf)
 	uint16_t *out = (uint16_t *)rowbuf;
 	int lit = 0;
 
+	if (!vt_screen_begin()) {
+		vt_screen_end();
+		return;			/* another terminal is on the panel */
+	}
 	stats.blits++;
 
 	for (int y = 0; y < NES_SCREEN_HEIGHT; y += ROWS_PER_DRAW) {
@@ -102,7 +109,16 @@ static void blit(uint8_t *vidbuf)
 		}
 		lcd_draw(origin_x, origin_y + y, NES_SCREEN_WIDTH, rows, rowbuf);
 	}
+	vt_screen_end();
 	stats.lit_pixels = lit;
+}
+
+/* The black around the picture, when the terminal has been painted there. */
+static void clear_screen(void)
+{
+	if (vt_screen_begin())
+		lcd_fill(0, 0, lcd_width(), lcd_height(), 0x0000);
+	vt_screen_end();
 }
 
 /* The core's palette is RGB565 the right way round for a PC; the panel
@@ -192,7 +208,8 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 {
 	char vfs[PT_PATH_MAX + 16];
 	struct pad pad = { 0 };
-	int64_t started, next_frame;
+	int64_t started, next_frame, paused_us = 0;
+	unsigned gen;
 	int frame = 0, ret = 0;
 
 	if (!vt_has_display())
@@ -239,7 +256,8 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 	if (origin_y < 0)
 		origin_y = 0;
 	vt_hold_screen(true);		/* the terminal stops repainting */
-	lcd_fill(0, 0, lcd_width(), lcd_height(), 0x0000);
+	clear_screen();
+	gen = vt_screen_gen();
 	if (opt->sound)
 		audio_set_rate(SAMPLE_RATE);
 
@@ -250,6 +268,19 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 		bool draw = !opt->frameskip || frame % (opt->frameskip + 1) == 0;
 		int state;
 
+		if (!vt_screen_front()) {
+			/* another terminal in front: the game waits, silent */
+			pt_sleep_ms(50);
+			if (pt_interrupted())
+				break;
+			paused_us += esp_timer_get_time() - now;
+			continue;
+		}
+		if (gen != vt_screen_gen()) {
+			gen = vt_screen_gen();
+			clear_screen();		/* the next frame paints the rest */
+			next_frame = esp_timer_get_time();
+		}
 		if (!read_pad(&pad, now, &state))
 			break;
 		input_update(0, state);
@@ -304,7 +335,7 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 		while (esp_timer_get_time() < next_frame)
 			;			/* the last millisecond, exactly */
 	}
-	int64_t elapsed = esp_timer_get_time() - started;
+	int64_t elapsed = esp_timer_get_time() - started - paused_us;
 
 	stats.seconds = elapsed / 1000000;
 	if (elapsed > 0)		/* from microseconds: whole seconds lie */

@@ -27,6 +27,9 @@
  * picture is decoded, and audio_write() returns when the codec has room,
  * which paces everything else. A picture that cannot be ready before the
  * sound runs out is skipped, so the sound never stops for the picture.
+ *
+ * On another terminal the clip goes on playing its sound, as music would,
+ * and decodes no pictures; back in front, it paints the last one again.
  */
 #include <string.h>
 
@@ -144,7 +147,9 @@ static void blit_task(void *arg)
 		xSemaphoreTake(b->go, portMAX_DELAY);
 		if (b->quit)
 			break;
-		canvas_blit_fit(b->c);
+		if (vt_screen_begin())
+			canvas_blit_fit(b->c);
+		vt_screen_end();
 		xSemaphoreGive(b->done);
 	}
 	xSemaphoreGive(b->done);
@@ -282,7 +287,17 @@ static int read_frame(struct reader *r, const struct clip *c, uint8_t *jpeg,
 
 static void save_shot(struct canvas *c, char *shot, size_t size)
 {
-	canvas_save(c, sd_mounted() ? PHOTOS : "/tmp", shot, size);
+	if (vt_screen_begin())
+		canvas_save(c, sd_mounted() ? PHOTOS : "/tmp", shot, size);
+	vt_screen_end();
+}
+
+/* All of a frame, bars and all: after the terminal has been on the panel. */
+static void repaint(struct canvas *c)
+{
+	if (vt_screen_begin())
+		canvas_blit(c);
+	vt_screen_end();
 }
 
 PT_PROGRAM_STACK(video, 8, "play a clip\n"
@@ -305,6 +320,7 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	int64_t read_us = 0, decode_us = 0, blit_us = 0, started, queued = 0, queued_at = 0;
 	int64_t decode_guess = 0;
 	bool keys = true, screen = false;
+	unsigned gen = vt_screen_gen();
 
 	if (argc > 2) {
 		pt_dprintf(PT_STDERR, "usage: video [clip.ptv]\n");
@@ -388,7 +404,7 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	screen = true;
 	canvas_clear(&page[0]);
 	canvas_clear(&page[1]);
-	canvas_blit(&page[0]);
+	repaint(&page[0]);
 	pt_tty_raw(PT_STDIN, true);
 	frame_us = 1000000 / clip.fps;
 	started = esp_timer_get_time();
@@ -397,7 +413,7 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 		size_t part[MAX_SLICES + 1];
 		int64_t mark = esp_timer_get_time(), now;
 		struct canvas *into = &page[next];
-		bool late;
+		bool late, hidden = !vt_screen_front();
 		int key;
 
 		if (read_frame(&rd, &clip, jpeg, part, pcm))
@@ -429,7 +445,14 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			late = now > started + (int64_t)(i + 1) * frame_us;
 		}
 
-		if (late) {
+		if (!hidden && gen != vt_screen_gen()) {
+			gen = vt_screen_gen();
+			blit_finish(&blit);
+			repaint(shown);
+		}
+		if (hidden) {
+			/* another terminal is in front: the sound goes on alone */
+		} else if (late) {
 			dropped++;
 		} else {
 			mark = esp_timer_get_time();
@@ -495,8 +518,15 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			blit_finish(&blit);
 			if (key == ' ') {		/* paused until the next key */
 				audio_stop();
-				while ((key = pt_readkey(PT_STDIN)) == 's')
-					save_shot(shown, shot, sizeof(shot));
+				while ((key = pt_readkey_timeout(PT_STDIN, 200)) == 's' ||
+				       key == PT_KEY_NONE) {
+					if (key == 's') {
+						save_shot(shown, shot, sizeof(shot));
+					} else if (gen != vt_screen_gen()) {
+						gen = vt_screen_gen();
+						repaint(shown);
+					}
+				}
 				if (key == 'q' || key == PT_KEY_ESC || key == PT_CTRL('c') ||
 				    key == PT_KEY_EOF || key == PT_KEY_ERROR)
 					break;

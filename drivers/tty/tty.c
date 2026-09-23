@@ -282,6 +282,7 @@ int tty_front(void)
 	return front;
 }
 
+
 void tty_set_activate_hook(void (*fn)(int which))
 {
 	activate_hook = fn;
@@ -372,6 +373,17 @@ static const struct pt_file_ops tty_ops = {
 	.write = tty_write,
 	.ioctl = tty_ioctl,
 };
+
+/* The first of the calling process's fds 0-2 that is one of the terminals. */
+int tty_of_current(void)
+{
+	struct proc *p = proc_current();
+
+	for (int fd = 0; p && fd < 3; fd++)
+		if (p->fd[fd] && p->fd[fd]->ops == &tty_ops)
+			return (int)((struct tty *)p->fd[fd]->priv - ttys);
+	return -1;
+}
 
 void tty_init(void)
 {

@@ -50,12 +50,22 @@ void	vt_size(int *cols, int *rows);
 bool	vt_has_display(void);
 void	vt_redraw(void);	/* repaint everything, after drawing behind the terminal's back */
 void	vt_hold_screen(bool held);	/* stop repainting: a program owns the panel */
+/*
+ * The holder draws only between vt_screen_begin() and _end(), and only if
+ * begin says its terminal is in front. vt_screen_gen() changes each time
+ * that terminal comes back, when the whole screen must be painted again.
+ */
+bool	vt_screen_begin(void);
+void	vt_screen_end(void);
+bool	vt_screen_front(void);		/* no lock: for deciding to pause */
+unsigned vt_screen_gen(void);
 
 /* tty/tty.c: the console line discipline */
 void	tty_init(void);
 struct pt_file *tty_console(int which);	/* made on first use */
 int	tty_switch(int which);		/* put that terminal in front */
 int	tty_front(void);
+int	tty_of_current(void);		/* the calling process's terminal, or -1 */
 void	tty_set_activate_hook(void (*fn)(int which));
 void	tty_input(const char *s, size_t n);
 void	tty_output(const char *s, size_t n);
