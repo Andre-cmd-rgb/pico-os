@@ -97,5 +97,13 @@ CONFIG_ULP_COPROC_RESERVE_MEM=4096
 # stack comes from. The certificate authorities browsers trust are built in
 # (the default bundle); curl -k may go without checking, when told to.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# Chains that end in a cross-signed root, as Cloudflare's do (GTS Root R4
+# signed by GlobalSign): without this the bundle turns them away.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
+# And a certificate's dates are checked, which ESP-IDF leaves off by
+# default: the clock is set whenever Wi-Fi connects and kept through power
+# cuts (kernel/clock.c), so an expired certificate is refused, as a
+# browser refuses it.
+CONFIG_MBEDTLS_HAVE_TIME_DATE=y
 CONFIG_ESP_TLS_INSECURE=y
 CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y

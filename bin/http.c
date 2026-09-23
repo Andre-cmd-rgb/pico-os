@@ -20,12 +20,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_tls_errors.h"
+#include "lwip/netdb.h"
+#include "mbedtls/ssl.h"
 
 #include "drivers/drivers.h"
 #include "util.h"
@@ -83,6 +86,27 @@ struct transfer {
 
 /* ------------------------------------------------------------ the client */
 
+/* "example.com" is "http://example.com", as both programs take it. */
+static int set_url(struct transfer *t, const char *url)
+{
+	int n = snprintf(t->url, sizeof(t->url), "%s%s", strstr(url, "://") ? "" : "http://", url);
+
+	return n < (int)sizeof(t->url) ? 0 : -ENAMETOOLONG;
+}
+
+/* The host of an address, for messages. */
+static const char *host_of(const char *url, char *out, size_t size)
+{
+	const char *p = strstr(url, "://");
+	size_t n;
+
+	p = p ? p + 3 : url;
+	n = strcspn(p, "/:?#");
+	snprintf(out, size, "%.*s", (int)n, p);
+	return out;
+}
+
+
 static void head_add(struct transfer *t, const char *key, const char *value)
 {
 	size_t need = strlen(key) + strlen(value) + 5;
@@ -113,22 +137,45 @@ static esp_err_t on_event(esp_http_client_event_t *e)
 	return ESP_OK;
 }
 
-/* What went wrong under the client, from what esp-tls noted. */
+/*
+ * What went wrong under the client, from what esp-tls noted. A plain
+ * http:// connection notes nothing when the name does not resolve, so a
+ * failure to connect asks the resolver itself.
+ */
 static enum failure why(struct transfer *t, esp_err_t err)
 {
 	int code = 0, flags = 0;
+	char host[128];
+	struct addrinfo *ai = NULL;
 
 	if (err == ESP_ERR_HTTP_EAGAIN)
 		return F_TIMEOUT;
 	esp_http_client_get_and_clear_last_tls_error(t->client, &code, &flags);
 	switch (code) {
-	case ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME:	return F_RESOLVE;
-	case ESP_ERR_ESP_TLS_CONNECTION_TIMEOUT:	return F_TIMEOUT;
+	case ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME:
+		return F_RESOLVE;
+	case ESP_ERR_ESP_TLS_CONNECTION_TIMEOUT:
+		return F_TIMEOUT;
 	case 0:
 	case ESP_ERR_ESP_TLS_CANNOT_CREATE_SOCKET:
-	case ESP_ERR_ESP_TLS_FAILED_CONNECT_TO_HOST:	return F_CONNECT;
+	case ESP_ERR_ESP_TLS_FAILED_CONNECT_TO_HOST:
+		host_of(t->url, host, sizeof(host));
+		if (getaddrinfo(host, NULL, NULL, &ai))
+			return F_RESOLVE;
+		freeaddrinfo(ai);
+		return F_CONNECT;
 	}
-	return flags ? F_CERT : F_TLS;	/* flags: what the certificate check found */
+	/* mbedTLS's own codes, made positive: the X.509 ones are about the
+	 * certificate, and a bad certificate is too */
+	if (flags || (code >= 0x2000 && code <= 0x3000) || code == -MBEDTLS_ERR_SSL_BAD_CERTIFICATE)
+		return F_CERT;
+	return F_TLS;
+}
+
+/* A certificate's dates mean nothing to a clock that still thinks it is 1970. */
+static bool clock_unset(void)
+{
+	return time(NULL) < 1704067200;		/* 2024 */
 }
 
 static bool is_redirect(int status)
@@ -136,16 +183,71 @@ static bool is_redirect(int status)
 	return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 }
 
-/*
- * Connects, sends the request and reads the response's headers, following
- * redirects if asked to. The body is then read with body_read().
- */
-static enum failure start(struct transfer *t)
+/* A header of the response: its value, which runs to the \r, or NULL. */
+static const char *header(const struct transfer *t, const char *name, size_t *len)
 {
+	size_t n = strlen(name);
+
+	for (size_t i = 0; t->head && i < t->head_len; ) {
+		const char *line = t->head + i, *end = memchr(line, '\r', t->head_len - i);
+
+		if (!end)
+			break;
+		if ((size_t)(end - line) > n + 1 && !strncasecmp(line, name, n) && line[n] == ':') {
+			const char *v = line + n + 1;
+
+			while (*v == ' ')
+				v++;
+			*len = end - v;
+			return v;
+		}
+		i = end - t->head + 2;
+	}
+	return NULL;
+}
+
+/*
+ * Where a redirect points, made whole against the address it came from: a
+ * Location may be a full address, //host/path, /path or a relative path.
+ */
+static int follow(struct transfer *t, const char *loc, size_t len)
+{
+	char base[URL_MAX];
+	const char *host = strstr(t->url, "://"), *path, *slash;
+	int n;
+
+	strlcpy(base, t->url, sizeof(base));
+	host = host ? base + (host - t->url) + 3 : base;
+	path = host + strcspn(host, "/?#");
+	if (memmem(loc, len, "://", 3)) {
+		n = snprintf(t->url, sizeof(t->url), "%.*s", (int)len, loc);
+	} else if (len > 1 && loc[0] == '/' && loc[1] == '/') {
+		n = snprintf(t->url, sizeof(t->url), "%.*s%.*s", (int)(host - 2 - base), base, (int)len, loc);
+	} else if (len && loc[0] == '/') {
+		n = snprintf(t->url, sizeof(t->url), "%.*s%.*s", (int)(path - base), base, (int)len, loc);
+	} else {
+		/* beside the last part of the path */
+		const char *end = path + strcspn(path, "?#");
+
+		for (slash = NULL; path < end; path++)
+			if (*path == '/')
+				slash = path;
+		n = slash ? snprintf(t->url, sizeof(t->url), "%.*s%.*s", (int)(slash + 1 - base), base,
+				     (int)len, loc)
+			  : snprintf(t->url, sizeof(t->url), "%s/%.*s", base, (int)len, loc);
+	}
+	return n > 0 && n < (int)sizeof(t->url) ? 0 : -ENAMETOOLONG;
+}
+
+/* One request to t->url, up to the end of the response's headers. */
+static enum failure request(struct transfer *t)
+{
+	int left = t->max_ms ? t->max_ms - (int)((esp_timer_get_time() - t->started) / 1000) : 0;
 	esp_http_client_config_t cfg = {
 		.url = t->url,
 		.method = t->method,
-		.timeout_ms = CONNECT_MS,
+		/* curl -m bounds the wait for the headers too */
+		.timeout_ms = t->max_ms && left < CONNECT_MS ? (left > 100 ? left : 100) : CONNECT_MS,
 		.disable_auto_redirect = true,
 		.event_handler = on_event,
 		.user_data = t,
@@ -156,17 +258,9 @@ static enum failure start(struct transfer *t)
 		.skip_cert_common_name_check = t->insecure,
 	};
 	char range[40];
+	esp_err_t err;
+	int64_t r;
 
-	/* its complaints are ours to make, in words that fit the program */
-	esp_log_level_set("HTTP_CLIENT", ESP_LOG_NONE);
-	esp_log_level_set("esp-tls", ESP_LOG_NONE);
-	esp_log_level_set("esp-tls-mbedtls", ESP_LOG_NONE);
-	esp_log_level_set("transport_base", ESP_LOG_NONE);
-	esp_log_level_set("esp-x509-crt-bundle", ESP_LOG_NONE);
-
-	t->started = esp_timer_get_time();
-	if (!wifi_up())
-		return F_CONNECT;
 	if (!(t->client = esp_http_client_init(&cfg)))
 		return F_URL;
 	for (int i = 0; i < t->nheaders; i++) {
@@ -183,36 +277,67 @@ static enum failure start(struct transfer *t)
 		snprintf(range, sizeof(range), "bytes=%lld-", (long long)t->from);
 		esp_http_client_set_header(t->client, "Range", range);
 	}
-	for (int hops = 0;; hops++) {
-		esp_err_t err;
-		int64_t r;
+	t->head_len = 0;
+	t->type[0] = '\0';
+	if ((err = esp_http_client_open(t->client, t->body_len)))
+		return why(t, err);
+	if (t->body_len &&
+	    esp_http_client_write(t->client, t->body, t->body_len) != (int)t->body_len)
+		return why(t, ESP_FAIL);
+	if ((r = esp_http_client_fetch_headers(t->client)) < 0)
+		return why(t, r == -ESP_ERR_HTTP_EAGAIN ? ESP_ERR_HTTP_EAGAIN : ESP_FAIL);
+	t->status = esp_http_client_get_status_code(t->client);
+	t->length = esp_http_client_is_chunked_response(t->client) ? -1
+		  : esp_http_client_get_content_length(t->client);
+	return F_NONE;
+}
 
-		t->head_len = 0;
-		t->type[0] = '\0';
-		if ((err = esp_http_client_open(t->client, t->body_len)))
-			return why(t, err);
-		if (t->body_len &&
-		    esp_http_client_write(t->client, t->body, t->body_len) != (int)t->body_len)
-			return why(t, ESP_FAIL);
-		if ((r = esp_http_client_fetch_headers(t->client)) < 0)
-			return why(t, r == -ESP_ERR_HTTP_EAGAIN ? ESP_ERR_HTTP_EAGAIN : ESP_FAIL);
-		t->status = esp_http_client_get_status_code(t->client);
-		t->length = esp_http_client_is_chunked_response(t->client) ? -1
-			  : esp_http_client_get_content_length(t->client);
+static void client_free(struct transfer *t)
+{
+	if (t->client) {
+		esp_http_client_close(t->client);
+		esp_http_client_cleanup(t->client);
+		t->client = NULL;
+	}
+}
+
+/*
+ * Connects, sends the request and reads the response's headers, following
+ * redirects if asked to. The body is then read with body_read(). Each hop
+ * is a client of its own: one kept across a change from http to https
+ * went on talking plain HTTP to port 443.
+ */
+static enum failure start(struct transfer *t)
+{
+	/* its complaints are ours to make, in words that fit the program */
+	esp_log_level_set("HTTP_CLIENT", ESP_LOG_NONE);
+	esp_log_level_set("esp-tls", ESP_LOG_NONE);
+	esp_log_level_set("esp-tls-mbedtls", ESP_LOG_NONE);
+	esp_log_level_set("transport_base", ESP_LOG_NONE);
+	esp_log_level_set("esp-x509-crt-bundle", ESP_LOG_NONE);
+
+	t->started = esp_timer_get_time();
+	if (!wifi_up())
+		return F_CONNECT;
+	for (int hops = 0;; hops++) {
+		enum failure bad = request(t);
+		const char *loc;
+		size_t len;
+
+		if (bad)
+			return bad;
 		if (t->on_response)
 			t->on_response(t);
 		if (!t->follow || !is_redirect(t->status) || hops == MAX_REDIRECTS ||
-		    esp_http_client_set_redirection(t->client) != ESP_OK)
+		    !(loc = header(t, "Location", &len)) || follow(t, loc, len))
 			break;
-		esp_http_client_close(t->client);
+		client_free(t);
 		/* as browsers do: after a 303, or a 301 or 302 to a POST, a GET */
 		if (t->status == 303 || (t->status <= 302 && t->method == HTTP_METHOD_POST)) {
 			t->method = HTTP_METHOD_GET;
 			t->body_len = 0;
-			esp_http_client_set_method(t->client, HTTP_METHOD_GET);
 		}
 	}
-	esp_http_client_get_url(t->client, t->url, sizeof(t->url));
 	esp_http_client_set_timeout_ms(t->client, POLL_MS);
 	return F_NONE;
 }
@@ -254,33 +379,9 @@ static int body_read(struct transfer *t, char *buf, int size, enum failure *fail
 
 static void finish(struct transfer *t)
 {
-	if (t->client) {
-		esp_http_client_close(t->client);
-		esp_http_client_cleanup(t->client);
-		t->client = NULL;
-	}
+	client_free(t);
 	pt_free(t->head);
 	t->head = NULL;
-}
-
-/* "example.com" is "http://example.com", as both programs take it. */
-static int set_url(struct transfer *t, const char *url)
-{
-	int n = snprintf(t->url, sizeof(t->url), "%s%s", strstr(url, "://") ? "" : "http://", url);
-
-	return n < (int)sizeof(t->url) ? 0 : -ENAMETOOLONG;
-}
-
-/* The host of an address, for messages. */
-static const char *host_of(const char *url, char *out, size_t size)
-{
-	const char *p = strstr(url, "://");
-	size_t n;
-
-	p = p ? p + 3 : url;
-	n = strcspn(p, "/:?#");
-	snprintf(out, size, "%.*s", (int)n, p);
-	return out;
 }
 
 static const char *reason(int status)
@@ -411,7 +512,8 @@ static int wget_one(const char *url, const char *out_name, bool quiet, bool resu
 			pt_dprintf(PT_STDERR, "wget: unable to resolve host address '%s'\n", host);
 			break;
 		case F_CERT:
-			pt_dprintf(PT_STDERR, "wget: cannot verify %s's certificate\n", host);
+			pt_dprintf(PT_STDERR, "wget: cannot verify %s's certificate%s\n", host,
+				   clock_unset() ? " (the clock is not set: see `date`)" : "");
 			finish(&t);
 			return 5;
 		case F_TLS:
@@ -775,8 +877,10 @@ PT_PROGRAM_STACK(curl, HTTP_STACK_KB, "talk to a web server\n"
 	case F_RESOLVE:		status = curl_error(&cu, 6, "Could not resolve host: %s", host); goto out;
 	case F_TIMEOUT:		status = curl_error(&cu, 28, "Connection to %s timed out", host); goto out;
 	case F_TLS:		status = curl_error(&cu, 35, "TLS connect error with %s", host); goto out;
-	case F_CERT:		status = curl_error(&cu, 60, "SSL certificate problem: %s's did not check out"
-							" (-k to go on anyway)", host); goto out;
+	case F_CERT:		status = curl_error(&cu, 60, clock_unset()
+					? "SSL certificate problem: %s's did not check out (the clock is not set: see `date`)"
+					: "SSL certificate problem: %s's did not check out (-k to go on anyway)", host);
+				goto out;
 	case F_URL:		status = curl_error(&cu, 3, "URL rejected: %s", argv[o.ind]); goto out;
 	case F_NOMEM:		status = fail("curl", NULL, -ENOMEM); goto out;
 	default:		status = curl_error(&cu, 7, "Failed to connect to %s", host); goto out;
