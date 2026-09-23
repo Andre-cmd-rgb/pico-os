@@ -35,6 +35,19 @@ static int no_radio(const char *prog)
 	return 1;
 }
 
+/* Scanning and joining want the radio: they switch it on, as nmcli does. */
+static int radio_wanted(void)
+{
+	int ret;
+
+	if (wifi_started())
+		return 0;
+	if ((ret = wifi_radio(true)))
+		return ret == -ENODEV ? no_radio("wifi") : fail("wifi", "on", ret);
+	pt_printf("wifi: radio on\n");
+	return 0;
+}
+
 /* Signal strength the way a phone shows it, because dBm means little. */
 static const char *bars(int rssi)
 {
@@ -74,6 +87,10 @@ static int do_scan(void)
 
 	if (!aps)
 		return fail("wifi", NULL, -ENOMEM);
+	if (radio_wanted()) {
+		pt_free(aps);
+		return 1;
+	}
 	pt_printf("scanning...\n");
 	n = wifi_scan(aps, SCAN_MAX);
 	if (n < 0) {
@@ -109,6 +126,8 @@ static int do_connect(int argc, char **argv)
 		}
 		ssid = ap.ssid;
 	}
+	if (radio_wanted())
+		return 1;
 	pt_printf("connecting to %s...\n", ssid);
 	ret = wifi_connect(ssid, pass, CONNECT_MS);
 	if (ret == -ENODEV)
