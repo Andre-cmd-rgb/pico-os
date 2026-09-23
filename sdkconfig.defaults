@@ -81,3 +81,11 @@ CONFIG_PM_PROFILING=y
 CONFIG_ULP_COPROC_ENABLED=y
 CONFIG_ULP_COPROC_TYPE_RISCV=y
 CONFIG_ULP_COPROC_RESERVE_MEM=4096
+
+# TLS for wget and curl: mbedTLS keeps its memory in PSRAM, since a
+# handshake wants about 40 KB and internal RAM is where every process
+# stack comes from. The certificate authorities browsers trust are built in
+# (the default bundle); curl -k may go without checking, when told to.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y

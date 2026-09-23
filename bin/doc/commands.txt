@@ -71,6 +71,10 @@ NETWORK
   ntp               set the clock now (Wi-Fi also
                     sets it whenever it connects)
   ping [-c N] HOST
+  wget URL          fetch a file; -c goes on after a
+                    break, -O names it
+  curl URL          what an address returns: -L
+                    follows, -I headers, -d posts
   modem             the SIM module, if one is wired
   sms               text messages
   passwd            set the password the network

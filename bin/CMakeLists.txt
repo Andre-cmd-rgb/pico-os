@@ -8,6 +8,7 @@ idf_component_register(
 		fileutils.c
 		filters.c
 		find.c
+		http.c
 		jpeg.c
 		man.c
 		nes.c
@@ -27,7 +28,7 @@ idf_component_register(
 		view.c
 		xfer.c
 	REQUIRES kernel drivers codec emu
-	PRIV_REQUIRES esp_app_format esp_driver_gpio esp_hw_support esp_netif esp_system esp_timer heap lwip mbedtls
+	PRIV_REQUIRES esp_app_format esp_driver_gpio esp_hw_support esp_netif esp_system esp_timer heap lwip mbedtls esp_http_client esp-tls
 	WHOLE_ARCHIVE
 	EMBED_TXTFILES
 		doc/intro.txt

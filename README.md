@@ -117,7 +117,7 @@ in `edit`.
 | power | `cpufreq power suspend poweroff led battery` |
 | shell | `cd exit export unset set local read eval source type command alias unalias trap jobs fg bg history sh` |
 | sound | `play rec beep volume` |
-| network | `wifi ntp ping modem sms` |
+| network | `wifi ntp ping wget curl passwd modem sms` |
 | hardware | `bench lcdtest keytest backlight rotate i2cdetect mkfs screenshot chvt` |
 | games | `nes` |
 
