@@ -3,6 +3,7 @@ idf_component_register(
 		audio.c
 		bench.c
 		canvas.c
+		diff.c
 		edit.c
 		fileutils.c
 		filters.c
@@ -13,8 +14,10 @@ idf_component_register(
 		passwd.c
 		pick.c
 		regex.c
+		sed.c
 		shellutils.c
 		sort.c
+		sums.c
 		sysutils.c
 		textutils.c
 		top.c
@@ -23,7 +26,7 @@ idf_component_register(
 		view.c
 		xfer.c
 	REQUIRES kernel drivers codec emu
-	PRIV_REQUIRES esp_app_format esp_driver_gpio esp_hw_support esp_netif esp_system esp_timer heap lwip
+	PRIV_REQUIRES esp_app_format esp_driver_gpio esp_hw_support esp_netif esp_system esp_timer heap lwip mbedtls
 	WHOLE_ARCHIVE
 	EMBED_TXTFILES
 		doc/intro.txt
