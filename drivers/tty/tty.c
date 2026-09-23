@@ -161,6 +161,12 @@ static void cooked_byte(struct tty *tty, uint8_t c, bool last_in_chunk)
 	case 0x03:
 		interrupt(tty);
 		break;
+	case 0x1a:			/* Ctrl-Z: the job in front stops */
+		tty_output_on(tty - ttys, "^Z\n", 3);
+		tty->line_len = 0;
+		if (tty->fg_pgid)
+			proc_signal_group(tty->fg_pgid, PT_SIGTSTP);
+		break;
 	case 0x04:
 		if (tty->line_len)
 			submit_line(tty);
@@ -301,6 +307,11 @@ static ssize_t tty_read(struct pt_file *f, void *buf, size_t n)
 		if (pt_interrupted()) {
 			ret = -EINTR;
 			break;
+		}
+		if (proc_stop_pending()) {	/* Ctrl-Z: stop without the terminal locked */
+			xSemaphoreGive(tty->read_lock);
+			proc_stop_point();
+			xSemaphoreTake(tty->read_lock, portMAX_DELAY);
 		}
 		if (deadline && pt_uptime_us() >= deadline) {
 			ret = -EAGAIN;

@@ -13,9 +13,12 @@
 
 #define MAX_TASKS	48
 
+/* the run-time counter, in microseconds: 64 bits, so it never wraps */
+typedef configRUN_TIME_COUNTER_TYPE runtime_t;
+
 struct sample {
 	TaskHandle_t	handle;
-	uint32_t	runtime;
+	runtime_t	runtime;
 };
 
 struct row {
@@ -23,7 +26,7 @@ struct row {
 	int		core;
 	unsigned	prio;
 	unsigned long	stack_free;
-	uint32_t	delta;
+	runtime_t	delta;
 };
 
 static int compare_rows(const void *a, const void *b)
@@ -33,7 +36,7 @@ static int compare_rows(const void *a, const void *b)
 	return x->delta < y->delta ? 1 : x->delta > y->delta ? -1 : strcmp(x->name, y->name);
 }
 
-static uint32_t previous(const struct sample *prev, int n, TaskHandle_t h, uint32_t now)
+static runtime_t previous(const struct sample *prev, int n, TaskHandle_t h, runtime_t now)
 {
 	for (int i = 0; i < n; i++)
 		if (prev[i].handle == h)
@@ -99,10 +102,10 @@ PT_PROGRAM(top, "show CPU use per core and per task\n"
 		uint64_t elapsed = now_time - prev_time;
 		prev_time = now_time;
 		n = uxTaskGetSystemState(tasks, MAX_TASKS, NULL);
-		uint32_t idle[2] = { 0, 0 };
+		runtime_t idle[2] = { 0, 0 };
 		struct sample next[MAX_TASKS];
 		for (int i = 0; i < n; i++) {
-			uint32_t delta = tasks[i].ulRunTimeCounter -
+			runtime_t delta = tasks[i].ulRunTimeCounter -
 					 previous(prev, nprev, tasks[i].xHandle, tasks[i].ulRunTimeCounter);
 			rows[i] = (struct row) {
 				.core = tasks[i].xCoreID == tskNO_AFFINITY ? -1 : tasks[i].xCoreID,

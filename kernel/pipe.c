@@ -51,6 +51,11 @@ static ssize_t pipe_read(struct pt_file *f, void *buf, size_t n)
 			ret = -EINTR;
 			break;
 		}
+		if (proc_stop_pending()) {	/* stopped, but not holding the pipe */
+			xSemaphoreGive(p->rlock);
+			proc_stop_point();
+			xSemaphoreTake(p->rlock, portMAX_DELAY);
+		}
 	}
 	xSemaphoreGive(p->rlock);
 	return ret;
@@ -71,6 +76,11 @@ static ssize_t pipe_write(struct pt_file *f, const void *buf, size_t n)
 		if (pt_interrupted()) {
 			ret = -EINTR;
 			break;
+		}
+		if (proc_stop_pending()) {
+			xSemaphoreGive(p->wlock);
+			proc_stop_point();
+			xSemaphoreTake(p->wlock, portMAX_DELAY);
 		}
 		done += xStreamBufferSend(p->sb, (const char *)buf + done, n - done, PIPE_POLL);
 	}

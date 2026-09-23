@@ -28,6 +28,8 @@
 #define LOADER_STACK_KB		12
 #define DEFAULT_PATH		"/bin:/home/" CONFIG_PT_USERNAME "/bin"
 #define SIGMASK(sig)		(1u << (sig))
+#define STOPS			(SIGMASK(PT_SIGSTOP) | SIGMASK(PT_SIGTSTP))
+#define ENDS			(SIGMASK(PT_SIGINT) | SIGMASK(PT_SIGTERM) | SIGMASK(PT_SIGKILL))
 
 static struct proc	 procs[CONFIG_PT_MAX_PROCS];
 static SemaphoreHandle_t table_lock;
@@ -223,13 +225,18 @@ int proc_list(struct pt_procinfo *out, int max)
 	LOCK();
 	for (int i = 0; i < CONFIG_PT_MAX_PROCS && n < max; i++) {
 		struct proc *p = &procs[i];
+		TaskStatus_t task = { 0 };
+
 		if (p->state == PROC_FREE)
 			continue;
+		if (p->task)
+			vTaskGetInfo(p->task, &task, pdFALSE, eInvalid);
 		out[n] = (struct pt_procinfo) {
 			.pid = p->pid, .ppid = p->ppid, .pgid = p->pgid,
-			.state = p->state == PROC_RUNNING ? 'R' : 'Z',
+			.state = p->state != PROC_RUNNING ? 'Z' : p->stopped ? 'T' : 'R',
 			.stack_kb = p->stack_kb, .start_us = p->start_us,
 			.stack_free = p->task ? uxTaskGetStackHighWaterMark(p->task) : 0,
+			.cpu_us = task.ulRunTimeCounter,
 		};
 		strlcpy(out[n].name, p->name, sizeof(out[n].name));
 		n++;
@@ -237,6 +244,8 @@ int proc_list(struct pt_procinfo *out, int max)
 	UNLOCK();
 	return n;
 }
+
+static void deliver(struct proc *p, int sig);
 
 /* ------------------------------------------------------------ exit */
 
@@ -266,6 +275,9 @@ static void teardown(struct proc *p, int status)
 			q->ppid = 0;			/* orphans are reaped on exit */
 			if (q->state == PROC_ZOMBIE)
 				q->state = PROC_FREE;
+			/* nobody is left to continue a stopped one: it ends */
+			if (q->state == PROC_RUNNING && q->stopped)
+				deliver(q, PT_SIGTERM);
 		}
 		if (q->pid == p->ppid && q->state == PROC_RUNNING)
 			parent = q;
@@ -289,7 +301,7 @@ void pt_exit(int status)
 		vTaskDelay(portMAX_DELAY);
 }
 
-int pt_wait(int pid, int *status, bool nohang)
+int pt_wait(int pid, int *status, int flags)
 {
 	proc_check_signals();
 	struct proc *self = proc_current();
@@ -304,9 +316,13 @@ int pt_wait(int pid, int *status, bool nohang)
 			struct proc *q = &procs[i];
 			if (q->state == PROC_FREE || q->ppid != self->pid || (pid > 0 && q->pid != pid))
 				continue;
-			if (!child || q->state == PROC_ZOMBIE)
+			/* one with news first: finished, or stopped if that is asked about */
+			bool news = q->state == PROC_ZOMBIE ||
+				    ((flags & PT_WUNTRACED) && q->stopped && !q->stop_reported);
+
+			if (!child || news)
 				child = q;
-			if (q->state == PROC_ZOMBIE)
+			if (news)
 				break;
 		}
 		if (!child) {
@@ -321,15 +337,25 @@ int pt_wait(int pid, int *status, bool nohang)
 			UNLOCK();
 			return got;
 		}
+		if ((flags & PT_WUNTRACED) && child->stopped && !child->stop_reported) {
+			int got = child->pid;
+
+			child->stop_reported = true;
+			if (status)
+				*status = PT_WSTOPPED | child->stop_sig;
+			UNLOCK();
+			return got;
+		}
 		SemaphoreHandle_t exited = child->exited;
 		UNLOCK();
 
-		if (nohang)
+		if (flags & PT_WNOHANG)
 			return 0;
 		if (pid > 0)
 			xSemaphoreTake(exited, pdMS_TO_TICKS(50));
 		else
 			vTaskDelay(pdMS_TO_TICKS(20));
+		proc_stop_point();		/* the one waiting may be stopped itself */
 		if (pt_interrupted())
 			return -EINTR;
 	}
@@ -430,10 +456,12 @@ static int spawn(struct proc *parent, const char *cmd, int argc, char *const *ar
 		free(envcopy);
 		return -EAGAIN;
 	}
-	SemaphoreHandle_t exited = p->exited;
+	SemaphoreHandle_t exited = p->exited, cont = p->cont;
 	memset(p, 0, sizeof(*p));
 	p->exited = exited;
+	p->cont = cont;
 	xSemaphoreTake(p->exited, 0);
+	xSemaphoreTake(p->cont, 0);
 	p->pid = next_pid++;
 	p->ppid = parent ? parent->pid : 0;
 	p->pgid = pgid > 0 ? pgid : p->pid;
@@ -549,17 +577,70 @@ int proc_wait_orphan(int pid)
 
 /* ------------------------------------------------------------ signals */
 
+/* Called with the table locked, which is what orders it against a stop. */
 static void deliver(struct proc *p, int sig)
 {
+	if (sig == PT_SIGCONT) {
+		atomic_fetch_and(&p->sigpending, ~STOPS);
+		if (p->stopped)
+			xSemaphoreGive(p->cont);
+		return;
+	}
 	atomic_fetch_or(&p->sigpending, SIGMASK(sig));
 	if (sig == PT_SIGKILL && !p->kill_deadline_us)
 		p->kill_deadline_us = esp_timer_get_time() + KILL_GRACE_US;
+	/* a stopped process wakes to be ended */
+	if ((SIGMASK(sig) & ENDS) && p->stopped)
+		xSemaphoreGive(p->cont);
+}
+
+/*
+ * A stop: the process sleeps here until SIGCONT, or until a signal that
+ * ends it wakes it to act on that. Only ever at a point holding no locks
+ * -- a system call's entry, or proc_stop_point() -- so nothing waits on a
+ * lock a stopped process has.
+ */
+static void stop(struct proc *p)
+{
+	LOCK();
+	if (!(atomic_load(&p->sigpending) & STOPS)) {
+		UNLOCK();			/* a SIGCONT got here first */
+		return;
+	}
+	p->stop_sig = atomic_load(&p->sigpending) & SIGMASK(PT_SIGSTOP) ? PT_SIGSTOP : PT_SIGTSTP;
+	atomic_fetch_and(&p->sigpending, ~STOPS);
+	xSemaphoreTake(p->cont, 0);
+	p->stopped = true;
+	p->stop_reported = false;
+	UNLOCK();
+	while (xSemaphoreTake(p->cont, pdMS_TO_TICKS(1000)) != pdTRUE &&
+	       !(atomic_load(&p->sigpending) & ENDS))
+		;
+	LOCK();
+	p->stopped = false;
+	UNLOCK();
+}
+
+bool proc_stop_pending(void)
+{
+	struct proc *p = proc_current();
+
+	return p && (atomic_load(&p->sigpending) & STOPS);
+}
+
+void proc_stop_point(void)
+{
+	struct proc *p = proc_current();
+
+	if (p && !atomic_load(&p->exiting) && (atomic_load(&p->sigpending) & STOPS))
+		stop(p);
 }
 
 int pt_kill(int pid, int sig)
 {
 	proc_check_signals();
-	if (sig != PT_SIGINT && sig != PT_SIGTERM && sig != PT_SIGKILL)
+	if (sig != PT_SIGINT && sig != PT_SIGTERM && sig != PT_SIGKILL && sig != PT_SIGCONT &&
+	    sig != PT_SIGSTOP && sig != PT_SIGTSTP)
 		return -EINVAL;
 
 	int err = -ESRCH;
@@ -596,6 +677,17 @@ void proc_check_signals(void)
 		pt_exit(128 + PT_SIGINT);
 	if (!p->sigcatch && (pending & SIGMASK(PT_SIGTERM)))
 		pt_exit(128 + PT_SIGTERM);
+	if (pending & STOPS) {
+		stop(p);
+		proc_check_signals();		/* what woke it may be what ends it */
+	}
+}
+
+unsigned pt_sigpending(void)
+{
+	struct proc *p = proc_current();
+
+	return p ? atomic_load(&p->sigpending) : 0;
 }
 
 bool pt_interrupted(void)
@@ -649,8 +741,13 @@ static void reaper(void *arg)
 void proc_init(void)
 {
 	table_lock = xSemaphoreCreateMutex();
-	for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++)
+	for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++) {
 		procs[i].exited = xSemaphoreCreateBinary();
-	xTaskCreatePinnedToCore(reaper, "kreaper", 2560, NULL, 5, NULL, 0);
+		procs[i].cont = xSemaphoreCreateBinary();
+	}
+	/* 4 KB: after a forced kill the reaper closes the program's files
+	 * itself, and one with unwritten data is a write down through FAT
+	 * and the card driver. */
+	xTaskCreatePinnedToCore(reaper, "kreaper", 4096, NULL, 5, NULL, 0);
 	klog("proc: %d process slots, programs on core %d", CONFIG_PT_MAX_PROCS, PROC_CORE);
 }

@@ -37,6 +37,9 @@ extern "C" {
 #define PT_SIGKILL	9
 #define PT_SIGPIPE	13
 #define PT_SIGTERM	15
+#define PT_SIGCONT	18	/* carry on after a stop */
+#define PT_SIGSTOP	19	/* stop, and nothing can catch it */
+#define PT_SIGTSTP	20	/* stop: Ctrl-Z */
 
 /* ------------------------------------------------------------ files */
 
@@ -90,11 +93,20 @@ struct pt_spawn {
 };
 
 int	pt_spawn(const struct pt_spawn *req);			/* pid or <0 */
-int	pt_wait(int pid, int *status, bool nohang);		/* pid, 0, or <0 */
+/*
+ * pid, 0 (PT_WNOHANG and nothing has finished), or <0. With PT_WUNTRACED a
+ * child that has stopped is reported too, once, with a status of
+ * PT_WSTOPPED plus the signal that stopped it.
+ */
+int	pt_wait(int pid, int *status, int flags);
+#define PT_WNOHANG	1
+#define PT_WUNTRACED	2
+#define PT_WSTOPPED	0x10000
 void	pt_exit(int status) __attribute__((noreturn));
 int	pt_kill(int pid, int sig);
 int	pt_getpid(void);
 bool	pt_interrupted(void);	/* SIGINT, SIGTERM or SIGKILL pending */
+unsigned pt_sigpending(void);	/* which: bit N for signal N */
 /*
  * By default SIGINT and SIGTERM end a process at its next system call.
  * A process that catches them keeps running and polls pt_interrupted();
@@ -160,7 +172,7 @@ struct pt_syscalls {
 	int	(*chdir)(const char *);
 	const char *(*getcwd)(void);
 	int	(*spawn)(const struct pt_spawn *);
-	int	(*wait)(int, int *, bool);
+	int	(*wait)(int, int *, int);
 	void	(*exit)(int);
 	int	(*kill)(int, int);
 	void	(*sigcatch)(bool);
