@@ -181,6 +181,10 @@ PT_PROGRAM_STACK(play, PLAY_STACK_KB, "play a sound file\n"
 	}
 	if (!dry && !audio_present())
 		return no_codec("play");
+	/* Ctrl-C is seen by sink_play, which stops cleanly: the amplifier
+	 * goes off and the files are closed, rather than the program just
+	 * ending at its next read */
+	pt_sigcatch(true);
 	for (; i < argc && !pt_interrupted(); i++) {
 		struct sink s;
 		int fd = pt_open(argv[i], O_RDONLY);
@@ -243,7 +247,9 @@ PT_PROGRAM(rec, "record from the microphone into a WAV file\n"
 	fd = pt_open(name, O_WRONLY | O_CREAT | O_TRUNC);
 	if (fd < 0)
 		return fail("rec", name, fd);
-	buf = malloc(BUF_SIZE);
+	/* Ctrl-C ends the loop below, so the header gets its length */
+	pt_sigcatch(true);
+	buf = pt_malloc(BUF_SIZE);
 	if (!buf) {
 		pt_close(fd);
 		return fail("rec", name, -ENOMEM);
@@ -268,7 +274,7 @@ PT_PROGRAM(rec, "record from the microphone into a WAV file\n"
 		written += got;
 	}
 	audio_stop();
-	free(buf);
+	pt_free(buf);
 
 	wav_header(header, rate, 1, written);	/* now we know how long it is */
 	if (pt_lseek(fd, 0, SEEK_SET) == 0)
@@ -300,7 +306,7 @@ PT_PROGRAM(beep, "play a tone\n"
 	if (!audio_present())
 		return no_codec("beep");
 	samples = rate * ms / 1000;
-	buf = malloc(samples * sizeof(*buf));
+	buf = pt_malloc(samples * sizeof(*buf));
 	if (!buf)
 		return fail("beep", NULL, -ENOMEM);
 	step = (uint32_t)((uint64_t)hz * 64 * 65536 / rate);
@@ -315,7 +321,7 @@ PT_PROGRAM(beep, "play a tone\n"
 	}
 	audio_write(buf, samples * sizeof(*buf), 1);
 	audio_stop();
-	free(buf);
+	pt_free(buf);
 	return 0;
 }
 

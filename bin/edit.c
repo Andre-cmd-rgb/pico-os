@@ -6,7 +6,8 @@
  *   Enter				new line, keeping the indentation
  *   Tab				spaces to the next multiple of 4
  *
- *   Ctrl-S save   Ctrl-Q quit   Ctrl-F find   Ctrl-G go to line   Ctrl-K cut line
+ *   Ctrl-S save   Ctrl-Q quit   Ctrl-F find   Ctrl-G go to line
+ *   Ctrl-K cut the line (again: and the next, together)   Ctrl-U paste
  *
  * Esc opens the same commands as a menu, for keyboards without Ctrl.
  *
@@ -44,6 +45,9 @@ struct editor {
 	char		 find[64];
 	char		**shown;		/* last text sent for each row */
 	struct out	 out;
+	struct line	*cut;			/* what Ctrl-K took, for Ctrl-U */
+	int		 ncut;
+	bool		 cutting;		/* the last key was Ctrl-K: add to it */
 };
 
 /* ------------------------------------------------------------ output buffer */
@@ -192,13 +196,15 @@ static int load(struct editor *e)
 		for (ssize_t i = 0; i < n;) {
 			char *nl = memchr(buf + i, '\n', n - i);
 			ssize_t end = nl ? nl - buf : n;
-			ssize_t len = end - i;
-			if (len && buf[end - 1] == '\r')
-				len--;
-			if (len && !line_insert(&e->lines[cur], e->lines[cur].len, buf + i, len)) {
+			struct line *l = &e->lines[cur];
+
+			if (!line_insert(l, l->len, buf + i, end - i)) {
 				pt_close(fd);
 				return -ENOMEM;
 			}
+			/* CR LF, even when a read ends between the two */
+			if (nl && l->len && l->s[l->len - 1] == '\r')
+				l->len--;
 			if (nl && !lines_insert(e, ++cur)) {
 				pt_close(fd);
 				return -ENOMEM;
@@ -214,14 +220,13 @@ static int load(struct editor *e)
 }
 
 /*
- * Writes path.tmp and renames it over the file, so a power cut leaves either
- * the old version or the new one. LittleFS replaces the file in that one
- * step; FAT will not rename over a file, so there the old one goes first.
+ * Writes path.tmp and renames it over the file, so a power cut leaves the
+ * old version or the new one -- on LittleFS; on FAT, which cannot replace
+ * a file in one step, a cut between the two leaves path.tmp.
  */
 static void save(struct editor *e)
 {
 	char tmp[PT_PATH_MAX];
-	struct pt_stat st;
 	int err = 0;
 
 	if ((size_t)snprintf(tmp, sizeof(tmp), "%s.tmp", e->path) >= sizeof(tmp)) {
@@ -241,14 +246,8 @@ static void save(struct editor *e)
 	int closed = pt_close(fd);		/* the last block is written here */
 	if (!err)
 		err = closed;
-	if (!err) {
-		err = pt_rename(tmp, e->path);
-		if (err == -EEXIST && !pt_stat(e->path, &st) && !st.is_dir) {
-			err = pt_unlink(e->path);
-			if (!err)
-				err = pt_rename(tmp, e->path);
-		}
-	}
+	if (!err)
+		err = pt_rename(tmp, e->path);	/* replaces the old file */
 	if (err) {
 		pt_unlink(tmp);
 		snprintf(e->msg, sizeof(e->msg), "NOT SAVED: %s", pt_strerror(err));
@@ -317,15 +316,18 @@ static void put_row(struct editor *e, int row, const char *text)
 	out_add(&e->out, "\x1b[0m\x1b[K", 7);
 }
 
-static void status_row(struct editor *e, const char *left)
+/*
+ * The bottom row: a message or the file's name, and where the cursor is --
+ * or, `whole`, a menu or a question with the row to itself.
+ */
+static void status_row(struct editor *e, const char *left, bool whole)
 {
-	char right[32], row[256];
+	char right[32] = "", row[256], title[96];
 	const char *name = strrchr(e->path, '/') ? strrchr(e->path, '/') + 1 : e->path;
 	int col = col_at(&e->lines[e->cy], e->cx);
 
-	int rn = snprintf(right, sizeof(right), "L%d/%d C%d ", e->cy + 1, e->nlines, col + 1);
+	int rn = whole ? 0 : snprintf(right, sizeof(right), "L%d/%d C%d ", e->cy + 1, e->nlines, col + 1);
 	if (!left) {
-		static char title[96];
 		snprintf(title, sizeof(title), " %s%s", name, e->dirty ? " *" : "");
 		left = title;
 	}
@@ -350,7 +352,7 @@ static void render(struct editor *e)
 			strcpy(text, "\x1b[2m~");
 		put_row(e, r, text);
 	}
-	status_row(e, e->msg[0] ? e->msg : NULL);
+	status_row(e, e->msg[0] ? e->msg : NULL, false);
 	out_printf(&e->out, "\x1b[%d;%dH\x1b[?25h", e->cy - e->top + 1,
 		   col_at(&e->lines[e->cy], e->cx) - e->left + 1);
 	out_flush(&e->out);
@@ -462,8 +464,24 @@ static void delete_forward(struct editor *e)
 	e->dirty = true;
 }
 
+/* Ctrl-K: the line into the cut buffer -- after the last one, if the key
+ * before was Ctrl-K too, so several lines go at once, as in nano. */
 static void cut_line(struct editor *e)
 {
+	struct line *cur = &e->lines[e->cy], *grown;
+
+	if (!e->cutting) {
+		for (int i = 0; i < e->ncut; i++)
+			pt_free(e->cut[i].s);
+		e->ncut = 0;
+	}
+	if ((grown = pt_realloc(e->cut, (e->ncut + 1) * sizeof(*grown)))) {
+		e->cut = grown;
+		grown[e->ncut] = (struct line){ 0 };
+		if (line_insert(&grown[e->ncut], 0, cur->s, cur->len) || !cur->len)
+			e->ncut++;
+	}
+	e->cutting = true;
 	if (e->nlines > 1) {
 		lines_delete(e, e->cy);
 		if (e->cy >= e->nlines)
@@ -473,6 +491,20 @@ static void cut_line(struct editor *e)
 	}
 	e->cx = 0;
 	e->dirty = true;
+}
+
+/* Ctrl-U: what was cut, above the cursor's line. */
+static void paste(struct editor *e)
+{
+	for (int i = 0; i < e->ncut; i++) {
+		struct line *l = lines_insert(e, e->cy);
+
+		if (!l || !line_insert(l, 0, e->cut[i].s, e->cut[i].len))
+			break;
+		e->cy++;
+		e->dirty = true;
+	}
+	e->cx = 0;
 }
 
 static void find(struct editor *e)
@@ -517,7 +549,7 @@ static void request_quit(struct editor *e)
 		e->quit = true;
 		return;
 	}
-	status_row(e, " Unsaved changes!  S save and quit  Q quit anyway  Esc cancel");
+	status_row(e, " Unsaved! S save+quit  Q quit anyway  Esc back", true);
 	out_flush(&e->out);
 	int k = pt_readkey(PT_STDIN);
 	if (k == 's' || k == 'S') {
@@ -530,10 +562,13 @@ static void request_quit(struct editor *e)
 
 static void menu(struct editor *e)
 {
-	status_row(e, " S save  Q quit  X save+quit  F find  G line  K cut  Esc");
+	status_row(e, " S save Q quit X both F find G line K cut U paste", true);
 	out_flush(&e->out);
 
 	switch (pt_readkey(PT_STDIN)) {
+	case 'u': case 'U':
+		paste(e);
+		break;
 	case 's': case 'S':
 		save(e);
 		break;
@@ -552,14 +587,17 @@ static void menu(struct editor *e)
 		break;
 	case 'k': case 'K':
 		cut_line(e);
-		break;
+		return;
 	}
+	e->cutting = false;
 }
 
 static void handle_key(struct editor *e, int k)
 {
 	struct line *cur = &e->lines[e->cy];
 
+	if (k != PT_CTRL('k') && k != PT_KEY_ESC && k != PT_CTRL('c'))
+		e->cutting = false;		/* the next cut starts afresh */
 	switch (k) {
 	case PT_KEY_UP:
 		move_vertical(e, -1);
@@ -631,6 +669,9 @@ static void handle_key(struct editor *e, int k)
 	case PT_CTRL('k'):
 		cut_line(e);
 		break;
+	case PT_CTRL('u'):
+		paste(e);
+		break;
 	case PT_KEY_ESC:
 	case PT_CTRL('c'):
 		menu(e);
@@ -659,7 +700,8 @@ static void handle_key(struct editor *e, int k)
 PT_PROGRAM_STACK(edit, 12, "edit a text file\n"
 		 "usage: edit file\n"
 		 "Ctrl-S save, Ctrl-Q quit, Ctrl-F find, Ctrl-G go to line,\n"
-		 "Ctrl-K cut line. Esc opens a menu with the same commands.")
+		 "Ctrl-K cut a line (and more, pressed again), Ctrl-U paste.\n"
+		 "Esc opens a menu with the same commands.")
 {
 	struct editor e = { 0 };
 

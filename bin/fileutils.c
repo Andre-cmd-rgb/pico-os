@@ -12,14 +12,31 @@
 
 /* ------------------------------------------------------------ ls */
 
+struct ls {
+	bool	 all, one, dirs, lng, recurse, reverse, by_size, by_time;
+	bool	 color;
+	bool	 headers;		/* name each directory before its listing */
+	int	 shown;			/* listings so far, for the blank line between */
+};
+
 struct entry {
 	char		*name;
 	struct pt_stat	 st;
+	const struct ls	*o;		/* how to sort: qsort passes nothing else */
 };
 
-static int compare_entries(const void *a, const void *b)
+static int compare_entries(const void *pa, const void *pb)
 {
-	return strcasecmp(((const struct entry *)a)->name, ((const struct entry *)b)->name);
+	const struct entry *a = pa, *b = pb;
+	int c;
+
+	if (a->o->by_time && a->st.mtime != b->st.mtime)
+		c = a->st.mtime > b->st.mtime ? -1 : 1;		/* newest first */
+	else if (a->o->by_size && a->st.size != b->st.size)
+		c = a->st.size > b->st.size ? -1 : 1;		/* largest first */
+	else if (!(c = strcasecmp(a->name, b->name)))
+		c = strcmp(a->name, b->name);
+	return a->o->reverse ? -c : c;
 }
 
 static void print_long(const struct entry *e, bool color)
@@ -69,84 +86,143 @@ static void print_columns(const struct entry *e, int n, bool color)
 	}
 }
 
-static int list_dir(const char *path, uint32_t flags)
+/* Sorted, then printed: in columns on a terminal, a name a line elsewhere. */
+static void print_entries(const struct ls *o, struct entry *v, int n)
 {
-	pt_dir_t *d;
-	struct pt_dirent ent;
-	struct entry *list = NULL;
-	char full[PT_PATH_MAX * 2];
-	int n = 0, cap = 0;
-	int err = pt_opendir(path, &d);
-
-	if (err)
-		return fail("ls", path, err);
-	while (pt_readdir(d, &ent) == 1) {
-		if (ent.name[0] == '.' && !FLAG(flags, 'a'))
-			continue;
-		if (n == cap) {
-			cap = cap ? cap * 2 : 32;
-			struct entry *grown = pt_realloc(list, cap * sizeof(*list));
-			if (!grown)
-				break;
-			list = grown;
-		}
-		list[n].name = pt_strdup(ent.name);
-		memset(&list[n].st, 0, sizeof(list[n].st));
-		list[n].st.is_dir = ent.is_dir;
-		if (FLAG(flags, 'l') && join_path(path, ent.name, full, sizeof(full)))
-			pt_stat(full, &list[n].st);
-		if (list[n].name)
-			n++;
-	}
-	pt_closedir(d);
-
-	qsort(list, n, sizeof(*list), compare_entries);
-	bool color = pt_isatty(PT_STDOUT);
-	if (FLAG(flags, 'l')) {
+	qsort(v, n, sizeof(*v), compare_entries);
+	if (o->lng) {
 		for (int i = 0; i < n; i++)
-			print_long(&list[i], color);
-	} else if (color) {
-		print_columns(list, n, color);
+			print_long(&v[i], o->color);
+	} else if (o->color && !o->one) {
+		print_columns(v, n, o->color);
 	} else {
 		for (int i = 0; i < n; i++)
-			pt_printf("%s\n", list[i].name);
+			pt_printf("%s\n", v[i].name);
 	}
-	return 0;
+}
+
+static void free_entries(struct entry *v, int n)
+{
+	for (int i = 0; i < n; i++)
+		pt_free(v[i].name);
+	pt_free(v);
+}
+
+/*
+ * One directory's listing, and with -R the ones below it. The recursion
+ * keeps nothing but pointers on the stack, a few dozen bytes a level:
+ * the paths and the listings are on the heap.
+ */
+static int list_dir(struct ls *o, const char *path)
+{
+	pt_dir_t *d;
+	struct pt_dirent *ent = pt_malloc(sizeof(*ent));
+	char *full = pt_malloc(PT_PATH_MAX);
+	struct entry *v = NULL;
+	int n = 0, cap = 0, status = 0;
+	int err = ent && full ? pt_opendir(path, &d) : -ENOMEM;
+
+	if (err) {
+		pt_free(ent);
+		pt_free(full);
+		return fail("ls", path, err);
+	}
+	while (pt_readdir(d, ent) == 1) {
+		if (ent->name[0] == '.' && !o->all)
+			continue;
+		if (n == cap) {
+			struct entry *grown = pt_realloc(v, (cap = cap ? cap * 2 : 32) * sizeof(*v));
+
+			if (!grown) {
+				status = fail("ls", path, -ENOMEM);
+				break;
+			}
+			v = grown;
+		}
+		if (!(v[n].name = pt_strdup(ent->name))) {
+			status = fail("ls", path, -ENOMEM);
+			break;
+		}
+		memset(&v[n].st, 0, sizeof(v[n].st));
+		v[n].st.is_dir = ent->is_dir;
+		v[n].o = o;
+		/* a size and a time cost a lookup each: only when they are wanted */
+		if ((o->lng || o->by_time || o->by_size) && join_path(path, ent->name, full, PT_PATH_MAX))
+			pt_stat(full, &v[n].st);
+		n++;
+	}
+	pt_closedir(d);
+	pt_free(ent);
+
+	if (o->headers)
+		pt_printf("%s%s:\n", o->shown ? "\n" : "", path);
+	o->shown++;
+	print_entries(o, v, n);
+	for (int i = 0; o->recurse && i < n && !pt_interrupted(); i++)
+		if (v[i].st.is_dir && join_path(path, v[i].name, full, PT_PATH_MAX))
+			status |= list_dir(o, full);
+	free_entries(v, n);
+	pt_free(full);
+	return status;
 }
 
 PT_PROGRAM(ls, "list directory contents\n"
-	   "usage: ls [-la] [path...]\n"
-	   "  -l  long format with size and date\n"
-	   "  -a  include hidden files")
+	   "usage: ls [-1aAdlhrRSt] [path...]\n"
+	   "  -l  long: size and date   -a  hidden too (so -A)\n"
+	   "  -t  newest first   -S  largest first\n"
+	   "  -r  the other way round   -1  a name a line\n"
+	   "  -R  folders inside folders too\n"
+	   "  -d  folders as themselves, not what is in them\n"
+	   "Sizes are always in K, M and G: -h changes nothing.")
 {
-	uint32_t flags;
-	int i = parse_flags("ls", argc, argv, "la", &flags);
-	int status = 0;
+	struct ls o = { .color = pt_isatty(PT_STDOUT) };
+	struct opt g = { .ind = 1 };
+	struct entry *files = NULL;
+	int c, nfiles = 0, status = 0;
 
-	if (i < 0)
-		return 2;
-	if (i == argc)
-		return list_dir(".", flags);
-	for (int first = i; i < argc; i++) {
+	while ((c = getopt_pt(&g, "ls", argc, argv, "1aAdhlRrSt")) != -1) {
+		switch (c) {
+		case '1': o.one = true; break;
+		case 'a': case 'A': o.all = true; break;
+		case 'd': o.dirs = true; break;
+		case 'h': break;
+		case 'l': o.lng = true; break;
+		case 'R': o.recurse = true; break;
+		case 'r': o.reverse = true; break;
+		case 'S': o.by_size = true; break;
+		case 't': o.by_time = true; break;
+		default: return 2;
+		}
+	}
+	o.headers = o.recurse || argc - g.ind > 1;
+	if (g.ind == argc && !o.dirs)
+		return list_dir(&o, ".");
+	/* files first, all together, then each directory: as ls does it */
+	if (!(files = pt_calloc(argc - g.ind + 1, sizeof(*files))))
+		return fail("ls", NULL, -ENOMEM);
+	for (int i = g.ind; i < argc || (i == g.ind && g.ind == argc); i++) {
+		const char *name = i < argc ? argv[i] : ".";
 		struct pt_stat st;
-		int err = pt_stat(argv[i], &st);
+		int err = pt_stat(name, &st);
 
 		if (err) {
-			status = fail("ls", argv[i], err);
-			continue;
+			fail("ls", name, err);
+			status = 2;
+		} else if (!st.is_dir || o.dirs) {
+			files[nfiles++] = (struct entry){ .name = (char *)name, .st = st, .o = &o };
 		}
-		if (!st.is_dir) {
-			struct entry e = { .name = argv[i], .st = st };
-			if (FLAG(flags, 'l'))
-				print_long(&e, false);
-			else
-				pt_printf("%s\n", argv[i]);
-			continue;
-		}
-		if (argc - first > 1)
-			pt_printf("%s%s:\n", i > first ? "\n" : "", argv[i]);
-		status |= list_dir(argv[i], flags);
 	}
+	if (nfiles) {
+		print_entries(&o, files, nfiles);
+		o.shown++;
+	}
+	for (int i = g.ind; i < argc && !o.dirs; i++) {
+		struct pt_stat st;
+
+		if (!pt_stat(argv[i], &st) && st.is_dir && list_dir(&o, argv[i]))
+			status |= 1;
+	}
+	pt_free(files);
 	return status;
 }
 
@@ -455,14 +531,7 @@ PT_PROGRAM(mv, "move or rename files\nusage: mv source... target")
 			status = 1;
 			continue;
 		}
-		/* LittleFS replaces the target in one step; FAT refuses, so the old
-		 * file goes first there (never for a case change: it is the source) */
-		err = pt_rename(argv[i], target);
-		if (err == -EEXIST && !recase && !pt_stat(target, &st) && !st.is_dir && !src.is_dir) {
-			err = pt_unlink(target);
-			if (!err)
-				err = pt_rename(argv[i], target);
-		}
+		err = pt_rename(argv[i], target);	/* replaces a file already there */
 		if (err == -EXDEV) {
 			/* different filesystems: copy, then remove */
 			err = copy_tree("mv", argv[i], target) ? -EIO : 0;
@@ -538,6 +607,10 @@ PT_PROGRAM(rmdir, "remove empty directories\nusage: rmdir dir...")
 {
 	int status = 0;
 
+	if (argc < 2) {
+		pt_dprintf(PT_STDERR, "usage: rmdir dir...\n");
+		return 2;
+	}
 	for (int i = 1; i < argc; i++) {
 		int err = pt_rmdir(argv[i]);
 		if (err)
@@ -546,16 +619,27 @@ PT_PROGRAM(rmdir, "remove empty directories\nusage: rmdir dir...")
 	return status;
 }
 
-PT_PROGRAM(touch, "create empty files\nusage: touch file...")
+PT_PROGRAM(touch, "make files' times now, creating any that are missing\n"
+	   "usage: touch file...")
 {
 	int status = 0;
 
+	if (argc < 2) {
+		pt_dprintf(PT_STDERR, "usage: touch file...\n");
+		return 2;
+	}
 	for (int i = 1; i < argc; i++) {
-		int fd = pt_open(argv[i], O_WRONLY | O_CREAT | O_APPEND);
-		if (fd < 0)
+		int fd = pt_open(argv[i], O_WRONLY | O_CREAT | O_APPEND), err;
+
+		if (fd < 0) {
 			status = fail("touch", argv[i], fd);
-		else
-			pt_close(fd);
+			continue;
+		}
+		err = pt_close(fd);
+		if (!err)
+			err = pt_utime(argv[i], 0);
+		if (err)
+			status = fail("touch", argv[i], err);
 	}
 	return status;
 }

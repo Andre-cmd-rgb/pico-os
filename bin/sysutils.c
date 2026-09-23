@@ -22,15 +22,69 @@
 
 /* ------------------------------------------------------------ help */
 
+/*
+ * A line of help, broken at spaces to fit the terminal. What does not fit
+ * goes on under where the line's description starts -- after the gap of
+ * two spaces that ends an option or an example -- or under the line's own
+ * indent, so a table of options still reads as one on a narrow screen.
+ */
+static void print_wrapped(const char *line, size_t len, int cols)
+{
+	size_t indent = 0, at = 0;
+
+	while (indent < len && line[indent] == ' ')
+		indent++;
+	const char *gap = memmem(line + indent, len - indent, "  ", 2);
+	size_t hang = gap ? (size_t)(gap - line) : indent;
+
+	while (gap && hang < len && line[hang] == ' ')
+		hang++;
+	if (hang > (size_t)cols / 2)
+		hang = indent + 2;
+	while (at < len) {
+		size_t room = cols - 1 - (at ? hang : 0), end = at + room;
+
+		if (len - at <= room) {
+			end = len;
+		} else {
+			while (end > at && line[end] != ' ')
+				end--;
+			if (end == at)
+				end = at + room;	/* one word wider than the screen */
+		}
+		pt_printf("%*s%.*s\n", at ? (int)hang : 0, "", (int)(end - at), line + at);
+		for (at = end; at < len && line[at] == ' '; at++)
+			;
+	}
+	if (!len)
+		pt_puts("\n");
+}
+
 PT_PROGRAM(help, "list commands, or explain one\nusage: help [command]")
 {
 	if (argc > 1) {
 		const struct pt_program *p = program_find(argv[1]);
+		char *text;
+
 		if (!p) {
 			pt_dprintf(PT_STDERR, "help: no command named %s\n", argv[1]);
 			return 1;
 		}
-		pt_printf("%s - %s\n", p->name, p->help);
+		int cols, rows;
+
+		pt_tty_size(PT_STDOUT, &cols, &rows);
+		if (!pt_isatty(PT_STDOUT) || !(text = pt_malloc(strlen(p->name) + strlen(p->help) + 4))) {
+			pt_printf("%s - %s\n", p->name, p->help);
+			return 0;
+		}
+		sprintf(text, "%s - %s", p->name, p->help);
+		for (const char *line = text; *line;) {
+			size_t n = strcspn(line, "\n");
+
+			print_wrapped(line, n, cols);
+			line += n + (line[n] == '\n');
+		}
+		pt_free(text);
 		return 0;
 	}
 
@@ -43,11 +97,14 @@ PT_PROGRAM(help, "list commands, or explain one\nusage: help [command]")
 	int per_row = cols / width > 0 ? cols / width : 1;
 	int lines = (n + per_row - 1) / per_row;
 
-	pt_printf("\x1b[1mCommands\x1b[0m (help <command> for details)\n");
-	const struct pt_program *list[128];
+	const struct pt_program **list = pt_malloc(n * sizeof(*list));
 	int count = 0;
-	for (const struct pt_program *p = program_first(); p && count < 128; p = p->next)
+
+	if (!list)
+		return fail("help", NULL, -ENOMEM);
+	for (const struct pt_program *p = program_first(); p; p = p->next)
 		list[count++] = p;
+	pt_printf("\x1b[1mCommands\x1b[0m (help <command> for details)\n");
 	for (int r = 0; r < lines; r++) {
 		for (int c = 0; c < per_row; c++) {
 			int i = c * lines + r;
@@ -56,22 +113,24 @@ PT_PROGRAM(help, "list commands, or explain one\nusage: help [command]")
 		}
 		pt_puts("\n");
 	}
-	pt_printf("\x1b[2mKeys: Tab completes, Up/Down history, Esc clears the line\n"
-		  "or stops a running command. Fn is the control key: Fn C is Ctrl-C,\n"
-		  "Fn 1-4 picks a terminal. `man intro` has the rest.\x1b[0m\n");
+	pt_free(list);
+	pt_printf("\x1b[2mTab completes, Up/Down is history, Esc clears the\n"
+		  "line or stops what runs. Fn is the control key: Fn C\n"
+		  "is Ctrl-C, Fn 1-4 a terminal. `man intro` has more.\x1b[0m\n");
 	return 0;
 }
 
 /* ------------------------------------------------------------ processes */
 
-static void format_elapsed(int64_t us, char *out, size_t size)
+/* Processor time as ps shows it: M:SS, or H:MM:SS past an hour. */
+static void format_cpu(uint64_t us, char *out, size_t size)
 {
-	long s = us / 1000000;
+	unsigned long s = us / 1000000;
 
 	if (s >= 3600)
-		snprintf(out, size, "%ld:%02ld:%02ld", s / 3600, s / 60 % 60, s % 60);
+		snprintf(out, size, "%lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
 	else
-		snprintf(out, size, "%ld:%02ld", s / 60, s % 60);
+		snprintf(out, size, "%lu:%02lu", s / 60, s % 60);
 }
 
 static int compare_tasks(const void *a, const void *b)
@@ -84,7 +143,6 @@ PT_PROGRAM(ps, "list processes\nusage: ps [-a]\n  -a  also list kernel tasks")
 {
 	struct pt_procinfo procs[CONFIG_PT_MAX_PROCS];
 	uint32_t flags;
-	int64_t now = pt_uptime_us();
 
 	if (parse_flags("ps", argc, argv, "a", &flags) < 0)
 		return 2;
@@ -92,13 +150,17 @@ PT_PROGRAM(ps, "list processes\nusage: ps [-a]\n  -a  also list kernel tasks")
 	int n = proc_list(procs, CONFIG_PT_MAX_PROCS);
 	pt_printf("%5s %5s %s %9s %8s %s\n", "PID", "PPID", "S", "STACK", "TIME", "COMMAND");	/* STACK: peak used/size */
 	for (int i = 0; i < n; i++) {
-		char elapsed[16], stack[16];
-		format_elapsed(now - procs[i].start_us, elapsed, sizeof(elapsed));
-		snprintf(stack, sizeof(stack), "%lu/%luK",
-			 (unsigned long)(procs[i].stack_kb * 1024 - procs[i].stack_free + 1023) / 1024,
-			 (unsigned long)procs[i].stack_kb);
+		char cpu[16], stack[16];
+
+		format_cpu(procs[i].cpu_us, cpu, sizeof(cpu));
+		if (procs[i].state == 'Z')	/* finished: its stack is gone */
+			snprintf(stack, sizeof(stack), "-");
+		else
+			snprintf(stack, sizeof(stack), "%lu/%luK",
+				 (unsigned long)(procs[i].stack_kb * 1024 - procs[i].stack_free + 1023) / 1024,
+				 (unsigned long)procs[i].stack_kb);
 		pt_printf("%5d %5d %c %9s %8s %s\n", procs[i].pid, procs[i].ppid, procs[i].state,
-			  stack, elapsed, procs[i].name);
+			  stack, cpu, procs[i].name);
 	}
 	if (!FLAG(flags, 'a'))
 		return 0;
@@ -126,31 +188,59 @@ PT_PROGRAM(ps, "list processes\nusage: ps [-a]\n  -a  also list kernel tasks")
 	return 0;
 }
 
-PT_PROGRAM(kill, "send a signal to a process\nusage: kill [-INT | -TERM | -KILL | -9] pid...\nDefault is TERM.")
+static const struct {
+	const char	*name;
+	int		 sig;
+} signals[] = {
+	{ "INT", PT_SIGINT }, { "KILL", PT_SIGKILL }, { "TERM", PT_SIGTERM },
+	{ "CONT", PT_SIGCONT }, { "STOP", PT_SIGSTOP }, { "TSTP", PT_SIGTSTP },
+};
+
+PT_PROGRAM(kill, "send a signal to a process\n"
+	   "usage: kill [-SIG | -N | -s SIG] pid...   kill -l\n"
+	   "Signals: INT TERM KILL (end it), STOP TSTP (stop it),\n"
+	   "CONT (carry on). Default is TERM. In the shell,\n"
+	   "%1 means job 1.")
 {
+	const char *name = NULL;
 	int sig = PT_SIGTERM, i = 1, status = 0;
 
-	if (i < argc && argv[i][0] == '-') {
-		const char *s = argv[i++] + 1;
-		if (!strcmp(s, "INT") || !strcmp(s, "2"))
-			sig = PT_SIGINT;
-		else if (!strcmp(s, "KILL") || !strcmp(s, "9"))
-			sig = PT_SIGKILL;
-		else if (!strcmp(s, "TERM") || !strcmp(s, "15"))
-			sig = PT_SIGTERM;
-		else {
-			pt_dprintf(PT_STDERR, "kill: unknown signal %s\n", s);
+	if (i < argc && !strcmp(argv[i], "-l")) {
+		for (size_t k = 0; k < sizeof(signals) / sizeof(signals[0]); k++)
+			pt_printf("%2d %s\n", signals[k].sig, signals[k].name);
+		return 0;
+	}
+	if (i + 1 < argc && !strcmp(argv[i], "-s")) {
+		name = argv[i + 1];
+		i += 2;
+	} else if (i < argc && argv[i][0] == '-' && argv[i][1]) {
+		name = argv[i++] + 1;
+	}
+	if (name) {
+		size_t k = 0;
+
+		if (!strncmp(name, "SIG", 3))
+			name += 3;
+		while (k < sizeof(signals) / sizeof(signals[0]) && strcmp(name, signals[k].name) &&
+		       atoi(name) != signals[k].sig)
+			k++;
+		if (k == sizeof(signals) / sizeof(signals[0])) {
+			pt_dprintf(PT_STDERR, "kill: unknown signal %s (kill -l lists them)\n", name);
 			return 2;
 		}
+		sig = signals[k].sig;
 	}
 	if (i == argc) {
-		pt_dprintf(PT_STDERR, "usage: kill [-INT | -TERM | -KILL] pid...\n");
+		pt_dprintf(PT_STDERR, "usage: kill [-SIG] pid...\n");
 		return 2;
 	}
 	for (; i < argc; i++) {
-		int err = pt_kill(atoi(argv[i]), sig);
+		char *end;
+		long pid = strtol(argv[i], &end, 10);
+		int err = *end || end == argv[i] ? -EINVAL : pt_kill((int)pid, sig);
+
 		if (err)
-			status = fail("kill", argv[i], err);
+			status = fail("kill", argv[i], err == -EINVAL ? -ESRCH : err);
 	}
 	return status;
 }
@@ -200,30 +290,68 @@ PT_PROGRAM(dmesg, "print the kernel log\nusage: dmesg [-c]\n  -c  clear the log 
 	return 0;
 }
 
+/*
+ * As Linux words it: "up 12 min" under an hour, "up 3:05" under a day,
+ * "up 2 days, 3:05" after that -- never "10:09" for ten minutes, which
+ * reads as ten hours.
+ */
 PT_PROGRAM(uptime, "show how long the system has been running")
 {
-	char elapsed[16];
+	unsigned long m = pt_uptime_us() / 60000000;
 	time_t now = time(NULL);
+	char clock[16] = "--:--:--", up[32];
 	struct tm tm;
-	char clock[16] = "--:--";
 
-	format_elapsed(pt_uptime_us(), elapsed, sizeof(elapsed));
+	if (m < 60)
+		snprintf(up, sizeof(up), "%lu min", m);
+	else if (m < 24 * 60)
+		snprintf(up, sizeof(up), "%lu:%02lu", m / 60, m % 60);
+	else
+		snprintf(up, sizeof(up), "%lu day%s, %lu:%02lu", m / 1440, m / 1440 == 1 ? "" : "s",
+			 m / 60 % 24, m % 60);
 	if (now > 1600000000 && localtime_r(&now, &tm))
-		strftime(clock, sizeof(clock), "%H:%M", &tm);
-	pt_printf("%s up %s, %d processes\n", clock, elapsed, proc_count());
+		strftime(clock, sizeof(clock), "%H:%M:%S", &tm);
+	pt_printf("%s up %s, %d process%s\n", clock, up, proc_count(),
+		  proc_count() == 1 ? "" : "es");
 	return 0;
 }
 
-PT_PROGRAM(uname, "print system information\nusage: uname [-a]")
+PT_PROGRAM(uname, "print system information\n"
+	   "usage: uname [-asnrvm]\n"
+	   "  -s system  -n host  -r release  -v version  -m machine  -a all")
 {
 	const esp_app_desc_t *app = esp_app_get_description();
+	const char *host = pt_getenv("HOSTNAME") ? pt_getenv("HOSTNAME") : "pockettype";
+	char version[112];
+	bool want[5] = { false }, any = false;	/* s n r v m, in that order */
+	struct opt o = { .ind = 1 };
+	int c;
 
-	if (argc > 1 && !strcmp(argv[1], "-a"))
-		pt_printf("PocketType %s %s #1 SMP %s %s xtensa esp32s3 esp-idf-%s\n",
-			  pt_getenv("HOSTNAME") ? pt_getenv("HOSTNAME") : "pockettype",
-			  PT_VERSION, app->date, app->time, app->idf_ver);
-	else
-		pt_printf("PocketType\n");
+	while ((c = getopt_pt(&o, "uname", argc, argv, "asnrvm")) != -1) {
+		const char *at = strchr("snrvm", c);
+
+		if (c == 'a')
+			want[0] = want[1] = want[2] = want[3] = want[4] = true;
+		else if (at)
+			want[at - "snrvm"] = true;
+		else
+			return 2;
+		any = true;
+	}
+	if (o.ind < argc) {
+		pt_dprintf(PT_STDERR, "usage: uname [-asnrvm]\n");
+		return 2;
+	}
+	if (!any)
+		want[0] = true;
+	snprintf(version, sizeof(version), "#1 SMP %s %s esp-idf-%s", app->date, app->time,
+		 app->idf_ver);
+	const char *parts[5] = { "PocketType", host, PT_VERSION, version, "xtensa" };
+
+	for (int i = 0, n = 0; i < 5; i++)
+		if (want[i])
+			pt_printf("%s%s", n++ ? " " : "", parts[i]);
+	pt_puts("\n");
 	return 0;
 }
 
@@ -306,12 +434,80 @@ PT_PROGRAM(sleep, "wait for a number of seconds\nusage: sleep seconds")
 	return pt_sleep_ms((uint32_t)(s * 1000)) ? 1 : 0;
 }
 
-PT_PROGRAM(env, "print the environment")
+PT_PROGRAM(env, "print the environment, or run a command\n"
+	   "with changes to it\n"
+	   "usage: env [-i] [-u NAME] [NAME=value]...\n"
+	   "           [command [argument...]]\n"
+	   "  -i  start from an empty environment\n"
+	   "  -u NAME  leave NAME out")
 {
+	int i = 1;
+
+	for (; i < argc && argv[i][0] == '-'; i++) {
+		if (!strcmp(argv[i], "-i")) {
+			const char *entry;
+
+			/* one at a time from the front: each unset moves the rest up */
+			while (pt_environ(0, &entry)) {
+				char name[64];
+				size_t n = strcspn(entry, "=");
+
+				snprintf(name, sizeof(name), "%.*s", (int)n, entry);
+				if (pt_unsetenv(name))
+					break;
+			}
+		} else if (!strcmp(argv[i], "-u") && i + 1 < argc) {
+			pt_unsetenv(argv[++i]);
+		} else if (!strcmp(argv[i], "--")) {
+			i++;
+			break;
+		} else {
+			pt_dprintf(PT_STDERR, "usage: env [-i] [-u NAME] [NAME=value]... [command...]\n");
+			return 2;
+		}
+	}
+	/* this process's environment is what the command is started with */
+	for (; i < argc && strchr(argv[i], '=') && argv[i][0] != '='; i++) {
+		char *eq = strchr(argv[i], '=');
+
+		*eq = '\0';
+		int err = pt_setenv(argv[i], eq + 1);
+
+		*eq = '=';
+		if (err)
+			return fail("env", argv[i], err);
+	}
+	if (i < argc) {
+		int status = run_command(argc - i, argv + i);
+
+		if (status == -ENOENT) {
+			pt_dprintf(PT_STDERR, "env: %s: command not found\n", argv[i]);
+			return 127;
+		}
+		return status < 0 ? fail("env", argv[i], status) + 125 : status;
+	}
 	const char *entry;
 
-	for (int i = 0; pt_environ(i, &entry); i++)
+	for (int k = 0; pt_environ(k, &entry); k++)
 		pt_printf("%s\n", entry);
+	return 0;
+}
+
+PT_PROGRAM(whoami, "print the user's name")
+{
+	const char *user = pt_getenv("USER");
+
+	pt_printf("%s\n", user ? user : CONFIG_PT_USERNAME);
+	return 0;
+}
+
+PT_PROGRAM(hostname, "print the machine's name\n"
+	   "usage: hostname\n"
+	   "It is $HOSTNAME, which /etc/profile can set.")
+{
+	const char *host = pt_getenv("HOSTNAME");
+
+	pt_printf("%s\n", host ? host : "pockettype");
 	return 0;
 }
 
@@ -371,6 +567,38 @@ PT_PROGRAM(reboot, "restart the system")
 	return 0;
 }
 
+/*
+ * ESP-IDF's table of power locks and modes, which is ninety columns wide,
+ * cut down to what fits on the screen: each lock, what it holds the chip
+ * to, how much of the time it has held it, and whether it does now; then
+ * the time spent at each speed.
+ */
+static void print_pm_stats(char *text)
+{
+	enum { NONE, LOCKS, MODES } part = NONE;
+
+	for (char *line = strtok(text, "\n"); line; line = strtok(NULL, "\n")) {
+		char name[24], type[24], pct[8];
+		unsigned long arg, active, count, us;
+		int mhz;
+
+		if (!strncmp(line, "Lock stats", 10)) {
+			part = LOCKS;
+			pt_printf("%-16s %-15s %5s %s\n", "LOCK", "HOLDS THE CHIP AT", "TIME", "NOW");
+		} else if (!strncmp(line, "Mode stats", 10)) {
+			part = MODES;
+			pt_printf("%-16s %7s %5s\n", "MODE", "CPU", "TIME");
+		} else if (part == LOCKS &&
+			   sscanf(line, "%23s %23s %lu %lu %lu %lu %7[0-9]", name, type, &arg, &active,
+				  &count, &us, pct) == 7) {
+			pt_printf("%-16.16s %-15.15s %4s%% %s\n", name, type, pct, active ? "held" : "");
+		} else if (part == MODES &&
+			   sscanf(line, "%23s %d M %lu %7[0-9]", name, &mhz, &us, pct) == 4) {
+			pt_printf("%-16.16s %3d MHz %4s%%\n", name, mhz, pct);
+		}
+	}
+}
+
 PT_PROGRAM(power, "show power state, or switch idle sleep\n"
 	   "usage: power [sleep on | sleep off]\n"
 	   "Idle sleep lets the chip light-sleep between events, keeping RAM.\n"
@@ -399,14 +627,14 @@ PT_PROGRAM(power, "show power state, or switch idle sleep\n"
 
 	char *stats = pt_malloc(2048);
 	if (stats && cpufreq_stats(stats, 2048) > 0)
-		pt_puts(stats);
+		print_pm_stats(stats);
 	pt_free(stats);
 	return 0;
 }
 
 PT_PROGRAM(battery, "show the battery level\n"
 	   "usage: battery [-w]\n"
-	   "  -w  keep watching, once a second, until a key is pressed")
+	   "  -w  keep watching, once a second, until Ctrl-C")
 {
 	uint32_t flags;
 	int i = parse_flags("battery", argc, argv, "w", &flags);
@@ -801,11 +1029,6 @@ PT_PROGRAM(backlight, "show or set the screen brightness\n"
 }
 #endif
 
-/*
- * The board's I2C bus is shared, and every bring-up question about it ("is
- * the keyboard seen? is the codec there?") is the same question, so: the
- * Linux tool, with the addresses this board can have spelled out.
- */
 PT_PROGRAM(mkfs, "make a new filesystem on the SD card\n"
 	   "usage: mkfs -y /mnt/sd\n"
 	   "Everything on the card is lost. -y says you mean it.")
@@ -876,10 +1099,19 @@ PT_PROGRAM_NAMED(factory_reset, "factory-reset", 0,
 	if ((ret = rootfs_format()))
 		return fail("factory-reset", "/", ret);
 
-	if (n > 0 && (fd = pt_open("/etc/wifi", O_WRONLY | O_CREAT | O_TRUNC)) >= 0) {
-		pt_write(fd, wifi, n);
-		pt_close(fd);
-		pt_printf("kept %d bytes of Wi-Fi settings\n", n);
+	/* the format took /etc with it; the rest of the layout is made at boot */
+	if (n > 0) {
+		pt_mkdir("/etc");
+		fd = pt_open("/etc/wifi", O_WRONLY | O_CREAT | O_TRUNC);
+		ret = fd < 0 ? fd : write_all(fd, wifi, n);
+		if (fd >= 0 && !ret)
+			ret = pt_close(fd);
+		else if (fd >= 0)
+			pt_close(fd);
+		if (ret)
+			fail("factory-reset", "could not put back /etc/wifi", ret);
+		else
+			pt_printf("kept %d bytes of Wi-Fi settings\n", n);
 	}
 	pt_printf("done; rebooting\n");
 	vfs_sync_all();
@@ -936,6 +1168,11 @@ PT_PROGRAM(screenshot, "save a picture of the screen\n"
 	return 0;
 }
 
+/*
+ * The board's I2C bus is shared, and every bring-up question about it ("is
+ * the keyboard seen? is the codec there?") is the same question, so: the
+ * Linux tool, with the addresses this board can have spelled out.
+ */
 PT_PROGRAM(i2cdetect, "list the devices on an I2C bus\n"
 	   "usage: i2cdetect [sda scl]\n"
 	   "Without pins, scans the board's own bus.")

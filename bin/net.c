@@ -307,12 +307,21 @@ PT_PROGRAM(ping, "see whether a host answers\n"
 		pt_dprintf(PT_STDERR, "ping: cannot start\n");
 		return 1;
 	}
+	/*
+	 * The session is a task of ESP-IDF's writing into `run`, which is on
+	 * this program's stack: it has to be over before this returns. So
+	 * Ctrl-C is caught rather than let end the program at its next
+	 * printf, and after a stop the session is waited for -- it finishes
+	 * the ping it is on, a second at most, and then says it has ended.
+	 */
+	pt_sigcatch(true);
 	pt_printf("PING %s\n", host);
 	esp_ping_start(ping);
 	while (!xSemaphoreTake(run.done, pdMS_TO_TICKS(100))) {
 		ping_drain(&run);
 		if (pt_interrupted()) {
 			esp_ping_stop(ping);
+			xSemaphoreTake(run.done, pdMS_TO_TICKS(5000));
 			break;
 		}
 	}

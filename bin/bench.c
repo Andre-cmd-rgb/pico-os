@@ -7,6 +7,7 @@
 #include "esp_heap_caps.h"
 
 #include "drivers/drivers.h"
+#include "pt/kernel.h"
 #include "util.h"
 
 #define RUN_US		1000000		/* each timed loop runs about a second */
@@ -97,13 +98,15 @@ static void bench_copy(const char *label, uint32_t caps, size_t size)
 
 	if (largest / 2 < size)
 		size = largest / 2 & ~(size_t)(1024 - 1);
-	a = size >= 1024 ? heap_caps_malloc(size, caps) : NULL;
-	b = a ? heap_caps_malloc(size, caps) : NULL;
+	/* tracked: Ctrl-C stops the program at its next printf, and 2 MB
+	 * of PSRAM should not go with it */
+	a = size >= 1024 ? pt_malloc_caps(size, caps) : NULL;
+	b = a ? pt_malloc_caps(size, caps) : NULL;
 	if (!a || !b) {
 		pt_printf("mem    %-11s no memory (%zu KB free, largest %zu KB)\n",
 			  label, heap_caps_get_free_size(caps) / 1024, largest / 1024);
-		heap_caps_free(a);
-		heap_caps_free(b);
+		pt_free(a);
+		pt_free(b);
 		return;
 	}
 	memset(a, 0x5a, size);
@@ -115,8 +118,8 @@ static void bench_copy(const char *label, uint32_t caps, size_t size)
 	double s = (now() - start) / 1e6;
 	pt_printf("mem    %-11s %7.2f MB/s  (%zu KB blocks)\n", label,
 		  bytes / s / (1 << 20), size / 1024);
-	heap_caps_free(a);
-	heap_caps_free(b);
+	pt_free(a);
+	pt_free(b);
 }
 
 static int bench_mem(void)
