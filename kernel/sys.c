@@ -9,8 +9,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utime.h>
 
 #include "esp_timer.h"
 
@@ -151,6 +153,34 @@ int pt_pipe(int fds[2])
 	file_put(rd);
 	file_put(wr);
 	return -EMFILE;
+}
+
+/*
+ * A read-only file holding a copy of `data`: what the shell makes of a
+ * here-document. It reads and seeks like any file, is passed to children
+ * like any file, and its memory goes when the last descriptor does.
+ */
+int pt_memfd(const void *data, size_t len)
+{
+	proc_check_signals();
+	struct proc *p = proc_current();
+	char *copy = malloc(len ? len : 1);
+	struct pt_file *f;
+
+	if (!p) {
+		free(copy);
+		return -EPERM;
+	}
+	if (!copy)
+		return -ENOMEM;
+	memcpy(copy, data, len);
+	if (!(f = mem_file_open(copy, len)))
+		return -ENOMEM;
+	int fd = fd_install(p, f);
+
+	if (fd < 0)
+		file_put(f);
+	return fd;
 }
 
 /* ------------------------------------------------------------ namespace */
@@ -336,7 +366,39 @@ int pt_rename(const char *from, const char *to)
 		return -ENOENT;
 	if (ma != mb)
 		return -EXDEV;
+	if (!rename(va, vb))
+		return 0;
+	/*
+	 * rename(2) replaces a file already at the new name. LittleFS does;
+	 * FAT refuses, so there it is done in two steps -- not atomic, which
+	 * FAT has no way to be, but what every caller expects. Never when
+	 * the two names differ only in case: on FAT that is one file, and
+	 * the "old file" to remove would be the one being renamed.
+	 */
+	struct stat sa, sb;
+
+	if (errno != EEXIST || !strcasecmp(va, vb) || stat(va, &sa) || stat(vb, &sb) ||
+	    S_ISDIR(sa.st_mode) || S_ISDIR(sb.st_mode))
+		return -errno;
+	if (unlink(vb))
+		return -errno;
 	return rename(va, vb) ? -errno : 0;
+}
+
+int pt_utime(const char *path, time_t mtime)
+{
+	proc_check_signals();
+	char abs[PT_PATH_MAX], vfs[VFS_PATH_MAX];
+	struct utimbuf t = { .actime = mtime, .modtime = mtime };
+	int err = abspath(path, abs);
+
+	if (!err)
+		err = protected(abs);
+	if (!err)
+		err = to_vfs(abs, vfs);
+	if (err)
+		return err;
+	return utime(vfs, mtime ? &t : NULL) ? -errno : 0;
 }
 
 /* ------------------------------------------------------------ directories */
@@ -348,6 +410,8 @@ enum dir_kind {
 };
 
 struct pt_dir {
+	struct pt_dir		*next;		/* in its process's list */
+	struct proc		*owner;
 	enum dir_kind		 kind;
 	const struct pt_kernfs	*fs;
 	int			 index;
@@ -391,6 +455,13 @@ int pt_opendir(const char *path, pt_dir_t **out)
 			return err;
 		}
 	}
+	/* The process keeps a list of what it has open, so that a program
+	 * interrupted halfway through a listing does not leave the
+	 * directory open, and its memory taken, for good. */
+	if ((d->owner = proc_current())) {
+		d->next = d->owner->dirs;
+		d->owner->dirs = d;
+	}
 	*out = d;
 	return 0;
 }
@@ -431,9 +502,26 @@ void pt_closedir(pt_dir_t *d)
 {
 	if (!d)
 		return;
+	if (d->owner)
+		for (struct pt_dir **pp = &d->owner->dirs; *pp; pp = &(*pp)->next)
+			if (*pp == d) {
+				*pp = d->next;
+				break;
+			}
 	if (d->vfs)
 		closedir(d->vfs);
 	free(d);
+}
+
+void dir_release_all(struct proc *p)
+{
+	while (p->dirs) {
+		struct pt_dir *d = p->dirs;
+
+		p->dirs = d->next;
+		d->owner = NULL;
+		pt_closedir(d);
+	}
 }
 
 int pt_chdir(const char *path)
@@ -492,7 +580,8 @@ int pt_vdprintf(int fd, const char *fmt, va_list ap)
 		va_end(copy);
 		return write_all(fd, small, n);
 	}
-	char *big = malloc(n + 1);
+	/* tracked: the write is a system call, and Ctrl-C ends the program there */
+	char *big = pt_malloc(n + 1);
 	if (!big) {
 		va_end(copy);
 		return -ENOMEM;
@@ -500,7 +589,7 @@ int pt_vdprintf(int fd, const char *fmt, va_list ap)
 	vsnprintf(big, n + 1, fmt, copy);
 	va_end(copy);
 	int r = write_all(fd, big, n);
-	free(big);
+	pt_free(big);
 	return r;
 }
 

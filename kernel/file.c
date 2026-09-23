@@ -289,13 +289,18 @@ int vfs_sync_all(void)
 	return err;
 }
 
+/*
+ * Whether any file is open on m's filesystem -- through m, or through a
+ * bind of it elsewhere (the card is /mnt/sd and the home directory both):
+ * the same VFS underneath is the same filesystem.
+ */
 bool vfs_mount_busy(const struct pt_mount *m)
 {
 	bool busy = false;
 
 	xSemaphoreTake(open_lock, portMAX_DELAY);
 	for (struct vfs_file *v = open_files; v && !busy; v = v->next)
-		busy = v->mount == m;
+		busy = v->mount == m || (v->mount && !strcmp(v->mount->vfs, m->vfs));
 	xSemaphoreGive(open_lock);
 	return busy;
 }

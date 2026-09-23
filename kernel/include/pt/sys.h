@@ -48,6 +48,7 @@ off_t	pt_lseek(int fd, off_t off, int whence);
 int	pt_dup(int fd);
 int	pt_dup2(int oldfd, int newfd);
 int	pt_pipe(int fds[2]);
+int	pt_memfd(const void *data, size_t len);	/* a read-only file of a copy of data */
 int	pt_ioctl(int fd, int req, void *arg);
 bool	pt_isatty(int fd);
 
@@ -69,6 +70,7 @@ int	pt_mkdir(const char *path);
 int	pt_rmdir(const char *path);
 int	pt_unlink(const char *path);
 int	pt_rename(const char *from, const char *to);
+int	pt_utime(const char *path, time_t mtime);	/* 0: now */
 int	pt_opendir(const char *path, pt_dir_t **dir);
 int	pt_readdir(pt_dir_t *dir, struct pt_dirent *ent);	/* 1, 0 at end, <0 */
 void	pt_closedir(pt_dir_t *dir);

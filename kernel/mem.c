@@ -20,13 +20,10 @@ struct alloc_hdr {
 
 #define PREFER_PSRAM	2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_DEFAULT
 
-void *pt_malloc(size_t n)
+/* A block with its header, linked into the calling process's list. */
+static void *track(struct alloc_hdr *h, size_t n)
 {
 	struct proc *p = proc_current();
-
-	if (n > SIZE_MAX - sizeof(struct alloc_hdr))
-		return NULL;
-	struct alloc_hdr *h = heap_caps_malloc_prefer(sizeof(*h) + n, PREFER_PSRAM);
 
 	if (!h)
 		return NULL;
@@ -40,6 +37,20 @@ void *pt_malloc(size_t n)
 		p->allocs = h;
 	}
 	return h + 1;
+}
+
+void *pt_malloc(size_t n)
+{
+	if (n > SIZE_MAX - sizeof(struct alloc_hdr))
+		return NULL;
+	return track(heap_caps_malloc_prefer(sizeof(struct alloc_hdr) + n, PREFER_PSRAM), n);
+}
+
+void *pt_malloc_caps(size_t n, uint32_t caps)
+{
+	if (n > SIZE_MAX - sizeof(struct alloc_hdr))
+		return NULL;
+	return track(heap_caps_malloc(sizeof(struct alloc_hdr) + n, caps), n);
 }
 
 void pt_free(void *ptr)

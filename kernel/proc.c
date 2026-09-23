@@ -250,6 +250,7 @@ static void teardown(struct proc *p, int status)
 		file_put(p->fd[i]);
 		p->fd[i] = NULL;
 	}
+	dir_release_all(p);
 	mem_release_all(p);
 	free(p->env);
 	free(p->args);

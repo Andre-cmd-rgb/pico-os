@@ -74,12 +74,17 @@ struct proc {
 	char			 name[16];
 	TaskHandle_t		 task;
 	SemaphoreHandle_t	 exited;
+	SemaphoreHandle_t	 cont;		/* given to wake it from a stop */
+	bool			 stopped;	/* by SIGSTOP or SIGTSTP */
+	bool			 stop_reported;	/* and its parent knows */
+	int			 stop_sig;	/* which of them */
 	struct pt_file		*fd[PT_MAX_FDS];
 	char			 cwd[PT_PATH_MAX];
 	char			*env;		/* "A=1\0B=2\0\0" */
 	size_t			 env_len;
 	char			*args;		/* argv block */
 	struct alloc_hdr	*allocs;
+	struct pt_dir		*dirs;		/* open, closed at exit if the program did not */
 	atomic_uint		 sigpending;
 	bool			 sigcatch;
 	atomic_bool		 exiting;
@@ -95,11 +100,12 @@ struct proc {
 
 struct pt_procinfo {
 	int	 pid, ppid, pgid;
-	char	 state;			/* R, Z */
+	char	 state;			/* R, T (stopped), Z */
 	char	 name[16];
 	uint32_t stack_kb;
 	uint32_t stack_free;
 	int64_t	 start_us;
+	uint64_t cpu_us;		/* processor time used, both cores */
 };
 
 void	proc_init(void);
@@ -109,10 +115,30 @@ int	proc_wait_orphan(int pid);	/* for kernel code: wait for a pid it spawned */
 void	proc_signal_group(int pgid, int sig);
 int	proc_list(struct pt_procinfo *out, int max);
 int	proc_count(void);
+bool	proc_alive(int pid);		/* whether that process is still running */
 void	mem_release_all(struct proc *p);
+/*
+ * pt_malloc from particular memory -- MALLOC_CAP_INTERNAL for a buffer the
+ * card or the flash wants, say -- and freed with pt_free, or at exit like
+ * the rest. The header keeps the heap's alignment, which DMA is happy with.
+ * Not for pt_realloc, which would move it to wherever pt_malloc prefers.
+ */
+void	*pt_malloc_caps(size_t n, uint32_t caps);
+void	dir_release_all(struct proc *p);	/* sys.c: what the program left open */
+
+/* auth.c: the password the network shell asks for, kept hashed in /etc/shadow */
+bool	auth_is_set(void);
+int	auth_check(const char *password);	/* 0, -EACCES, or -ENOENT with none set */
+int	auth_set(const char *password);		/* NULL removes it */
 
 /* Signals are delivered at safe points: every syscall checks on entry. */
 void	proc_check_signals(void);
+/*
+ * Where a system call that waits a long time -- for the terminal, a pipe,
+ * a sleep -- lets a stop happen: it holds no locks when it calls this.
+ */
+void	proc_stop_point(void);
+bool	proc_stop_pending(void);
 
 /* ------------------------------------------------------------ paths */
 
