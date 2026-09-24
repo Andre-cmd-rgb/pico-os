@@ -24,6 +24,15 @@ TEXT
   xargs CMD         run CMD on the words coming in:
                     find . -name '*.bak' | xargs rm
 
+NOTES
+  notes             pick one from ~/notes (a folder
+                    per subject): Markdown or text,
+                    laid out for the screen
+  notes FILE        read it: space/b pages, o the
+                    headings, / finds, + and - the
+                    backlight, q quits. Each note
+                    reopens where you left it
+
 SCRIPTS
   echo printf seq expr test basename dirname
   true false sleep yes env

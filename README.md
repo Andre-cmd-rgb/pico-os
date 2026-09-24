@@ -105,6 +105,13 @@ network.
 The CardKB has no Ctrl key, so **Esc** does the Ctrl-C job and opens the menu
 in `edit`.
 
+**Notes to study from**: put Markdown or text files in `~/notes` on the card
+(a folder per subject works) and run `notes`. Headings, bold, lists, quotes,
+code and tables are laid out for the 53-column screen; Space and `b` turn the
+page, `o` lists the headings to jump to, `/` searches, `+` and `-` set the
+backlight for reading in the dark, and each note reopens where you left it
+(`~/.notes_pos`). `notes -p FILE` prints the laid-out text instead.
+
 ### Commands
 
 `help` lists them, `help <command>` explains one.
@@ -112,7 +119,7 @@ in `edit`.
 | | |
 |---|---|
 | files | `ls cat cp mv rm mkdir rmdir touch pwd stat find du df mount umount sync` |
-| text | `head tail wc grep sed sort uniq cut tr tee diff cmp hexdump more edit` |
+| text | `head tail wc grep sed sort uniq cut tr tee diff cmp hexdump more edit notes` |
 | checksums | `cksum md5sum sha1sum sha256sum sha512sum` |
 | scripts | `echo printf seq expr xargs basename dirname realpath yes` |
 | system | `ps top kill free dmesg uptime uname whoami hostname date time sleep env which clear reboot` |

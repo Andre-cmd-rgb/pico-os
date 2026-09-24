@@ -13,6 +13,7 @@ idf_component_register(
 		man.c
 		nes.c
 		net.c
+		notes.c
 		passwd.c
 		pick.c
 		regex.c

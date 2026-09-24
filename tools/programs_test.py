@@ -34,8 +34,8 @@ ROOT = os.path.dirname(HERE)
 SOURCES = [os.path.join(HERE, "host_pt.c")] + [
     os.path.join(ROOT, p) for p in (
         "bin/diff.c", "bin/filters.c", "bin/find.c", "bin/sums.c", "bin/regex.c", "bin/sed.c", "bin/shellutils.c", "bin/sort.c",
-        "bin/textutils.c", "bin/util.c", "kernel/match.c")]
-PROGRAMS = ("basename cksum cmp cut diff dirname du echo expr find grep head printf "
+        "bin/textutils.c", "bin/util.c", "kernel/match.c", "bin/notes.c", "bin/pick.c")]
+PROGRAMS = ("basename cksum cmp cut diff dirname du echo expr find grep head notes printf "
             "realpath sed seq sort tail tee tr uniq wc xargs yes").split()
 VERBOSE = "-v" in sys.argv
 
@@ -55,6 +55,13 @@ FILES = {
     "utf8": "café\nCAFÉ\nnaïve\nüber alles\nplain\n",
     "lines": "".join(f"line {i}\n" for i in range(1, 31)),
     "code": "int main(void)\n{\n\treturn 0; /* done */\n}\n// the end\n",
+    "note.md": "# Title\n\nSome **bold** and *italic* and `code`, a [link](http://x) and "
+               "![pic](p.png).\nsnake_case and 2 * 3 stay, \\*escaped\\*.\n\n## List\n\n- one\n"
+               "- two that is long enough to wrap over the line\n  1. nested\n- [ ] task\n\n"
+               "> quoted\n> text\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\nSetext\n======\n\n"
+               "hard  \nbreak\n\n```\ncode\tline\n```\n",
+    "note.txt": "plain text line that is long enough to wrap around\n"
+                "    indented line that is long enough to wrap too\n\nlast\n",
     "tree/a.txt": "alpha\n",
     "tree/b.log": "beta\n",
     "tree/sub/c.txt": "gamma alpha\n",
@@ -442,6 +449,20 @@ CASES = [
     ("echo x | xargs false; echo $?", None),
     ("find tree -name '*.txt' | sort | xargs cat", None),
     ("seq 3000 | xargs echo | wc -l", "3\n"),
+    # notes: PocketType's own, laid out as the screen shows it (-p: no colour)
+    ("notes -p -w 30 note.md",
+     "Title\n" + "\u2014" * 30 + "\n\nSome bold and italic and code,\na link and [pic]. snake_case\n"
+     "and 2 * 3 stay, *escaped*.\n\nList\n\n\u2022 one\n\u2022 two that is long enough to\n"
+     "  wrap over the line\n  1. nested\n\u2022 [ ] task\n\n| quoted text\n\n| a | b |\n"
+     "|---|---|\n| 1 | 2 |\n\n" + "\u2014" * 30 + "\n\nSetext\n" + "\u2014" * 30 +
+     "\n\nhard\nbreak\n\n  code    line\n"),
+    ("notes -p -w 30 note.txt",
+     "plain text line that is long\nenough to wrap around\n    indented line that is long\n"
+     "    enough to wrap too\n\nlast\n"),
+    ("notes -p note.txt | head -1", "plain text line that is long enough to wrap around\n"),
+    ("notes -p 2>&1; echo $?", "usage: notes -p [-w cols] file...\n2\n"),
+    ("notes -p -w 5 note.md 2>&1; echo $?", "notes: -w takes 10 to 250 columns\n2\n"),
+    ("notes -p nosuch.md 2>&1; echo $?", "notes: nosuch.md: No such file or directory\n1\n"),
     ("seq 3000 | xargs echo | wc -w", None),
 ]
 
