@@ -553,11 +553,10 @@ static void draw_status(uint8_t *pixels)
 	snprintf(left, sizeof(left), " %d/%d", vt_active() + 1, CONFIG_PT_VT_COUNT);
 	if (!wifi_state(&net) && net.up)
 		snprintf(left + strlen(left), sizeof(left) - strlen(left), "  %s", net.ssid);
+	right[0] = '\0';			/* no cell fitted: nothing to show */
 	if (!battery_status(&bat) && bat.state != BATTERY_NONE && bat.state != BATTERY_USB)
 		snprintf(right, sizeof(right), "%s%d%% ",
 			 bat.state == BATTERY_CHARGING ? "* " : "", bat.percent);
-	else
-		snprintf(right, sizeof(right), "usb ");
 
 	memset(bar, ' ', sizeof(bar));
 	memcpy(bar, left, strlen(left));

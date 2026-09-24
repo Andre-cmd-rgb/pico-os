@@ -188,7 +188,7 @@ def run_tests(b):
     # plugged in means it says so.
     missing = "command not found"
     step("power", any_of=["cpufreq"])
-    step("battery", any_of=[missing, "no cell", " V  ", "no battery sensing"])
+    step("battery", any_of=[missing, "no battery fitted", " V  ", "no battery sensing"])
     step("i2cdetect", any_of=[missing, "devices", "device\n", "usage: i2cdetect"])
     step("volume", any_of=[missing, "volume ", "no audio codec"])
     # a beep that works says nothing at all, so ask the shell how it went

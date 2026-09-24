@@ -194,11 +194,10 @@ const char *battery_state_name(enum battery_state state)
 {
 	switch (state) {
 	case BATTERY_CHARGING:	  return "charging";
-	case BATTERY_FULL:	  return "full or on USB";
+	case BATTERY_FULL:	  return "full";
 	case BATTERY_DISCHARGING: return "on battery";
 	case BATTERY_UNKNOWN:	  return "working it out";
-	case BATTERY_USB:	  return "on USB power";
-	default:		  return "no cell";
+	default:		  return "no battery fitted";
 	}
 }
 
@@ -343,7 +342,7 @@ int battery_init(void)
 	/*
 	 * Judge the very first reading the way the task will, so the status
 	 * bar shows the cell from the moment the screen comes up instead of
-	 * "usb" for the five seconds before the task has an opinion.
+	 * nothing for the five seconds before the task has an opinion.
 	 */
 	bat.smooth = mv > 0 ? mv : 0;
 	if (mv < BATTERY_NO_CELL_MV || mv > USB_ONLY_MV)
@@ -351,7 +350,7 @@ int battery_init(void)
 	else
 		bat.state = usb_serial_jtag_is_connected() ? BATTERY_CHARGING : BATTERY_UNKNOWN;
 	if (bat.state == BATTERY_USB)
-		klog("battery: none fitted, running from USB");
+		klog("battery: none fitted");
 	else
 		klog("battery: %d.%02d V (%d%%) on GPIO%d%s", mv / 1000, mv % 1000 / 10,
 		     percent_of(mv, BATTERY_FULL), CONFIG_PT_BATTERY_ADC_GPIO,

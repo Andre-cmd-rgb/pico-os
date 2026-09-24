@@ -91,7 +91,7 @@ the charger's output, so with USB plugged in and **no cell at all** it
 still reads about 4.1 V, exactly like a full one. The warning and the
 cut-off are unaffected -- those only happen on a cell that is really
 running down -- but do not read "4.09 V" as proof that a battery is
-fitted. (Below 2.5 V the firmware does say "no cell": that is a pin with
+fitted. (Below 2.5 V the firmware does say "no battery fitted": that is a pin with
 nothing driving it, which is what a board without this charger looks
 like.)
 
@@ -252,7 +252,7 @@ speaker and a card attached:
 | Screen lights up but stays blank | menuconfig → **Start-up sequence**: try the standard table instead of the alternative |
 | Noise or torn lines on the screen | the panel runs at 80 MHz here, which is well over its datasheet: drop **Bus clock** to 40000000 |
 | `sd: no usable card` | reseat it; try another card; `PT_SD_MMC_D1` = -1 (one-wire mode) if the card is flaky |
-| `battery` says "no cell" with a cell fitted | check the socket polarity and that the cell is not below its protection cut-out |
+| `battery` says "no battery fitted" with a cell fitted | check the socket polarity and that the cell is not below its protection cut-out |
 | `cardkb: keyboard disconnected` again and again | the bus is shared with the codec on weak internal pull-ups: shorten the cable, or add 4.7 kΩ from SDA and SCL to 3V3 |
 | `rec` gives an I/O error | the microphone is clocked by the transmitter; if this comes back, the transmitter failed to start |
 

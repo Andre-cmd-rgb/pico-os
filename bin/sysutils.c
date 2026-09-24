@@ -624,7 +624,7 @@ PT_PROGRAM(power, "show power state, or switch idle sleep\n"
 		pt_printf("battery %d.%02d V (%d%%), %s, %+d mV/min\n", b.mv / 1000,
 			  b.mv % 1000 / 10, b.percent, battery_state_name(b.state), b.trend);
 	else if (!battery_status(&b))
-		pt_printf("battery none, running from USB\n");
+		pt_printf("battery none fitted\n");
 
 	char *stats = pt_malloc(2048);
 	if (stats && cpufreq_stats(stats, 2048) > 0)
@@ -657,7 +657,7 @@ PT_PROGRAM(battery, "show the battery level\n"
 			snprintf(left, sizeof(left), ", about %dh %02dm left",
 				 b.minutes_left / 60, b.minutes_left % 60);
 		if (b.state == BATTERY_NONE || b.state == BATTERY_USB)
-			pt_printf("no battery fitted: running from USB%s",
+			pt_printf("no battery fitted%s",
 				  FLAG(flags, 'w') ? "   \r" : "\n");
 		else
 			pt_printf("%d.%02d V  %d%%  %s%s%s", b.mv / 1000, b.mv % 1000 / 10,

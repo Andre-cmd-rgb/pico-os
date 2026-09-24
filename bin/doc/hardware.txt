@@ -36,8 +36,8 @@ THINGS WORTH KNOWING
 
   The battery sense hangs off the charger, so with
   USB plugged in and no cell it reads about 5 V. The
-  system treats anything above 4.3 V as "no battery,
-  on USB".
+  system treats anything above 4.3 V as "no battery
+  fitted" and leaves the status bar's corner empty.
 
   The panel is driven at 80 MHz, which is faster than
   its datasheet allows. It is reliable on this board;
