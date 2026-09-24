@@ -7,8 +7,8 @@ drawn in PIXELTAPE's amber CRT colors on an ILI9341 screen.
 
 ```
 [0.00] PocketType 0.1.0 (esp-idf v6.1) #1 SMP Sep 23 2026 13:58:56
-[0.05] mem: 183 KB internal, 8173 KB psram available
-[0.10] memtest: 8064 KB PSRAM ok (51 ms)
+[0.05] mem: 183 KB internal, 6149 KB psram available
+[0.10] memtest: 6016 KB PSRAM ok (40 ms)
 [0.10] serial: console on native USB
 [0.10] proc: 16 process slots, programs on core 1
 [0.10] cpufreq: ondemand, 80-240 MHz, idle sleep off
@@ -214,8 +214,8 @@ the time is saved in `/etc/clock` every hour and before `poweroff` and
 | memcpy, internal RAM | 358 MB/s |
 | memcpy, PSRAM | 30 MB/s |
 | start and reap a process | 0.11 ms |
-| `/` write / read, 512 KB file | 125 KB/s / 4.1 MB/s |
-| `/` create / delete a small file | 100 ms / 18 ms |
+| `/` write / read, 512 KB file | 125 KB/s / 6.7 MB/s |
+| `/` create / delete a small file | 100 ms / 11 ms |
 | `/` write, a line at a time | 2,600 lines/s |
 | `/tmp` write, a line at a time | 49,300 lines/s |
 | display bus, full frames | 55.7 fps (8.2 MB/s) on the Freenove panel at 80 MHz |
