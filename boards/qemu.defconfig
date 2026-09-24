@@ -2,6 +2,8 @@
 # filesystem in RAM. QEMU emulates neither the flash filesystems nor octal
 # PSRAM, so those are swapped out here.
 
+CONFIG_IDF_TARGET="esp32s3"
+
 # The console stays on UART0, the default: QEMU emulates the UART, and
 # its USB Serial/JTAG goes nowhere -- a console there boots in silence.
 

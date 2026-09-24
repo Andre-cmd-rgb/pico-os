@@ -1,6 +1,7 @@
 # PocketType
 
-A small Unix-like system for the ESP32-S3: a kernel with processes, pipes,
+A small Unix-like system for the ESP32-S3 (and, built but not yet run, the
+ESP32-P4): a kernel with processes, pipes,
 signals, `/dev` and `/proc`, a POSIX shell, over a hundred commands (grep, sed,
 find, sort and the rest behave like GNU's) and a full-screen editor,
 drawn in PIXELTAPE's amber CRT colors on an ILI9341 screen.
@@ -42,6 +43,7 @@ make BOARD=freenove-fnk0104b flash  # the default
 |---|---|
 | `freenove-fnk0104b` | **Freenove ESP32-S3 Display**: 2.8" 240x320 IPS over SPI, microSD (SDMMC), ES8311 codec with speaker and microphone, RGB LED, battery charger. 16 MB flash, 8 MB PSRAM. |
 | `devkit-uno-shield` | An S3 DevKitC with a 2.4" ILI9341 Uno shield on an 8-bit parallel bus. The panel never displayed anything; kept for the parallel-bus code. |
+| `waveshare-esp32-p4-wifi6` | **Waveshare ESP32-P4-WIFI6**: ESP32-P4 with 32 MB of PSRAM and 32 MB of flash, microSD, ES8311 audio, USB 2.0 OTG, Wi-Fi through an ESP32-C6. No screen or battery: the console is its USB-C serial port. Builds; not yet run on a board. |
 | `qemu` | No hardware at all: the test suites. |
 
 Optional on either board: an M5Stack CardKB over I2C, and a USB keyboard
@@ -180,13 +182,14 @@ make pull FILE=~/hello.al DEST=copy.al
 
 `cpufreq` picks a policy the way Linux governors do:
 
-| Policy | CPU |
+| Policy | CPU (ESP32-S3) |
 |---|---|
 | `performance` | always 240 MHz |
 | `ondemand` (default) | 240 MHz whenever a task runs, 80 MHz when both cores are idle |
 | `powersave` | always 80 MHz, about 3x slower |
 
-240 MHz is the ESP32-S3's maximum; it cannot be overclocked.
+240 MHz is the ESP32-S3's maximum; it cannot be overclocked. The ESP32-P4
+runs at 400, 200 and 100 MHz (360, 180 and 90 before revision 3).
 
 Two more ways to save battery. Neither has been measured with a meter yet.
 

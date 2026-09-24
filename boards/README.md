@@ -28,6 +28,9 @@ the board file is the newer of the two.
 |---|---|
 | `freenove-fnk0104b` | Freenove FNK0104A/B, ESP32-S3R8 with a 2.8" ILI9341, SDMMC card slot, ES8311 audio, battery charger |
 | `devkit-uno-shield` | An ESP32-S3 devkit wired to a 2.4" Uno ILI9341 shield (12 jumper wires; see docs/WIRING.md) |
+| `waveshare-esp32-p4-wifi6` | Waveshare ESP32-P4-WIFI6: ESP32-P4, microSD, ES8311 audio, USB OTG, Wi-Fi through an ESP32-C6; no screen. Builds, not yet run |
 | `qemu` | No hardware: for `make test` |
 
 To add a board, copy the closest file, change the pins, and list it above.
+Each file names its chip (`CONFIG_IDF_TARGET`); the chip's own settings are
+in `sdkconfig.defaults.<chip>`.

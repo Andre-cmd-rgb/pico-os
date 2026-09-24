@@ -1,0 +1,12 @@
+# The ESP32-P4's own settings, after sdkconfig.defaults and before the
+# board file.
+
+# The PSRAM is in the chip's package, on sixteen lines at 200 MHz.
+CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# The P4 has no radio of its own: Wi-Fi goes through an ESP32-C6 on the
+# board, over SDIO, with ESP-Hosted (drivers/idf_component.yml). Its
+# driver runs on the P4 from flash like the S3's, for the same reason.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n

@@ -61,6 +61,12 @@ static int gen_meminfo(char *b, size_t n)
 			ps_total / 1024, ps.total_free_bytes / 1024, ps.largest_free_block / 1024);
 }
 
+#if CONFIG_IDF_TARGET_ESP32P4
+#define CPU_MODEL	"ESP32-P4 (RISC-V)"
+#else
+#define CPU_MODEL	"ESP32-S3 (Xtensa LX7)"
+#endif
+
 static int gen_cpuinfo(char *b, size_t n)
 {
 	esp_chip_info_t chip;
@@ -69,7 +75,7 @@ static int gen_cpuinfo(char *b, size_t n)
 	esp_chip_info(&chip);
 	esp_flash_get_size(NULL, &flash);
 	return snprintf(b, n,
-			"model name : ESP32-S3 (Xtensa LX7)\n"
+			"model name : " CPU_MODEL "\n"
 			"cores      : %d\n"
 			"revision   : v%d.%d\n"
 			"cpu MHz    : %d\n"

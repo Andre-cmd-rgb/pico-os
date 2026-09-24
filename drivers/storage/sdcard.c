@@ -14,6 +14,9 @@
 
 #if CONFIG_PT_SD_MMC
 #include "driver/sdmmc_host.h"
+#if CONFIG_PT_SD_MMC_LDO >= 0
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
+#endif
 #else
 #include "driver/sdspi_host.h"
 #include "driver/spi_common.h"
@@ -27,6 +30,9 @@
 #define SD_PATH		"/mnt/sd"
 
 static sdmmc_card_t *card;
+#if CONFIG_PT_SD_MMC && CONFIG_PT_SD_MMC_LDO >= 0
+static sd_pwr_ctrl_handle_t power;	/* the slot's own supply: on for good once on */
+#endif
 #if CONFIG_PT_SD_SPI
 static bool	     bus_ready;
 #endif
@@ -140,6 +146,18 @@ static int sd_mount_common(bool format)
 
 	if (card)
 		return -EBUSY;
+	host.slot = CONFIG_PT_SD_MMC_SLOT;
+#if CONFIG_PT_SD_MMC_LDO >= 0
+	if (!power) {
+		const sd_pwr_ctrl_ldo_config_t ldo = { .ldo_chan_id = CONFIG_PT_SD_MMC_LDO };
+
+		if (sd_pwr_ctrl_new_on_chip_ldo(&ldo, &power)) {
+			klog("sd: LDO %d, which powers the slot, would not start", CONFIG_PT_SD_MMC_LDO);
+			return -EIO;
+		}
+	}
+	host.pwr_ctrl_handle = power;
+#endif
 	/*
 	 * The controller can only read into internal memory, and almost
 	 * everything a program reads into is in PSRAM. Left at its default

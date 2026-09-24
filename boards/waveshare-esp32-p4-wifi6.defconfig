@@ -1,0 +1,61 @@
+# Waveshare ESP32-P4-WIFI6: an ESP32-P4NRW32 (32 MB of PSRAM in the
+# package) with 32 MB of flash, and an ESP32-C6 beside it for Wi-Fi 6 and
+# Bluetooth 5, https://www.waveshare.com/wiki/ESP32-P4-WIFI6
+#
+# On board: a microSD slot on the P4's fast SDMMC slot, an ES8311 codec
+# with a speaker amplifier and a microphone, MIPI-DSI and MIPI-CSI
+# connectors, a USB 2.0 OTG port and a 40-pin header. No screen and no
+# battery: the console is the USB-C port's serial bridge, and a screen is
+# an SPI ILI9341 on the header (menuconfig, Graphics).
+#
+# Built, never run: the pins come from Waveshare's wiki, not from a board
+# on the desk.
+
+CONFIG_IDF_TARGET="esp32p4"
+
+# Built for revision 3 chips (400 MHz), ESP-IDF's default. A build for
+# one revision does not boot on the other: `esptool.py chip_id` says which
+# the board has, and the first boards carried v1.x chips (360 MHz), which
+# want CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y here.
+
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+
+# microSD on slot 0, whose pins are fixed and powered from the P4's LDO 4
+CONFIG_PT_SD_MMC=y
+CONFIG_PT_SD_MMC_SLOT=0
+CONFIG_PT_SD_MMC_LDO=4
+CONFIG_PT_SD_MMC_CLK=43
+CONFIG_PT_SD_MMC_CMD=44
+CONFIG_PT_SD_MMC_D0=39
+CONFIG_PT_SD_MMC_D1=40
+CONFIG_PT_SD_MMC_D2=41
+CONFIG_PT_SD_MMC_D3=42
+
+# ES8311 codec on I2C 7/8. Its ASDOUT is the P4's input and DSDIN its
+# output; the amplifier (PA_Ctrl) runs when its pin is high.
+CONFIG_PT_AUDIO=y
+CONFIG_PT_AUDIO_I2C_SDA=7
+CONFIG_PT_AUDIO_I2C_SCL=8
+CONFIG_PT_AUDIO_MCLK=13
+CONFIG_PT_AUDIO_BCLK=12
+CONFIG_PT_AUDIO_WS=10
+CONFIG_PT_AUDIO_DOUT=9
+CONFIG_PT_AUDIO_DIN=11
+CONFIG_PT_AUDIO_AMP_EN=53
+
+# A CardKB on the codec's bus, which the 40-pin header also carries
+CONFIG_PT_KBD_CARDKB=y
+CONFIG_PT_CARDKB_SDA=7
+CONFIG_PT_CARDKB_SCL=8
+
+# A USB keyboard or a memory stick on the USB 2.0 OTG port
+CONFIG_PT_KBD_USB=y
+CONFIG_PT_USB_MSC=y
+
+# The BOOT button switches terminals once the system is up
+CONFIG_PT_BUTTON_GPIO=35
+
+# Wi-Fi through the ESP32-C6, over SDIO (ESP-Hosted's defaults are the
+# pins of Espressif's own P4 board, which Waveshare's follows). The C6
+# must be running ESP-Hosted's slave firmware, as it ships.
+CONFIG_PT_WIFI=y

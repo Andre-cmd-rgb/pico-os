@@ -346,7 +346,12 @@ PT_PROGRAM(uname, "print system information\n"
 		want[0] = true;
 	snprintf(version, sizeof(version), "#1 SMP %s %s esp-idf-%s", app->date, app->time,
 		 app->idf_ver);
-	const char *parts[5] = { "PocketType", host, PT_VERSION, version, "xtensa" };
+#if CONFIG_IDF_TARGET_ARCH_RISCV
+	const char *arch = "riscv32";
+#else
+	const char *arch = "xtensa";
+#endif
+	const char *parts[5] = { "PocketType", host, PT_VERSION, version, arch };
 
 	for (int i = 0, n = 0; i < 5; i++)
 		if (want[i])
@@ -723,22 +728,24 @@ PT_PROGRAM(poweroff, "put the system into deep sleep\nPress the board's reset bu
 
 PT_PROGRAM(cpufreq, "show or set the CPU frequency policy\n"
 	   "usage: cpufreq [performance | ondemand | powersave | MIN-MAX]\n"
-	   "  performance  always 240 MHz\n"
-	   "  ondemand     240 MHz while busy, 80 MHz while idle\n"
-	   "  powersave    always 80 MHz\n"
-	   "  80-160       any range of 80, 160, 240 MHz\n"
-	   "It always says 240 MHz now: running this command is what does\n"
-	   "that. The line below it is where the time really went.")
+	   "  performance  always the fastest (240 MHz on the S3)\n"
+	   "  ondemand     fastest while busy, slowest while idle\n"
+	   "  powersave    always the slowest (80 MHz on the S3)\n"
+	   "  80-160       any range of the chip's three speeds\n"
+	   "It always says the fastest now: running this\n"
+	   "command is what does that. The line below it is\n"
+	   "where the time really went.")
 {
-	int min, max;
+	int min, max, slow, middle, fast;
 
+	cpufreq_speeds(&slow, &middle, &fast);
 	if (argc == 2) {
 		if (!strcmp(argv[1], "performance"))
-			min = max = 240;
+			min = max = fast;
 		else if (!strcmp(argv[1], "powersave"))
-			min = max = 80;
+			min = max = slow;
 		else if (!strcmp(argv[1], "ondemand"))
-			min = 80, max = 240;
+			min = slow, max = fast;
 		else if (sscanf(argv[1], "%d-%d", &min, &max) != 2 &&
 			 !(sscanf(argv[1], "%d", &min) == 1 && (max = min)))
 			min = max = -1;

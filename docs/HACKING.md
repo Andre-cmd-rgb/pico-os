@@ -44,7 +44,19 @@ make BOARD=devkit-uno-shield build   # another, in its own build-<board>/
 
 `SDKCONFIG_DEFAULTS` is `sdkconfig.defaults` plus the board file, so
 `menuconfig` edits stay in that board's `sdkconfig` and never leak into
-another board.
+another board. The board file names the chip (`CONFIG_IDF_TARGET`), and
+ESP-IDF adds that chip's own defaults after the common ones:
+`sdkconfig.defaults.esp32s3` (octal PSRAM, the S3's caches, the ULP core,
+XIP from PSRAM) or `sdkconfig.defaults.esp32p4`. Each chip keeps its own
+`dependencies.lock.<chip>`, since the P4 pulls in ESP-Hosted for its Wi-Fi
+(through the ESP32-C6 on its board) and the S3 does not.
+
+Porting to another chip: a `sdkconfig.defaults.<chip>` and a board file,
+then the places that know the chip -- `cpufreq.c` (its speeds),
+`procfs.c` (`/proc/cpuinfo`), `uname`, and the pin ranges in
+`main/Kconfig.projbuild`. On the P4 the key-wake in `suspend` is left out:
+it is written for the S3's ULP RISC-V core, and the P4 has an LP core
+with a different API.
 
 Adding a driver: a Kconfig option that other options hang off, the source
 under `drivers/<kind>/`, `-ENODEV` stubs in an `#else` so the rest of the

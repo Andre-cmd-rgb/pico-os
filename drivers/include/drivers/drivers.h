@@ -241,8 +241,9 @@ void	led_get_color(uint8_t *r, uint8_t *g, uint8_t *b);
 
 /* power/cpufreq.c: CPU frequency policy, as in Linux cpufreq */
 int	cpufreq_init(void);
-int	cpufreq_set(int min_mhz, int max_mhz);		/* 80, 160 or 240 */
+int	cpufreq_set(int min_mhz, int max_mhz);		/* one of cpufreq_speeds */
 void	cpufreq_get(int *min_mhz, int *max_mhz);
+void	cpufreq_speeds(int *slowest, int *middle, int *fastest);	/* 80, 160, 240 on the S3 */
 int	cpufreq_current_mhz(void);
 const char *cpufreq_policy_name(int min_mhz, int max_mhz);
 int	cpufreq_set_idle_sleep(bool on);	/* light sleep whenever everything is idle */

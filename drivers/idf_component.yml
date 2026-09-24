@@ -3,3 +3,13 @@ dependencies:
   espressif/usb_host_hid: "^1.2.1"
   espressif/usb_host_msc: "^1.1.0"
   joltwallet/littlefs: "*"
+  # The ESP32-P4 has no radio: Wi-Fi is an ESP32-C6 on the board, driven
+  # over SDIO, and these put the esp_wifi calls through to it.
+  espressif/esp_wifi_remote:
+    version: "*"
+    rules:
+      - if: "target in [esp32p4]"
+  espressif/esp_hosted:
+    version: "*"
+    rules:
+      - if: "target in [esp32p4]"

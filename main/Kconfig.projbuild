@@ -23,17 +23,18 @@ choice PT_CPUFREQ
 	default PT_CPUFREQ_ONDEMAND
 	help
 	  Like Linux cpufreq governors; change it at runtime with `cpufreq`.
-	  The ESP32-S3 runs at 80, 160 or 240 MHz. 240 MHz is its maximum:
-	  there is no overclocking.
+	  The ESP32-S3 runs at 80, 160 or 240 MHz, the ESP32-P4 at 100, 200
+	  or 400 (90, 180 or 360 before revision 3). The top is each chip's
+	  maximum: there is no overclocking.
 
 config PT_CPUFREQ_PERFORMANCE
-	bool "performance: always 240 MHz"
+	bool "performance: always the fastest"
 
 config PT_CPUFREQ_ONDEMAND
-	bool "ondemand: 240 MHz while busy, 80 MHz while idle"
+	bool "ondemand: fastest while busy, slowest while idle"
 
 config PT_CPUFREQ_POWERSAVE
-	bool "powersave: always 80 MHz"
+	bool "powersave: always the slowest"
 
 endchoice
 
@@ -182,6 +183,7 @@ config PT_CURSOR_BLINK_MS
 
 config PT_LCD_BACKLIGHT
 	int "Backlight GPIO (-1 if it is always on)"
+	range -1 54 if IDF_TARGET_ESP32P4
 	range -1 48
 	default -1
 	help
@@ -221,6 +223,7 @@ config PT_LCD_SPI_DC
 	default 46
 config PT_LCD_SPI_RST
 	int "RESET (-1 when it follows the board's reset)"
+	range -1 54 if IDF_TARGET_ESP32P4
 	range -1 48
 	default -1
 
@@ -283,10 +286,12 @@ config PT_LCD_WR
 	default 42
 config PT_LCD_RST
 	int "RESET (shield A4, -1 if not wired)"
+	range -1 54 if IDF_TARGET_ESP32P4
 	range -1 48
 	default 41
 config PT_LCD_RD
 	int "RD (shield A0, -1 if tied to 3V3)"
+	range -1 54 if IDF_TARGET_ESP32P4
 	range -1 48
 	default -1
 	help
@@ -427,6 +432,7 @@ config PT_KBD_UART
 
 config PT_BUTTON_GPIO
 	int "Button that switches terminals (-1 for none)"
+	range -1 54 if IDF_TARGET_ESP32P4
 	range -1 48
 	default -1
 	help
@@ -602,16 +608,36 @@ config PT_SD_MMC_D0
 	default 39
 config PT_SD_MMC_D1
 	int "D1 (-1 for one-wire mode)"
+	range -1 54 if IDF_TARGET_ESP32P4
 	range -1 48
 	default 41
 config PT_SD_MMC_D2
 	int "D2"
+	range -1 54 if IDF_TARGET_ESP32P4
 	range -1 48
 	default 48
 config PT_SD_MMC_D3
 	int "D3"
+	range -1 54 if IDF_TARGET_ESP32P4
 	range -1 48
 	default 47
+
+config PT_SD_MMC_SLOT
+	int "Controller slot"
+	range 0 1
+	default 1
+	help
+	  1 takes any pins. The ESP32-P4's slot 0 is the fast one on fixed
+	  pins (CLK 43, CMD 44, D0-D3 39-42), where its boards put the card.
+
+config PT_SD_MMC_LDO
+	int "On-chip LDO that powers the card's pins (-1: none)"
+	range -1 4
+	default -1
+	help
+	  On the ESP32-P4 the pins of slot 0 have their own supply, which
+	  boards take from the chip's LDO 4, and it has to be switched on
+	  before the card will answer.
 
 endmenu
 
@@ -675,10 +701,12 @@ config PT_AUDIO_DOUT
 	default 8
 config PT_AUDIO_DIN
 	int "I2S data in, from the microphone (-1 if none)"
+	range -1 54 if IDF_TARGET_ESP32P4
 	range -1 48
 	default 6
 config PT_AUDIO_AMP_EN
 	int "Amplifier enable pin (-1 if always on)"
+	range -1 54 if IDF_TARGET_ESP32P4
 	range -1 48
 	default 1
 

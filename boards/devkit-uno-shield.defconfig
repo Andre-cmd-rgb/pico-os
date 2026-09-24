@@ -6,6 +6,8 @@
 # The console is the COM port, which leaves the native USB port for a
 # USB keyboard.
 
+CONFIG_IDF_TARGET="esp32s3"
+
 CONFIG_PT_LCD_ILI9341_I80=y
 CONFIG_PT_LCD_PCLK_HZ=2000000
 CONFIG_PT_LCD_D0=4

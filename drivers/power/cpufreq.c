@@ -33,9 +33,34 @@ static bool cur_sleep;
 #define IS_IDLE_SLEEP	false
 #endif
 
+/*
+ * The speeds the chip can be set to, slowest first. The ESP32-S3 runs at
+ * 80, 160 or 240 MHz; below 80 its radio stops. The ESP32-P4 divides its
+ * PLL by 1, 2 or 4: 400, 200 and 100 MHz, or 360, 180 and 90 on chips
+ * before revision 3.
+ */
+#define FAST_MHZ	CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ
+#if CONFIG_IDF_TARGET_ESP32P4
+static const int speeds[] = { FAST_MHZ / 4, FAST_MHZ / 2, FAST_MHZ };
+#else
+static const int speeds[] = { 80, 160, 240 };
+#endif
+#define SLOW_MHZ	speeds[0]
+
 static bool valid(int mhz)
 {
-	return mhz == 80 || mhz == 160 || mhz == 240;
+	for (size_t i = 0; i < sizeof(speeds) / sizeof(speeds[0]); i++) {
+		if (mhz == speeds[i])
+			return true;
+	}
+	return false;
+}
+
+void cpufreq_speeds(int *slowest, int *middle, int *fastest)
+{
+	*slowest = speeds[0];
+	*middle = speeds[1];
+	*fastest = speeds[2];
 }
 
 static int apply(int min_mhz, int max_mhz, bool sleep)
@@ -86,7 +111,7 @@ bool cpufreq_idle_sleep(void)
 
 /*
  * Asking "what frequency is it at?" from a command is a loaded question:
- * running the command is itself work, so the answer is always 240 MHz.
+ * running the command is itself work, so the answer is always the top.
  * What matters is where the time went, which the power manager counts for
  * us -- this digs the per-frequency totals out of its report.
  */
@@ -171,11 +196,11 @@ int cpufreq_current_mhz(void)
 
 const char *cpufreq_policy_name(int min_mhz, int max_mhz)
 {
-	if (min_mhz == 240 && max_mhz == 240)
+	if (min_mhz == FAST_MHZ && max_mhz == FAST_MHZ)
 		return "performance";
-	if (min_mhz == 80 && max_mhz == 240)
+	if (min_mhz == SLOW_MHZ && max_mhz == FAST_MHZ)
 		return "ondemand";
-	if (min_mhz == 80 && max_mhz == 80)
+	if (min_mhz == SLOW_MHZ && max_mhz == SLOW_MHZ)
 		return "powersave";
 	return "custom";
 }
@@ -184,11 +209,11 @@ int cpufreq_init(void)
 {
 	bool sleep = IS_IDLE_SLEEP;
 #if CONFIG_PT_CPUFREQ_PERFORMANCE
-	int err = apply(240, 240, sleep);
+	int err = apply(FAST_MHZ, FAST_MHZ, sleep);
 #elif CONFIG_PT_CPUFREQ_POWERSAVE
-	int err = apply(80, 80, sleep);
+	int err = apply(SLOW_MHZ, SLOW_MHZ, sleep);
 #else
-	int err = apply(80, 240, sleep);
+	int err = apply(SLOW_MHZ, FAST_MHZ, sleep);
 #endif
 	if (!err) {
 		if (sleep)
