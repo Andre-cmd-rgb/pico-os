@@ -75,11 +75,21 @@ wires swapped, and getting it wrong kills the charger.
 The firmware reads the cell every five seconds:
 
 ```
+$ battery -c 2500     # once, when a cell is fitted: what it holds
 $ battery
-4.02 V  88%
+3.92 V  71%  on battery, about 14h 10m left
 $ battery -w          # keep watching
 $ power               # among the rest of the power state
 ```
+
+The board cannot measure the current, so the percentage is not read
+straight off the voltage, which sags under load and stands high on the
+charger. The firmware estimates the current from what the board is doing
+(backlight, CPU, radio) or from the charger's set 300 mA, learns the
+cell's resistance from how far the voltage steps when the charger or the
+backlight changes, puts the sag back, and counts the charge between
+readings. Tell it the capacity with `battery -c` when you fit a cell:
+that also starts the learning again, for the new one.
 
 Below 3.5 V it prints a warning on the screen once a minute. At 3.3 V it
 syncs the filesystems, unmounts the card and goes into deep sleep, so the

@@ -60,6 +60,16 @@ CONFIG_PT_AUDIO_AMP_ACTIVE_LOW=y
 CONFIG_PT_BATTERY=y
 CONFIG_PT_BATTERY_ADC_GPIO=9
 CONFIG_PT_BATTERY_SCALE=200
+# Measured on a 200 mAh cell, 10 minutes at each brightness: the steps
+# in its voltage put the backlight at about 45 mA at full brightness
+# (which is also what 5.6 ohm from the 3.3 V rail allows), and the rates
+# of fall put the rest of the board at about as much again.
+CONFIG_PT_BATTERY_IDLE_MA=55
+CONFIG_PT_BATTERY_BACKLIGHT_MA=45
+# The TP4054's PROG resistor (3.3k) sets 300 mA, but on the charger the
+# cell rose 2 mV a minute where it had fallen 5 at 60 mA: what reaches it
+# is a few tens of mA.
+CONFIG_PT_BATTERY_CHARGE_MA=50
 
 CONFIG_PT_LED=y
 CONFIG_PT_LED_GPIO=42

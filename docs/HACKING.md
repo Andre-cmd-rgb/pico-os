@@ -183,7 +183,13 @@ reason.
 - `drivers/power/battery.c`: the cell voltage through the board's divider,
   curve-fitted where the chip is calibrated. Its task warns on the screen,
   and at the critical level syncs, unmounts and deep-sleeps. Under
-  `BATTERY_NO_CELL_MV` there is no cell and the board is on USB.
+  `BATTERY_NO_CELL_MV` there is no cell and the board is on USB. The
+  percentage comes from an estimate of the current (`draw_ma`: the board's
+  measured idle and backlight draw from menuconfig, the chip's datasheet
+  figures for the CPU, the radio's measured share, or the charger's set
+  current), the cell's resistance learned from steps in that current, and
+  the charge counted between readings and pulled towards the
+  sag-corrected voltage.
 - `drivers/power/cpufreq.c`: the frequency policy and idle light sleep through
   `esp_pm`. With `CONFIG_PM_PROFILING`, `power` prints every lock and the time
   spent in each mode; a lock stuck at 100% is what keeps the CPU at 240 MHz.

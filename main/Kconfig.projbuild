@@ -749,6 +749,38 @@ config PT_BATTERY_SCALE
 	range 100 1000
 	default 200
 
+config PT_BATTERY_MAH
+	int "Capacity of the cell (mAh)"
+	range 50 20000
+	default 1000
+	help
+	  What the percentage and the time left count against, until
+	  `battery -c` says what the fitted cell really holds.
+
+config PT_BATTERY_CHARGE_MA
+	int "Charger current (mA)"
+	range 0 2000
+	default 300
+	help
+	  What the charger pushes into the cell until it is nearly full.
+	  On a TP4054 it is 1000 V over the resistor on the PROG pin, on a
+	  TP4056 1200 V over it. A charging cell reads high by this current
+	  times its resistance, and that is taken off.
+
+config PT_BATTERY_IDLE_MA
+	int "Board's draw at idle (mA)"
+	range 0 1000
+	default 40
+	help
+	  From the cell, with the backlight off, the CPU waiting at 80 MHz
+	  and the radio off. The percentage puts back the sag this current
+	  causes in the cell's voltage.
+
+config PT_BATTERY_BACKLIGHT_MA
+	int "Backlight's draw at full brightness (mA)"
+	range 0 1000
+	default 50
+
 config PT_BATTERY_WARN_MV
 	int "Warn below (mV)"
 	default 3500

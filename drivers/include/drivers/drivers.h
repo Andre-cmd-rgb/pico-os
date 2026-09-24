@@ -178,7 +178,11 @@ struct battery_status {
 	int	mv;		/* smoothed, not the raw reading */
 	int	percent;
 	int	trend;		/* millivolts per minute, signed */
+	int	ma;		/* estimated, out of the cell; into it is negative */
+	int	capacity_mah;
+	int	mohm;		/* the cell's resistance, learned */
 	int	minutes_left;	/* at this rate; -1 when it cannot say */
+	int	minutes_full;	/* charging; -1 when it cannot say */
 	enum battery_state state;
 };
 
@@ -186,6 +190,7 @@ int	battery_init(void);
 int	battery_millivolts(void);	/* <0 when there is no battery sensing */
 int	battery_percent(void);
 int	battery_status(struct battery_status *out);
+int	battery_set_capacity(int mah);	/* a new cell: learning starts again */
 const char *battery_state_name(enum battery_state state);
 
 /* input/blepad.c: a Bluetooth gamepad, for games */
