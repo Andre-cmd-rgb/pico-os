@@ -123,6 +123,7 @@ EXTRA = {
     '€': '00111 01000 11110 01000 11110 01000 00111 00000',
     '█': '11111 11111 11111 11111 11111 11111 11111 11111',
     '⚡': '00110 01100 11000 11111 00110 01100 01000 00000',
+    '⏰': '00100 01110 01110 01110 11111 00000 00100 00000',   # a bell: the alarm
     'Ç': '01110 10001 10000 10000 10000 10001 01110 00100',
     'ß': '01100 10010 10010 10100 10010 10001 10110 00000',
 
@@ -246,6 +247,7 @@ def main():
     print(f"#define FONT_ASCII\t{len(chars)}\n#define FONT_GLYPHS\t{len(glyphs)}")
     print(f"#define FONT_BLOCK\t{len(chars) + extra.index('█')}")
     print(f"#define FONT_BOLT\t{len(chars) + extra.index('⚡')}")
+    print(f"#define FONT_ALARM\t{len(chars) + extra.index('⏰')}")
     print("#define FONT_UNKNOWN\t('?' - FONT_FIRST)\n")
     print("/* one byte per row, bit 4 is the leftmost column */")
     print("static const uint8_t font5x8[FONT_GLYPHS][FONT_H] = {")

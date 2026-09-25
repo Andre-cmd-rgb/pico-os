@@ -7,6 +7,7 @@ idf_component_register(
 		input/cardkb.c
 		input/serial.c
 		input/usbkbd.c
+		misc/alarm.c
 		misc/i2c.c
 		misc/usbhost.c
 		net/modem.c

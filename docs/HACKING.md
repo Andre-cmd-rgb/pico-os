@@ -214,6 +214,16 @@ reason.
 - `kernel/clock.c`: the time saved to `/etc/clock` hourly and before sleep,
   put back at boot after a power cut; `wifi.c` starts SNTP on every new
   address.
+- `drivers/misc/alarm.c`: alarms, timers and the calendar's reminders, in
+  `/etc/alarms`. Its task rings the one due whatever is running: it claims
+  the speaker (`audio_claim`: other writers' sound goes nowhere, at its
+  own pace), pulses the backlight and takes over the status bar;
+  `tty_input()` and the side button hand it keys first while it rings.
+  `power_suspend()` sets the timer to wake a moment before the next one,
+  and a boot woken by the timer looks back ten minutes for it. A snooze is
+  a dated one-off alarm, so it survives a suspend. The `alarm` command
+  (bin/alarm.c) only parses what is typed; `bin/dates.c` holds the day and
+  time parsing that alarm, todo and calendar share.
 
 ## Processes
 

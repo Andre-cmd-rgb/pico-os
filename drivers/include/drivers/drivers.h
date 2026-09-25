@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "pt/kernel.h"
 
@@ -85,6 +86,7 @@ int	i2c_bus_probe(int sda, int scl, int addr);	/* 0: something answered */
 int	audio_init(void);
 bool	audio_present(void);
 void	audio_stop(void);		/* drain, then silence the amplifier */
+void	audio_claim(bool mine);		/* the alarm takes the speaker, and gives it back */
 int	audio_set_rate(int hz);
 int	audio_rate(void);
 int	audio_buffer_us(void);		/* the output ring, full, in microseconds */
@@ -238,6 +240,38 @@ void	led_set_mode(enum led_mode mode);
 enum led_mode led_get_mode(void);
 void	led_set_color(uint8_t r, uint8_t g, uint8_t b);
 void	led_get_color(uint8_t *r, uint8_t *g, uint8_t *b);
+
+/* misc/alarm.c: alarms, timers and reminders, kept in /etc/alarms */
+#define ALARMS_MAX	24
+#define ALARM_DAILY	0x7f		/* days: bit 0 is Monday, bit 6 Sunday */
+enum alarm_kind {
+	ALARM_RING,			/* rings until answered */
+	ALARM_CHIME,			/* a reminder: a chime, and the bar */
+};
+
+struct alarm {
+	bool	on;
+	uint8_t	hour, min, sec;
+	uint8_t	days;			/* the weekdays it rings; none: once */
+	int	date;			/* YYYYMMDD: that day only, then it goes */
+	uint8_t	kind;			/* enum alarm_kind */
+	uint8_t	snoozes;		/* a snooze is 1 or more: which one */
+	char	label[40];
+};
+
+int	alarm_init(void);		/* once / is mounted */
+int	alarm_list(struct alarm *out, int max);
+int	alarm_add(const struct alarm *a);	/* its number, or <0 */
+int	alarm_remove(int i);
+int	alarm_enable(int i, bool on);
+time_t	alarm_next(const struct alarm *a, time_t after);	/* 0: never again */
+time_t	alarm_next_any(struct alarm *which);		/* 0: none set */
+uint32_t alarm_seconds_until(void);	/* for suspend's timer; 0: none */
+bool	alarm_ringing(struct alarm *which);
+void	alarm_answer(bool stop);	/* snooze it, or stop it */
+int	alarm_test(int kind);		/* ring now */
+bool	alarm_key(const char *s, size_t n);	/* taken, while it rings */
+bool	alarm_button(bool held);	/* a press snoozes, holding stops */
 
 /* power/cpufreq.c: CPU frequency policy, as in Linux cpufreq */
 int	cpufreq_init(void);

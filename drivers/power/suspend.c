@@ -110,7 +110,13 @@ void power_quiesce(void)
 int power_suspend(uint32_t wake_after_s)
 {
 	int key = watch_keyboard(), button = watch_button();
+	uint32_t alarm = alarm_seconds_until();
 
+	/* An alarm wakes it a moment early: booting takes about a second. */
+	if (alarm && (!wake_after_s || alarm < wake_after_s)) {
+		wake_after_s = alarm > 3 ? alarm - 2 : 1;
+		klog("suspend: the next alarm wakes it in %lu s", (unsigned long)alarm);
+	}
 	power_quiesce();
 	if (wake_after_s)
 		esp_sleep_enable_timer_wakeup((uint64_t)wake_after_s * 1000000);

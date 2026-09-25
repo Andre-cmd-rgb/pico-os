@@ -235,6 +235,8 @@ void tty_input(const char *s, size_t n)
 
 	if (!tty_ready(tty))
 		return;			/* keys before the console exists */
+	if (alarm_key(s, n))
+		return;			/* it snoozed or stopped a ringing alarm */
 	xSemaphoreTake(tty->in_lock, portMAX_DELAY);
 	for (size_t i = 0; i < n; i++) {
 		uint8_t c = (uint8_t)s[i];

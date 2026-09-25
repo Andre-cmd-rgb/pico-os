@@ -5,7 +5,8 @@
  * bootloader at reset -- and once the system is running it is free. A
  * short press moves to the next terminal, which is the one thing worth
  * having when the keyboard in front of you has no Ctrl key. Holding it
- * goes back to the first terminal.
+ * goes back to the first terminal. While an alarm rings, a press snoozes
+ * it and holding stops it.
  */
 #include "driver/gpio.h"
 #include "esp_timer.h"
@@ -37,6 +38,8 @@ static void button_task(void *arg)
 
 			if (woke)
 				woke = false;
+			else if (held >= DEBOUNCE_MS && alarm_button(held >= HOLD_MS))
+				;		/* snoozed or stopped a ringing alarm */
 			else if (held >= HOLD_MS)
 				tty_switch(0);
 			else if (held >= DEBOUNCE_MS)

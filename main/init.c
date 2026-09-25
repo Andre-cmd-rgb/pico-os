@@ -243,6 +243,7 @@ void app_main(void)
 	tmpfs_init();
 	sd_init();
 	wifi_start_supplicant();	/* now that /etc/wifi can be read */
+	alarm_init();			/* and /etc/alarms */
 	netconsole_init();
 	modem_init();
 	klog("init: %d programs, starting shell", count_programs());

@@ -1,8 +1,10 @@
 idf_component_register(
 	SRCS
+		alarm.c
 		audio.c
 		bench.c
 		canvas.c
+		dates.c
 		diff.c
 		edit.c
 		fileutils.c

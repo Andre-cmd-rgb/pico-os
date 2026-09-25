@@ -218,28 +218,29 @@ static void put_glyph(uint8_t glyph)
 		cur->x++;
 }
 
-static void put_codepoint(uint32_t cp)
+static uint8_t glyph_of(uint32_t cp)
 {
-	if (cp >= FONT_FIRST && cp < FONT_FIRST + FONT_ASCII) {
-		put_glyph(cp - FONT_FIRST);
-		return;
-	}
+	if (cp >= FONT_FIRST && cp < FONT_FIRST + FONT_ASCII)
+		return cp - FONT_FIRST;
 	/* the table is sorted by code point */
 	size_t lo = 0, hi = sizeof(font_extra) / sizeof(font_extra[0]);
 
 	while (lo < hi) {
 		size_t mid = (lo + hi) / 2;
 
-		if (font_extra[mid].cp == cp) {
-			put_glyph(font_extra[mid].glyph);
-			return;
-		}
+		if (font_extra[mid].cp == cp)
+			return font_extra[mid].glyph;
 		if (font_extra[mid].cp < cp)
 			lo = mid + 1;
 		else
 			hi = mid;
 	}
-	put_glyph(FONT_UNKNOWN);
+	return FONT_UNKNOWN;
+}
+
+static void put_codepoint(uint32_t cp)
+{
+	put_glyph(glyph_of(cp));
 }
 
 static void reset_pen(void)
@@ -531,48 +532,95 @@ static volatile bool repaint_all;	/* the screen changed under us */
 
 #if CONFIG_PT_STATUS_LINE
 
+/* UTF-8 into glyphs, at most `max` of them; how many there were. */
+static int to_glyphs(const char *s, uint8_t *out, int max)
+{
+	int n = 0;
+
+	while (*s && n < max) {
+		uint32_t cp = (uint8_t)*s++;
+		int more = cp >= 0xf0 ? 3 : cp >= 0xe0 ? 2 : cp >= 0xc0 ? 1 : 0;
+
+		if (more)
+			cp &= 0x3f >> more;
+		while (more-- > 0 && (*s & 0xc0) == 0x80)
+			cp = cp << 6 | (*s++ & 0x3f);
+		out[n++] = glyph_of(cp);
+	}
+	return n;
+}
+
 /*
- * The line along the bottom: which terminal you are on, the time, what
- * is left in the battery and what the radio is doing. It is painted
- * once a second by the renderer, straight to the panel, and is not part
- * of any terminal's text -- nothing a program writes can disturb it.
+ * The line along the bottom: which terminal you are on, the time, the
+ * next alarm if it is within a day, what is left in the battery and
+ * what the radio is doing. While an alarm rings the whole line is that
+ * alarm, flashing. It is painted once a second by the renderer, straight
+ * to the panel, and is not part of any terminal's text -- nothing a
+ * program writes can disturb it.
  */
 static void draw_status(uint8_t *pixels)
 {
-	char bar[128], left[48], middle[16], right[32];
-	int bolt_at = -1;
+	uint8_t bar[128], right[48];
+	char text[96];
 	struct battery_status bat;
 	struct wifi_info net;
-	time_t now = time(NULL);
+	struct alarm ring;
+	time_t now = time(NULL), next;
 	struct tm tm;
-	int mid_at, right_at;
+	int n, mid_at, right_at;
 	uint8_t color = (uint8_t)(FG_DEFAULT << 4 | BG_DEFAULT);	/* inverted */
 
-	localtime_r(&now, &tm);
-	snprintf(middle, sizeof(middle), "%02d:%02d", tm.tm_hour, tm.tm_min);
-	snprintf(left, sizeof(left), " %d/%d", vt_active() + 1, CONFIG_PT_VT_COUNT);
-	if (!wifi_state(&net) && net.up)
-		snprintf(left + strlen(left), sizeof(left) - strlen(left), "  %s", net.ssid);
-	right[0] = '\0';			/* no cell fitted: nothing to show */
-	if (!battery_status(&bat) && bat.state != BATTERY_NONE && bat.state != BATTERY_USB)
-		snprintf(right, sizeof(right), "%s%d%% ",
-			 bat.state == BATTERY_CHARGING ? "* " : "", bat.percent);
+	memset(bar, ' ' - FONT_FIRST, sizeof(bar));
+	if (alarm_ringing(&ring)) {
+		const char *keys = ring.kind == ALARM_CHIME ? "any key: ok " :
+				   "any key: snooze  esc: stop ";
 
-	memset(bar, ' ', sizeof(bar));
-	memcpy(bar, left, strlen(left));
-	mid_at = (cols - (int)strlen(middle)) / 2;
-	if (mid_at > (int)strlen(left))
-		memcpy(bar + mid_at, middle, strlen(middle));
-	right_at = cols - (int)strlen(right);
-	if (right_at > mid_at + (int)strlen(middle)) {
-		memcpy(bar + right_at, right, strlen(right));
-		if (right[0] == '*')
-			bolt_at = right_at;	/* drawn as a bolt, not a star */
+		n = to_glyphs(keys, right, sizeof(right));
+		right_at = cols - n > 4 ? cols - n : 4;
+		bar[1] = FONT_ALARM;
+		snprintf(text, sizeof(text), "%02d:%02d %s", ring.hour, ring.min,
+			 ring.label[0] ? ring.label : "alarm");
+		to_glyphs(text, bar + 3, right_at - 4);
+		memcpy(bar + right_at, right, cols - right_at);
+		if (now & 1)
+			color = (uint8_t)(BG_DEFAULT << 4 | FG_DEFAULT);	/* flashing */
+	} else {
+		localtime_r(&now, &tm);
+		snprintf(text, sizeof(text), " %d/%d", vt_active() + 1, CONFIG_PT_VT_COUNT);
+		if (!wifi_state(&net) && net.up)
+			snprintf(text + strlen(text), sizeof(text) - strlen(text), "  %s", net.ssid);
+		n = to_glyphs(text, bar, cols / 2 - 3);
+		mid_at = (cols - 5) / 2;
+		snprintf(text, sizeof(text), "%02d:%02d", tm.tm_hour, tm.tm_min);
+		if (mid_at > n)
+			to_glyphs(text, bar + mid_at, 5);
+
+		n = 0;
+		next = alarm_next_any(NULL);
+		if (next && next - now < 24 * 3600) {
+			struct tm at;
+
+			localtime_r(&next, &at);
+			right[n++] = FONT_ALARM;
+			snprintf(text, sizeof(text), "%02d:%02d  ", at.tm_hour, at.tm_min);
+			n += to_glyphs(text, right + n, sizeof(right) - n);
+		}
+		/* no cell fitted: nothing to show */
+		if (!battery_status(&bat) && bat.state != BATTERY_NONE && bat.state != BATTERY_USB) {
+			if (bat.state == BATTERY_CHARGING) {
+				right[n++] = FONT_BOLT;
+				right[n++] = ' ' - FONT_FIRST;
+			}
+			snprintf(text, sizeof(text), "%d%% ", bat.percent);
+			n += to_glyphs(text, right + n, sizeof(right) - n);
+		}
+		right_at = cols - n;
+		if (right_at > mid_at + 5)
+			memcpy(bar + right_at, right, n);
 	}
 
 	for (int x = 0; x < cols; x++)
-		draw_cell(pixels, cols * CELL_W, x * CELL_W,
-			  x == bolt_at ? FONT_BOLT : (uint8_t)(bar[x] - FONT_FIRST), color);
+		draw_cell(pixels, cols * CELL_W, x * CELL_W, bar[x], color);
 	lcd_draw(origin_x, origin_y, cols * CELL_W, CELL_H, pixels);
 }
 

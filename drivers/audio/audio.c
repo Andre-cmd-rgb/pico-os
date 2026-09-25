@@ -41,6 +41,12 @@ static int			volume = CONFIG_PT_AUDIO_VOLUME;
  * microphone never gets a clock and every read times out.
  */
 static bool			tx_on, rx_on, amp_on, alc_on;
+/*
+ * While an alarm rings the speaker is its task's: what anything else
+ * plays goes nowhere, at the pace it would have played, so a song does
+ * not garble the alarm and its player does not notice.
+ */
+static TaskHandle_t		owner;
 
 static void audio_dev_register(void);
 
@@ -157,9 +163,19 @@ static void stop_locked(void)
 	}
 }
 
+static bool not_ours(void)
+{
+	return owner && owner != xTaskGetCurrentTaskHandle();
+}
+
+void audio_claim(bool mine)
+{
+	owner = mine ? xTaskGetCurrentTaskHandle() : NULL;
+}
+
 void audio_stop(void)
 {
-	if (!audio_present())
+	if (!audio_present() || not_ours())
 		return;
 	xSemaphoreTake(lock, portMAX_DELAY);
 	stop_locked();
@@ -175,6 +191,8 @@ int audio_set_rate(int hz)
 		return -ENODEV;
 	if (hz < 8000 || hz > 48000)
 		return -EINVAL;
+	if (not_ours())
+		return -EBUSY;
 	clk.mclk_multiple = MCLK_MULTIPLE;
 	xSemaphoreTake(lock, portMAX_DELAY);
 	stop_locked();
@@ -246,6 +264,10 @@ ssize_t audio_write(const void *pcm, size_t bytes, int channels)
 		return -EINVAL;
 	if (bytes < 2)
 		return 0;
+	if (not_ours()) {
+		vTaskDelay(pdMS_TO_TICKS(bytes * 1000 / (rate * 2 * channels)) + 1);
+		return bytes;
+	}
 	xSemaphoreTake(lock, portMAX_DELAY);
 	if (clock_on()) {
 		xSemaphoreGive(lock);
@@ -358,6 +380,7 @@ static void audio_dev_register(void)
 int audio_init(void) { return -ENODEV; }
 bool audio_present(void) { return false; }
 void audio_stop(void) { }
+void audio_claim(bool mine) { }
 int audio_set_rate(int hz) { return -ENODEV; }
 int audio_rate(void) { return 0; }
 int audio_buffer_us(void) { return 0; }
