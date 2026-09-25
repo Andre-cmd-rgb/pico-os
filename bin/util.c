@@ -322,3 +322,55 @@ int run_command(int argc, char *const argv[])
 		pt_kill(pt_getpid(), PT_SIGINT);	/* and now it is this program's turn */
 	return got < 0 ? got : status;
 }
+
+int utf8_width(const char *s, size_t n)
+{
+	int w = 0;
+
+	for (size_t i = 0; i < n; i++)
+		w += ((unsigned char)s[i] & 0xc0) != 0x80;
+	return w;
+}
+
+size_t utf8_prefix(const char *s, size_t n, int cols)
+{
+	size_t i = 0;
+
+	while (i < n && cols > 0) {
+		i++;
+		while (i < n && ((unsigned char)s[i] & 0xc0) == 0x80)
+			i++;
+		cols--;
+	}
+	return i;
+}
+
+bool ask_line(int row, const char *prompt, char *buf, size_t size)
+{
+	size_t n = strlen(buf);
+
+	for (;;) {
+		int key;
+
+		pt_printf("\x1b[%d;1H\x1b[0m%s%s\x1b[K\x1b[?25h", row, prompt, buf);
+		key = pt_readkey(PT_STDIN);
+		pt_puts("\x1b[?25l");
+		if (key == '\r' || key == '\n')
+			return n > 0;
+		if (key == PT_KEY_ESC || key == PT_CTRL('c') || key < 0)
+			return false;
+		if (key == 0x7f || key == PT_CTRL('h')) {
+			while (n && ((unsigned char)buf[n - 1] & 0xc0) == 0x80)
+				n--;		/* the rest of a UTF-8 character */
+			if (n)
+				n--;
+			buf[n] = '\0';
+		} else if (key == PT_CTRL('u')) {
+			n = 0;
+			buf[0] = '\0';
+		} else if (key >= ' ' && key < 0x100 && key != 0x7f && n + 1 < size) {
+			buf[n++] = key;
+			buf[n] = '\0';
+		}
+	}
+}

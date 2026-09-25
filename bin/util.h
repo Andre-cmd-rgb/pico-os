@@ -100,3 +100,16 @@ const char *join_path(const char *dir, const char *name, char *out, size_t size)
  */
 int	pick_file(const char *dir, const char *const *exts, const char *title,
 		  char *out, size_t size);
+
+/* Characters on screen in UTF-8 text (continuation bytes take no room),
+ * and how many bytes of it make up at most `cols` of them. */
+int	utf8_width(const char *s, size_t n);
+size_t	utf8_prefix(const char *s, size_t n, int cols);
+
+/*
+ * A line of input on screen row `row`, after `prompt`: printable keys
+ * and UTF-8 go in, Backspace takes a character out. `buf` holds what is
+ * already there to edit, or "" for a fresh line. True on Enter with
+ * something typed; false on Esc or Ctrl-C.
+ */
+bool	ask_line(int row, const char *prompt, char *buf, size_t size);

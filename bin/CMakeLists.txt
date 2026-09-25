@@ -25,6 +25,7 @@ idf_component_register(
 		sums.c
 		sysutils.c
 		textutils.c
+		todo.c
 		top.c
 		util.c
 		video.c

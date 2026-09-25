@@ -34,9 +34,10 @@ ROOT = os.path.dirname(HERE)
 SOURCES = [os.path.join(HERE, "host_pt.c")] + [
     os.path.join(ROOT, p) for p in (
         "bin/diff.c", "bin/filters.c", "bin/find.c", "bin/sums.c", "bin/regex.c", "bin/sed.c", "bin/shellutils.c", "bin/sort.c",
-        "bin/textutils.c", "bin/util.c", "kernel/match.c", "bin/notes.c", "bin/pick.c")]
-PROGRAMS = ("basename cksum cmp cut diff dirname du echo expr find grep head notes printf "
-            "realpath sed seq sort tail tee tr uniq wc xargs yes").split()
+        "bin/textutils.c", "bin/util.c", "kernel/match.c", "bin/notes.c", "bin/pick.c",
+        "bin/dates.c", "bin/todo.c")]
+PROGRAMS = ("basename cksum cmp cut diff dirname du echo expr find grep head notes "
+            "printf realpath sed seq sort tail tee todo tr uniq wc xargs yes").split()
 VERBOSE = "-v" in sys.argv
 
 # The fixtures every case can use, made in a fresh directory.
@@ -62,6 +63,8 @@ FILES = {
                "hard  \nbreak\n\n```\ncode\tline\n```\n",
     "note.txt": "plain text line that is long enough to wrap around\n"
                 "    indented line that is long enough to wrap too\n\nlast\n",
+    "todo.md": "# To do\n\nsome notes, left alone\n- [ ] studiare storia @2026-09-25\n"
+               "- [x] fatto\n- [ ] consegnare ricerca @2026-09-22\n* [ ] senza data\n",
     "tree/a.txt": "alpha\n",
     "tree/b.log": "beta\n",
     "tree/sub/c.txt": "gamma alpha\n",
@@ -463,6 +466,22 @@ CASES = [
     ("notes -p 2>&1; echo $?", "usage: notes -p [-w cols] file...\n2\n"),
     ("notes -p -w 5 note.md 2>&1; echo $?", "notes: -w takes 10 to 250 columns\n2\n"),
     ("notes -p nosuch.md 2>&1; echo $?", "notes: nosuch.md: No such file or directory\n1\n"),
+    # todo: our own; -d fixes "today". (The harness reads @ in an answer as
+    # the directory, so the due dates go through tr.)
+    ("todo -f todo.md -d 2026-09-24 ls",
+     " 1  [ ] consegnare ricerca                                      late: Tue 22 Sep\n"
+     " 2  [ ] studiare storia                                                 tomorrow\n"
+     " 3  [ ] senza data\n 4  [x] fatto\n"),
+    ("todo -f todo.md -d 2026-09-24 add ripassare latino @fri; tr @ % < todo.md",
+     "3  [ ] ripassare latino\n# To do\n\nsome notes, left alone\n- [ ] studiare storia %2026-09-25\n"
+     "- [x] fatto\n- [ ] consegnare ricerca %2026-09-22\n* [ ] senza data\n"
+     "- [ ] ripassare latino %2026-09-25\n"),
+    ("todo -f todo.md -d 2026-09-24 done 1 3 >/dev/null; todo -f todo.md clear; tr @ % < todo.md",
+     "3 done things cleared\n# To do\n\nsome notes, left alone\n- [ ] studiare storia %2026-09-25\n"),
+    ("todo -f todo.md add x @someday 2>&1 | tr @ %; echo $?",
+     "todo: %someday: not a day (today, fri, 30/9, 2026-09-30, +3)\n0\n"),
+    ("todo -f new.md add primo; todo -f new.md ls; cat new.md",
+     "1  [ ] primo\n 1  [ ] primo\n# To do\n\n- [ ] primo\n"),
     ("seq 3000 | xargs echo | wc -w", None),
 ]
 
