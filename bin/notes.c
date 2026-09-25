@@ -4,11 +4,11 @@
  * The notes live in ~/notes, one folder per subject if you like, typed on a
  * PC as Markdown or plain text. `notes` offers them in the file list; a
  * note opens laid out for the width of the terminal -- headings stand out,
- * paragraphs are wrapped, lists hang from their bullets -- and the arrows
- * and the space bar move through it. `o` lists the headings to jump to, `/`
- * searches, `+` and `-` turn the backlight up and down for reading in the
- * dark, and the place you stopped in each note is remembered in
- * ~/.notes_pos for next time.
+ * paragraphs are wrapped, lists hang from their bullets, tables fit or
+ * become cards -- and the arrows and the space bar move through it. `o`
+ * lists the headings to jump to, `/` searches, `+` and `-` turn the
+ * backlight up and down for reading in the dark, and the place you stopped
+ * in each note is remembered in ~/.notes_pos for next time.
  *
  * The screen has one hue at several strengths, so the styles are
  * brightnesses: headings and bold brightest, italics and bullets a paler
@@ -169,30 +169,6 @@ static void gap(struct doc *d, int src)
 	}
 }
 
-/* Characters on the screen: UTF-8 continuation bytes take no room. */
-static int width_of(const char *s, size_t n)
-{
-	int w = 0;
-
-	for (size_t i = 0; i < n; i++)
-		w += ((unsigned char)s[i] & 0xc0) != 0x80;
-	return w;
-}
-
-/* How many bytes of s make up at most `cols` characters. */
-static size_t bytes_for(const char *s, size_t n, int cols)
-{
-	size_t i = 0;
-
-	while (i < n && cols > 0) {
-		i++;
-		while (i < n && ((unsigned char)s[i] & 0xc0) == 0x80)
-			i++;
-		cols--;
-	}
-	return i;
-}
-
 /* A new line with its prefix; after the first, the prefix is `rest`. */
 static struct line *start(struct doc *d, const char **first, const char *rest, uint8_t pstyle,
 			  int src)
@@ -213,14 +189,11 @@ static struct line *start(struct doc *d, const char **first, const char *rest, u
 static void wrap(struct doc *d, const struct span *s, const char *first, const char *rest,
 		 uint8_t pstyle, int src)
 {
-	int avail = d->width - width_of(first, strlen(first));
 	struct line *l = NULL;
 	uint8_t between = S_TEXT;	/* the style of the space before a word */
-	int used = 0;
+	int used = 0, avail = 8;
 	size_t i = 0;
 
-	if (avail < 8)
-		avail = 8;
 	while (i < s->len) {
 		size_t j;
 
@@ -238,13 +211,16 @@ static void wrap(struct doc *d, const struct span *s, const char *first, const c
 		for (j = i; j < s->len && s->text[j] != ' ' && s->text[j] != '\n'; j++)
 			;
 		while (i < j) {
-			int w = width_of(s->text + i, j - i);
+			int w = utf8_width(s->text + i, j - i);
 
 			if (l && used + 1 + w > avail) {
 				l = NULL;		/* no room: the word starts a line */
 				continue;
 			}
 			if (!l) {
+				avail = d->width - utf8_width(first, strlen(first));
+				if (avail < 8)
+					avail = 8;
 				l = start(d, &first, rest, pstyle, src);
 				used = 0;
 			} else {
@@ -252,10 +228,10 @@ static void wrap(struct doc *d, const struct span *s, const char *first, const c
 				used++;
 			}
 			if (w > avail) {		/* longer than a line: cut it */
-				size_t k = bytes_for(s->text + i, j - i, avail - used);
+				size_t k = utf8_prefix(s->text + i, j - i, avail - used);
 
 				line_add(d, l, s->text + i, s->style + i, 0, k);
-				used += width_of(s->text + i, k);
+				used += utf8_width(s->text + i, k);
 				i += k;
 				l = NULL;
 				continue;
@@ -267,7 +243,7 @@ static void wrap(struct doc *d, const struct span *s, const char *first, const c
 	}
 }
 
-/* A line kept as it is (code, a table): cut to the width, never reflowed. */
+/* A line kept as it is (code): cut to the width, never reflowed. */
 static void verbatim(struct doc *d, const char *text, size_t n, uint8_t style, const char *indent,
 		     int src)
 {
@@ -282,7 +258,7 @@ static void verbatim(struct doc *d, const char *text, size_t n, uint8_t style, c
 			buf[k++] = text[i];
 	}
 	do {
-		size_t take = bytes_for(buf, k, avail);
+		size_t take = utf8_prefix(buf, k, avail);
 		struct line *l = line_new(d, src);
 
 		line_add(d, l, indent, NULL, S_TEXT, strlen(indent));
@@ -543,7 +519,7 @@ static void para_flush(struct doc *d, struct para *pa)
 	}
 	if (pa->kind == 1) {
 		int pad = pa->indent / 2 * 2;
-		int mw = width_of(pa->marker, strlen(pa->marker));
+		int mw = utf8_width(pa->marker, strlen(pa->marker));
 
 		if (pad > 12)
 			pad = 12;
@@ -581,10 +557,291 @@ static void para_add(struct para *pa, const char *p, const char *end)
 	inline_md(&pa->s, p, end, S_TEXT);
 }
 
+/* ------------------------------------------------------------ Markdown tables */
+
+#define TABLE_COLS	12
+#define TABLE_GAP	2		/* spaces between columns */
+#define CARD_LAST	24		/* the least room for a wrapped last column */
+
+/*
+ * A table is laid out when all of it has been read, for the width of the
+ * screen: in columns if it fits; with only its last column wrapped if the
+ * others are narrow, as a timeline is; and otherwise as a card for each
+ * row, its first cell a title and the others under it, each named after
+ * its column. Fifty columns cannot hold three columns of sentences side by
+ * side, and a comparison read card by card still compares.
+ */
+struct table_row {
+	const char	*p, *end;
+	int		 src;
+};
+
+struct table {
+	struct table_row	*rows;
+	size_t			 cap;
+	int			 n;
+};
+
+static void table_add(struct table *t, const char *p, const char *end, int src)
+{
+	if (!grow((void **)&t->rows, &t->cap, t->n + 1, sizeof(*t->rows)))
+		return;
+	t->rows[t->n++] = (struct table_row){ p, end, src };
+}
+
+/* The cells of a row, spaces trimmed; a \| is part of a cell. */
+static int table_cells(const struct table_row *r, const char **cell, const char **cell_end)
+{
+	const char *p = r->p, *end = r->end;
+	int n = 0;
+
+	if (p < end && *p == '|')
+		p++;
+	while (p < end && n < TABLE_COLS) {
+		const char *q = p;
+
+		while (q < end && *q != '|')
+			q += *q == '\\' && q + 1 < end ? 2 : 1;
+		cell[n] = skip_spaces(p, q, NULL);
+		cell_end[n] = q;
+		while (cell_end[n] > cell[n] && (cell_end[n][-1] == ' ' || cell_end[n][-1] == '\t'))
+			cell_end[n]--;
+		n++;
+		p = q + 1;
+	}
+	return n;
+}
+
+/* The row under the header: dashes, and colons for the alignment. */
+static bool is_delimiter(const struct table_row *r)
+{
+	bool dash = false;
+
+	for (const char *p = r->p; p < r->end; p++) {
+		if (*p == '-')
+			dash = true;
+		else if (!*p || !strchr("|: \t", *p))
+			return false;
+	}
+	return dash;
+}
+
+/* The widest line of a cell, which a <br> may have broken. */
+static int span_width(const struct span *s)
+{
+	int most = 0, w;
+	size_t from = 0;
+
+	for (size_t i = 0; i <= s->len; i++) {
+		if (i < s->len && s->text[i] != '\n')
+			continue;
+		w = utf8_width(s->text + from, i - from);
+		if (w > most)
+			most = w;
+		from = i + 1;
+	}
+	return most;
+}
+
+/*
+ * The next line of a cell `width` columns wide, from *pos: as many whole
+ * words as fit, or as much of a word too long for the width. False when
+ * the cell has no more.
+ */
+static bool cell_line(const struct span *s, size_t *pos, int width, size_t *off, size_t *len)
+{
+	size_t i = *pos, start, last;
+
+	while (i < s->len && s->text[i] == ' ')
+		i++;
+	if (i >= s->len)
+		return false;
+	start = last = i;
+	while (i < s->len && s->text[i] != '\n') {
+		size_t j = i;
+
+		while (j < s->len && s->text[j] != ' ' && s->text[j] != '\n')
+			j++;
+		if (utf8_width(s->text + start, j - start) > width) {
+			if (last == start)
+				last = start + utf8_prefix(s->text + start, j - start, width);
+			if (last == start)
+				last = j;		/* not one character fits */
+			*off = start;
+			*len = last - start;
+			*pos = last;
+			return true;
+		}
+		last = i = j;
+		while (i < s->len && s->text[i] == ' ')
+			i++;
+	}
+	*off = start;
+	*len = last - start;
+	*pos = i < s->len ? i + 1 : i;		/* past the <br> */
+	return true;
+}
+
+static void spaces(struct doc *d, struct line *l, int n)
+{
+	static const char blanks[] = "                ";
+
+	for (int k; n > 0; n -= k) {
+		k = n < (int)sizeof(blanks) - 1 ? n : (int)sizeof(blanks) - 1;
+		line_add(d, l, blanks, NULL, S_TEXT, k);
+	}
+}
+
+/* One row in columns, each cell wrapped in its own width. */
+static void table_grid_row(struct doc *d, struct span *s, int ncols, const int *width,
+			   const char *align, int src)
+{
+	size_t pos[TABLE_COLS] = { 0 }, off[TABLE_COLS], len[TABLE_COLS];
+	bool have[TABLE_COLS];
+
+	for (;;) {
+		struct line *l;
+		bool any = false;
+		int pending = 0;
+
+		for (int c = 0; c < ncols; c++)
+			any |= have[c] = cell_line(&s[c], &pos[c], width[c], &off[c], &len[c]);
+		if (!any)
+			return;
+		l = line_new(d, src);
+		for (int c = 0; c < ncols; c++) {
+			int w = have[c] ? utf8_width(s[c].text + off[c], len[c]) : 0;
+			int left = align[c] == 'r' ? width[c] - w : align[c] == 'c' ?
+				   (width[c] - w) / 2 : 0;
+
+			/* spaces go out only before text, so no line ends in them */
+			if (w) {
+				spaces(d, l, pending + left);
+				line_add(d, l, s[c].text + off[c], s[c].style + off[c], 0, len[c]);
+				pending = width[c] - w - left;
+			} else {
+				pending += width[c];
+			}
+			pending += TABLE_GAP;
+		}
+	}
+}
+
+static void table_flush(struct doc *d, struct table *t)
+{
+	const char *cell[TABLE_COLS], *cell_end[TABLE_COLS];
+	const char *head[TABLE_COLS], *head_end[TABLE_COLS];
+	struct span s[TABLE_COLS] = { 0 }, card = { 0 };
+	int natural[TABLE_COLS] = { 0 }, width[TABLE_COLS];
+	char align[TABLE_COLS] = { 0 };
+	int ncols = 0, nhead = 0, body, total, fixed, k;
+	bool header, cards = false;
+
+	if (!t->n)
+		return;
+	/* A header needs the row of dashes under it; without one, all is body. */
+	header = t->n >= 2 && is_delimiter(&t->rows[1]);
+	body = header ? 2 : 0;
+	if (header) {
+		k = table_cells(&t->rows[1], cell, cell_end);
+		for (int c = 0; c < k; c++) {
+			bool l = cell_end[c] > cell[c] && cell[c][0] == ':';
+			bool r = cell_end[c] > cell[c] && cell_end[c][-1] == ':';
+
+			align[c] = l && r ? 'c' : r ? 'r' : 0;
+		}
+		nhead = table_cells(&t->rows[0], head, head_end);
+	}
+	for (int i = 0; i < t->n; i++) {
+		if (header && i == 1)
+			continue;
+		k = table_cells(&t->rows[i], cell, cell_end);
+		if (k > ncols)
+			ncols = k;
+		for (int c = 0; c < k; c++) {
+			int w;
+
+			s[0].len = 0;
+			inline_md(&s[0], cell[c], cell_end[c], S_TEXT);
+			if ((w = span_width(&s[0])) > natural[c])
+				natural[c] = w;
+		}
+	}
+	total = TABLE_GAP * (ncols - 1);
+	for (int c = 0; c < ncols; c++) {
+		width[c] = natural[c];
+		total += natural[c];
+	}
+	fixed = total - natural[ncols - 1];
+	if (total > d->width) {
+		if (ncols == 1)
+			width[0] = d->width;
+		else if (fixed <= d->width * 2 / 5 && d->width - fixed >= CARD_LAST)
+			width[ncols - 1] = d->width - fixed;
+		else
+			cards = true;
+	}
+
+	if (!cards) {
+		for (int i = 0; i < t->n; i++) {
+			if (header && i == 1)
+				continue;
+			k = table_cells(&t->rows[i], cell, cell_end);
+			for (int c = 0; c < ncols; c++) {
+				s[c].len = 0;
+				if (c < k)
+					inline_md(&s[c], cell[c], cell_end[c], header && !i ? S_BOLD : S_TEXT);
+			}
+			table_grid_row(d, s, ncols, width, align, t->rows[i].src);
+			if (header && !i) {
+				struct line *l = line_new(d, t->rows[i].src);
+				int w = fixed + width[ncols - 1];
+
+				for (int c = 0; c < w && c < d->width; c++)
+					line_add(d, l, "\xe2\x80\x94", NULL, S_BAR, 3);	/* — */
+			}
+		}
+	}
+
+	for (int i = body; cards && i < t->n; i++) {
+		int src = t->rows[i].src;
+
+		if (i > body)
+			gap(d, src);
+		k = table_cells(&t->rows[i], cell, cell_end);
+		s[0].len = 0;
+		inline_md(&s[0], cell[0], cell_end[0], S_BOLD);
+		wrap(d, &s[0], "", "", S_TEXT, src);
+		for (int c = 1; c < k; c++) {
+			/* two columns need no names: the title says what the other is */
+			bool named = ncols > 2 && c < nhead && head_end[c] > head[c];
+
+			if (cell_end[c] == cell[c])
+				continue;
+			card.len = 0;
+			if (named) {
+				inline_md(&card, head[c], head_end[c], S_MARK);
+				span_add(&card, ": ", 2, S_MARK);
+			}
+			inline_md(&card, cell[c], cell_end[c], S_TEXT);
+			wrap(d, &card, "  ", named ? "    " : "  ", S_TEXT, src);
+		}
+	}
+
+	for (int c = 0; c < TABLE_COLS; c++) {
+		pt_free(s[c].text);
+		pt_free(s[c].style);
+	}
+	pt_free(card.text);
+	pt_free(card.style);
+	t->n = 0;
+}
+
 static void markdown(struct doc *d, const char *text, size_t size)
 {
 	const char *end = text + size, *p = text;
 	struct para pa = { 0 };
+	struct table t = { 0 };
 	bool in_code = false, in_list = false, in_table = false;
 	int src = 0;
 
@@ -599,6 +856,9 @@ static void markdown(struct doc *d, const char *text, size_t size)
 		if (eol > p && eol[-1] == '\r')
 			eol--;
 		src++;
+		q = skip_spaces(p, eol, NULL);
+		if (t.n && (q == eol || *q != '|'))
+			table_flush(d, &t);	/* the first line that is not a row ends it */
 
 		if (in_code) {
 			if (is_fence(p, eol)) {
@@ -685,21 +945,15 @@ static void markdown(struct doc *d, const char *text, size_t size)
 			p = next;
 			continue;
 		}
-		if (*q == '|') {			/* a table row, kept as typed */
-			const char *r = q;
-			bool rule = true;
-
+		if (*q == '|') {			/* a table row, laid out with the rest */
 			para_flush(d, &pa);
 			in_list = false;
 			if (!in_table)
 				gap(d, src);
 			in_table = true;
-			for (; r < eol; r++)
-				if (!strchr("|-:+ ", *r))
-					rule = false;
-			while (eol > q && eol[-1] == ' ')
+			while (eol > q && (eol[-1] == ' ' || eol[-1] == '\t'))
 				eol--;
-			verbatim(d, q, eol - q, rule ? S_DIM : S_TEXT, "", src);
+			table_add(&t, q, eol, src);
 			p = next;
 			continue;
 		}
@@ -726,9 +980,11 @@ static void markdown(struct doc *d, const char *text, size_t size)
 		para_add(&pa, skip_spaces(p, eol, NULL), eol);
 		p = next;
 	}
+	table_flush(d, &t);
 	para_flush(d, &pa);
 	pt_free(pa.s.text);
 	pt_free(pa.s.style);
+	pt_free(t.rows);
 }
 
 /* Plain text: each line wrapped as it is, its indent kept for the lines after. */
@@ -940,7 +1196,7 @@ static void draw_line(struct view *v, struct out *o, int i)
 	}
 	/* A line that fills the row leaves the cursor on its last character,
 	 * which an erase would take with it. */
-	out_str(o, width_of(v->d.text + l->off, n) < v->cols ? "\x1b[0m\x1b[K" : "\x1b[0m");
+	out_str(o, utf8_width(v->d.text + l->off, n) < v->cols ? "\x1b[0m\x1b[K" : "\x1b[0m");
 }
 
 static void draw_status(struct view *v, struct out *o)
@@ -967,8 +1223,8 @@ static void draw_status(struct view *v, struct out *o)
 	v->note[0] = '\0';
 	w = v->cols - (int)strlen(right) - 2;
 	out_str(o, "\x1b[0;7m");
-	out_add(o, left, bytes_for(left, strlen(left), w));
-	for (int pad = w - width_of(left, bytes_for(left, strlen(left), w)); pad > 0; pad--)
+	out_add(o, left, utf8_prefix(left, strlen(left), w));
+	for (int pad = w - utf8_width(left, utf8_prefix(left, strlen(left), w)); pad > 0; pad--)
 		out_add(o, " ", 1);
 	out_str(o, " ");
 	out_str(o, right);
@@ -1036,7 +1292,7 @@ static void outline(struct view *v)
 				out_str(&o, h == sel ? "\x1b[0;7m" : d->heads[h].level == 1 ? "\x1b[0;1m" : "\x1b[0m");
 				for (int k = 0; k < pad && k < 10; k++)
 					out_add(&o, " ", 1);
-				out_add(&o, t, bytes_for(t, strlen(t), v->cols - pad));
+				out_add(&o, t, utf8_prefix(t, strlen(t), v->cols - pad));
 			}
 			out_str(&o, "\x1b[0m\x1b[K");
 		}
@@ -1063,44 +1319,6 @@ static void outline(struct view *v)
 		case PT_KEY_EOF: case PT_KEY_ERROR:
 		case PT_KEY_ESC: case PT_CTRL('c'): case 'q': case 'o': case '\t':
 			return;
-		}
-	}
-}
-
-/* A line of input on the status line: the search. */
-static bool ask(struct view *v, const char *prompt, char *buf, size_t size)
-{
-	size_t n = 0;
-	char at[24];
-
-	buf[0] = '\0';
-	for (;;) {
-		struct out o = { 0 };
-		int key;
-
-		snprintf(at, sizeof(at), "\x1b[%d;1H", v->rows);
-		out_str(&o, at);
-		out_str(&o, "\x1b[0m");
-		out_str(&o, prompt);
-		out_str(&o, buf);
-		out_str(&o, "\x1b[K\x1b[?25h");
-		write_all(PT_STDOUT, o.buf, o.len);
-		pt_free(o.buf);
-		key = pt_readkey(PT_STDIN);
-		pt_puts("\x1b[?25l");
-		if (key == '\r' || key == '\n')
-			return n > 0;
-		if (key == PT_KEY_ESC || key == PT_CTRL('c') || key < 0)
-			return false;
-		if (key == 0x7f || key == PT_CTRL('h')) {
-			while (n && ((unsigned char)buf[n - 1] & 0xc0) == 0x80)
-				n--;		/* the rest of a UTF-8 character */
-			if (n)
-				n--;
-			buf[n] = '\0';
-		} else if (key >= ' ' && key < 0x100 && n + 1 < size) {
-			buf[n++] = key;
-			buf[n] = '\0';
 		}
 	}
 }
@@ -1256,7 +1474,8 @@ static int view_file(const char *path)
 		case 'G': case PT_KEY_END: case '>':	v.top = v.d.n; break;
 		case 'o': case '\t':			outline(&v); break;
 		case '/':
-			if (ask(&v, "/", v.query, sizeof(v.query)))
+			v.query[0] = '\0';
+			if (ask_line(v.rows, "/", v.query, sizeof(v.query)))
 				search(&v, 1);
 			break;
 		case 'n':				search(&v, 1); break;

@@ -61,6 +61,12 @@ FILES = {
                "- two that is long enough to wrap over the line\n  1. nested\n- [ ] task\n\n"
                "> quoted\n> text\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\nSetext\n======\n\n"
                "hard  \nbreak\n\n```\ncode\tline\n```\n",
+    "table.md": "| Anno | Evento |\n|---|--:|\n| 1469 | Nasce a Firenze da famiglia borghese |\n"
+                "| 1513-17 | Scrive i *Discorsi*<br>e il **Principe** |\n\n"
+                "| | Machiavelli | Guicciardini |\n|---|---|---|\n| Fortuna | Pesa per la metà | "
+                "Vince lei, ha \"grandissima potestà\" |\n| Uomo | Malvagio | | extra |\n\n"
+                "| Tipo | Caratteristiche |\n|:-:|---|\n| **Chierico** al servizio dei papi | È "
+                "al servizio di papi e cardinali \\| colti |\nafter\n",
     "note.txt": "plain text line that is long enough to wrap around\n"
                 "    indented line that is long enough to wrap too\n\nlast\n",
     "todo.md": "# To do\n\nsome notes, left alone\n- [ ] studiare storia @2026-09-25\n"
@@ -459,9 +465,21 @@ CASES = [
     ("notes -p -w 30 note.md",
      "Title\n" + "\u2014" * 30 + "\n\nSome bold and italic and code,\na link and [pic]. snake_case\n"
      "and 2 * 3 stay, *escaped*.\n\nList\n\n\u2022 one\n\u2022 two that is long enough to\n"
-     "  wrap over the line\n  1. nested\n\u2022 [ ] task\n\n| quoted text\n\n| a | b |\n"
-     "|---|---|\n| 1 | 2 |\n\n" + "\u2014" * 30 + "\n\nSetext\n" + "\u2014" * 30 +
+     "  wrap over the line\n  1. nested\n\u2022 [ ] task\n\n| quoted text\n\na  b\n"
+     + "\u2014" * 4 + "\n1  2\n\n" + "\u2014" * 30 + "\n\nSetext\n" + "\u2014" * 30 +
      "\n\nhard\nbreak\n\n  code    line\n"),
+    # tables: columns if they fit, the last one wrapped, or a card a row
+    ("notes -p -w 36 table.md",
+     "Anno                          Evento\n" + "\u2014" * 36 + "\n1469     Nasce a Firenze da "
+     "famiglia\n                            borghese\n1513-17            Scrive i Discorsi\n"
+     "                       e il Principe\n\nFortuna\n  Machiavelli: Pesa per la metà\n"
+     "  Guicciardini: Vince lei, ha\n    \"grandissima potestà\"\n\nUomo\n  Machiavelli: "
+     "Malvagio\n  extra\n\nChierico al servizio dei papi\n  È al servizio di papi e "
+     "cardinali\n  | colti\n\nafter\n"),
+    ("notes -p -w 30 table.md | head -3", "1469\n  Nasce a Firenze da famiglia\n  borghese\n"),
+    ("notes -p -w 80 table.md | head -4",
+     "Anno" + " " * 35 + "Evento\n" + "\u2014" * 45 + "\n"
+     "1469     Nasce a Firenze da famiglia borghese\n1513-17" + " " * 21 + "Scrive i Discorsi\n"),
     ("notes -p -w 30 note.txt",
      "plain text line that is long\nenough to wrap around\n    indented line that is long\n"
      "    enough to wrap too\n\nlast\n"),
