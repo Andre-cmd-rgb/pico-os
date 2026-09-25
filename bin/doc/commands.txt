@@ -33,6 +33,29 @@ NOTES
                     backlight, q quits. Each note
                     reopens where you left it
 
+DIARY
+  alarm             what is set, and when it rings
+  alarm 7:00 mo-fr wake up
+                    repeats: daily, weekdays,
+                    weekends, mo,we,fr; a date
+                    (tomorrow, 30/9) rings once
+  alarm 25m tea     a timer
+  alarm rm|off|on N, alarm stop|snooze|test
+                    Ringing, any key snoozes it for
+                    9 minutes and Esc stops it;
+                    suspend wakes up for it
+  todo              the to-do list, ~/todo.md
+  todo add TEXT @fri  also @today, @30/9, @+3;
+                    todo done N, todo clear
+  calendar          the month: arrows, a adds, d
+                    deletes; the day's events and
+                    what is due from ~/todo.md
+  calendar agenda   the week ahead
+  calendar add 30/9 10:00 verifica !15
+                    !15 chimes 15 minutes before;
+                    every mo,we ... / yearly 2/10
+  cal [-3] [year]   print a month, or a year
+
 SCRIPTS
   echo printf seq expr test basename dirname
   true false sleep yes env

@@ -112,6 +112,19 @@ page, `o` lists the headings to jump to, `/` searches, `+` and `-` set the
 backlight for reading in the dark, and each note reopens where you left it
 (`~/.notes_pos`). `notes -p FILE` prints the laid-out text instead.
 
+**The diary**: `alarm 7:00 mo-fr wake up` sets an alarm and `alarm 25m tea`
+a timer. When one comes due it rings whatever is running: beeps that grow
+louder, the backlight pulsing and the status bar showing what it is; any key
+snoozes it for nine minutes and Esc stops it, and `suspend` wakes the board
+for it. The status bar shows the next alarm within a day. `todo` keeps a
+checklist in `~/todo.md` (`todo add studiare storia @fri`), open things
+first and the soonest due at the top. `calendar` is a month to move about
+in, with each day's events from `~/calendar.txt` and what is due from the
+to-do list; `calendar add 30/9 10:00 verifica !15` adds an event with a
+reminder chime 15 minutes before, and `every mo,we` and `yearly 2/10` repeat.
+All three files are plain text, to edit on a PC as well. `cal` prints months
+as util-linux's does.
+
 ### Commands
 
 `help` lists them, `help <command>` explains one.
@@ -120,6 +133,7 @@ backlight for reading in the dark, and each note reopens where you left it
 |---|---|
 | files | `ls cat cp mv rm mkdir rmdir touch pwd stat find du df mount umount sync` |
 | text | `head tail wc grep sed sort uniq cut tr tee diff cmp hexdump more edit notes` |
+| diary | `alarm todo calendar cal` |
 | checksums | `cksum md5sum sha1sum sha256sum sha512sum` |
 | scripts | `echo printf seq expr xargs basename dirname realpath yes` |
 | system | `ps top kill free dmesg uptime uname whoami hostname date time sleep env which clear reboot` |

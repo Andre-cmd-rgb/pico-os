@@ -35,8 +35,8 @@ SOURCES = [os.path.join(HERE, "host_pt.c")] + [
     os.path.join(ROOT, p) for p in (
         "bin/diff.c", "bin/filters.c", "bin/find.c", "bin/sums.c", "bin/regex.c", "bin/sed.c", "bin/shellutils.c", "bin/sort.c",
         "bin/textutils.c", "bin/util.c", "kernel/match.c", "bin/notes.c", "bin/pick.c",
-        "bin/dates.c", "bin/todo.c")]
-PROGRAMS = ("basename cksum cmp cut diff dirname du echo expr find grep head notes "
+        "bin/dates.c", "bin/todo.c", "bin/calendar.c")]
+PROGRAMS = ("basename cal calendar cksum cmp cut diff dirname du echo expr find grep head notes "
             "printf realpath sed seq sort tail tee todo tr uniq wc xargs yes").split()
 VERBOSE = "-v" in sys.argv
 
@@ -65,6 +65,9 @@ FILES = {
                 "    indented line that is long enough to wrap too\n\nlast\n",
     "todo.md": "# To do\n\nsome notes, left alone\n- [ ] studiare storia @2026-09-25\n"
                "- [x] fatto\n- [ ] consegnare ricerca @2026-09-22\n* [ ] senza data\n",
+    "diary.txt": "# the diary\n2026-09-24 10:00-11:00 Lab informatica\n"
+                 "2026-09-25 09:30 verifica di storia !15\nweekly mo,we 15:00-16:30 Calcio\n"
+                 "yearly 10-02 Compleanno di Marco !\nnot an event\n",
     "tree/a.txt": "alpha\n",
     "tree/b.log": "beta\n",
     "tree/sub/c.txt": "gamma alpha\n",
@@ -466,6 +469,15 @@ CASES = [
     ("notes -p 2>&1; echo $?", "usage: notes -p [-w cols] file...\n2\n"),
     ("notes -p -w 5 note.md 2>&1; echo $?", "notes: -w takes 10 to 250 columns\n2\n"),
     ("notes -p nosuch.md 2>&1; echo $?", "notes: nosuch.md: No such file or directory\n1\n"),
+    # cal: util-linux's layout, compared with it
+    ("cal -m 9 2026", None),
+    ("cal -s 2 2026", None),
+    ("cal -m 2 2026", None),
+    ("cal -m -3 1 2026", None),
+    ("cal -s -3 12 2026", None),
+    ("cal -m 2026", None),
+    ("cal -s 2024", None),
+    ("cal 13 2026 2>&1; echo $?", "cal: 13: not a month (1-12)\n1\n"),
     # todo: our own; -d fixes "today". (The harness reads @ in an answer as
     # the directory, so the due dates go through tr.)
     ("todo -f todo.md -d 2026-09-24 ls",
@@ -482,6 +494,21 @@ CASES = [
      "todo: %someday: not a day (today, fri, 30/9, 2026-09-30, +3)\n0\n"),
     ("todo -f new.md add primo; todo -f new.md ls; cat new.md",
      "1  [ ] primo\n 1  [ ] primo\n# To do\n\n- [ ] primo\n"),
+    # calendar: the diary, with what is due from ~/todo.md
+    ("HOME=$PWD calendar -f diary.txt -d 2026-09-24 agenda 10",
+     "Thu 24 Sep, today\n  10:00-11:00  Lab informatica\n  late, to do  consegnare ricerca\n"
+     "Fri 25 Sep, tomorrow\n  09:30        verifica di storia (!)\n  to do        studiare storia\n"
+     "Mon 28 Sep\n  15:00-16:30  Calcio\nWed 30 Sep\n  15:00-16:30  Calcio\n"
+     "Fri 2 Oct\n  all day      Compleanno di Marco (!)\n"),
+    ("HOME=$PWD calendar -f diary.txt -d 2026-09-24 add 30/9 9:00 dentista !30; tail -1 diary.txt",
+     "2026-09-30 09:00 dentista !30\n2026-09-30 09:00 dentista !30\n"),
+    ("HOME=$PWD calendar -f diary.txt -d 2026-09-24 rm 30/9; echo $?",
+     "removed: weekly mo,we 15:00-16:30 Calcio\n0\n"),
+    ("HOME=$PWD calendar -f diary.txt -d 2026-09-24 rm 1/9 2>&1; echo $?",
+     "calendar: no such event\n1\n"),
+    ("HOME=$PWD calendar -f diary.txt add someday x 2>&1; echo $?",
+     "usage: calendar add DAY|every DAYS|yearly DAY [TIME[-END]] what [!N]\n"
+     "  DAY: today, tomorrow, fri, 30/9, 2026-09-30   DAYS: mo, mo,we, mo-fr\n2\n"),
     ("seq 3000 | xargs echo | wc -w", None),
 ]
 

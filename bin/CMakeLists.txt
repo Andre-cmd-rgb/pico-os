@@ -3,6 +3,7 @@ idf_component_register(
 		alarm.c
 		audio.c
 		bench.c
+		calendar.c
 		canvas.c
 		dates.c
 		diff.c
