@@ -178,11 +178,22 @@ enum battery_state {
 
 struct battery_status {
 	int	mv;		/* smoothed, not the raw reading */
+	int	rest;		/* with the load's sag or the charger's lift taken off */
+	int	raw;		/* the last reading as it came */
 	int	percent;
-	int	trend;		/* millivolts per minute, signed */
+	int	permille;	/* the same in tenths */
+	int	trend;		/* millivolts an hour, signed */
 	int	ma;		/* estimated, out of the cell; into it is negative */
-	int	capacity_mah;
+	int	capacity_mah;	/* on its label: `battery -c` */
+	int	holds_mah;	/* what it was measured to hold lately; 0 until then */
 	int	mohm;		/* the cell's resistance, learned */
+	bool	mohm_guessed;	/* nothing has shown it yet */
+	bool	charger;	/* one is believed to be plugged in */
+	bool	usb;		/* a PC is talking over the port */
+	int	cycles10;	/* tenths of a cycle used since it was fitted */
+	int	used_mah;	/* counted out of it since it was fitted */
+	int	health;		/* percent of what it held new; -1 until measured */
+	int	measured;	/* discharges it has been measured over */
 	int	minutes_left;	/* at this rate; -1 when it cannot say */
 	int	minutes_full;	/* charging; -1 when it cannot say */
 	enum battery_state state;
@@ -190,9 +201,11 @@ struct battery_status {
 
 int	battery_init(void);
 int	battery_millivolts(void);	/* <0 when there is no battery sensing */
+int	battery_early_millivolts(void);	/* before battery_init: a reading, no more */
 int	battery_percent(void);
 int	battery_status(struct battery_status *out);
-int	battery_set_capacity(int mah);	/* a new cell: learning starts again */
+int	battery_set_capacity(int mah);	/* a new cell: its life starts again */
+void	battery_save(void);		/* before the power goes */
 const char *battery_state_name(enum battery_state state);
 
 /* input/blepad.c: a Bluetooth gamepad, for games */
@@ -288,6 +301,8 @@ int	cpufreq_time_summary(char *buf, size_t size);	/* "70% at 80 MHz, 28% at 240 
 /* power/suspend.c */
 void	power_quiesce(void);	/* switch off what deep sleep cannot */
 int	power_suspend(uint32_t wake_after_s);		/* deep sleep; returns only on error */
+void	power_off(void) __attribute__((noreturn));	/* deep sleep until Enter */
+void	power_off_empty(void) __attribute__((noreturn));	/* a flat cell: until charged */
 void	power_boot_reason(void);			/* logs how the last suspend ended */
 
 /* input/serial.c */

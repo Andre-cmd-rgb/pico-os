@@ -69,8 +69,10 @@ CONFIG_PT_BATTERY_SCALE=200
 CONFIG_PT_BATTERY_IDLE_MA=55
 CONFIG_PT_BATTERY_BACKLIGHT_MA=45
 # The TP4054's PROG resistor (3.3k) sets 300 mA, but on the charger the
-# cell rose 2 mV a minute where it had fallen 5 at 60 mA: what reaches it
-# is a few tens of mA.
+# 200 mAh cell rose 2 mV a minute where it had fallen 5 at 60 mA: what
+# reached it was a few tens of mA. Not yet measured on the 2500 mAh cell
+# (TODOS.md says how). On USB the backlight made no step in the cell's
+# voltage, so the board seems to run from USB while it charges.
 CONFIG_PT_BATTERY_CHARGE_MA=50
 
 CONFIG_PT_LED=y

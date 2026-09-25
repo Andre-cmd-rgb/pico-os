@@ -7,27 +7,30 @@ find, sort and the rest behave like GNU's) and a full-screen editor,
 drawn in PIXELTAPE's amber CRT colors on an ILI9341 screen.
 
 ```
-[0.00] PocketType 0.1.0 (esp-idf v6.1) #1 SMP Sep 23 2026 13:58:56
-[0.05] mem: 183 KB internal, 6149 KB psram available
-[0.10] memtest: 6016 KB PSRAM ok (40 ms)
-[0.10] serial: console on native USB
-[0.10] proc: 16 process slots, programs on core 1
-[0.10] cpufreq: ondemand, 80-240 MHz, idle sleep off
-[0.10] battery: 3.56 V (8%) on GPIO9
-[0.45] lcd: ili9341 (alt init) on SPI2 at 80 MHz, 320x240
-[0.45] vt: 53x23 console
-[0.51] es8311: codec at 0x18, 16000 Hz
-[0.51] audio: 16000 Hz mono, speaker and microphone
-[0.51] button: GPIO0 switches terminals (hold for the first)
-[0.51] cardkb: keyboard found at 0x5f
-[0.54] rootfs: / is littlefs on flash:storage, 13168 KB free of 13248 KB
+[0.00] PocketType 0.1.0 (esp-idf v6.1) #1 SMP Sep 25 2026 16:45:53
+[0.05] mem: 218 KB internal, 6138 KB psram available
+[0.05] power: the keyboard answered 2498 of 2498 polls while asleep
+[0.05] power: woke on the keyboard, key 0x6f
+[0.09] memtest: 6016 KB PSRAM ok (40 ms)
+[0.09] serial: console on native USB
+[0.09] proc: 16 process slots, programs on core 1
+[0.09] cpufreq: ondemand, 80-240 MHz, idle sleep off
+[0.43] lcd: ili9341 (alt init) on SPI2 at 80 MHz, 320x240
+[0.43] vt: 53x23 console
+[0.48] es8311: codec at 0x18, 16000 Hz
+[0.49] audio: 16000 Hz mono, speaker and microphone
+[0.49] button: GPIO0 switches terminals (hold for the first)
+[0.49] cardkb: keyboard found at 0x5f
+[0.50] rootfs: / is littlefs on flash:storage, 13160 KB free of 13248 KB
+[0.56] battery: 3.86 V, 58%; a 2500 mAh cell, 90 mohm (a guess), 0.0 cycles
 [0.56] tmpfs: /tmp holds up to 2048 KB, taken from RAM as it is used
 [0.63] sd: AGGCE 60906 MB on 4-bit sdmmc, mounted on /mnt/sd and /home/andre
 [0.63] wifi: radio off, no saved network; `wifi on` starts it
 [0.63] init: 124 programs, starting shell
 ```
-(a real boot of the Freenove board, under two thirds of a second to the
-shell; a board with parts missing says so for each and comes up anyway)
+(a real boot of the Freenove board, woken from `suspend` by a key on the
+CardKB, under a second to the shell; a board with parts missing says so for
+each and comes up anyway)
 
 ## Hardware
 
@@ -59,7 +62,8 @@ ESP-IDF v6.1 lives in `~/esp/esp-idf`. The Makefile wraps `idf.py`:
 make boards         # the board files and what they switch on
 make menuconfig     # System, and one option per driver
 make                # build
-make flash          # flash and reset
+make flash          # flash and reset, then set its clock from the PC's
+make time           # set the board's clock from the PC's
 make term           # serial console; Ctrl-] quits
 make test           # PC tests, then QEMU with the device suites
 make hosttest       # the PC tests: the "a" language, JPEG, the text programs
@@ -219,15 +223,37 @@ Two more ways to save battery. Neither has been measured with a meter yet.
   while a PC is connected to the native USB console or a USB keyboard is
   plugged in, and on the COM-port console the first key after a quiet spell can
   be lost. `power` prints how much time was spent in each mode.
-- **`suspend`**: deep sleep until the side button is pressed; `suspend -t 60`
-  also wakes after a minute. Waking is a fresh boot (under a second to the
-  shell), so save first. On a board whose CardKB is wired to GPIO 0-3 the
-  low-power RISC-V core reads it every 100 ms and any key wakes it too.
+- **`suspend`**: deep sleep until any key on the CardKB, the side button,
+  the next alarm, or `-t SECONDS`. Waking is a fresh boot (under a second to
+  the shell), so save first. The low-power RISC-V core asks the CardKB for a
+  key every 100 ms, doing the I2C by hand on whichever RTC pins it is wired
+  to (16/15 on the Freenove board), so a board in a case needs no button.
+  `poweroff` is the same sleep with no timer and no alarms, woken only by
+  **Enter** (or the buttons), so a key knocked in a bag does not turn it on.
 
-The clock sets itself from the network whenever Wi-Fi connects, and again
-every hour. The chip keeps time through sleep and restarts; for a power cut
-the time is saved in `/etc/clock` every hour and before `poweroff` and
-`suspend`, so the next boot starts from there rather than from 1970.
+**The battery.** There is no current sensor, so `battery` works from the
+voltage and what the board is doing: an estimate of the current (backlight,
+CPU, radio, or the charger's), the cell's resistance learned from steps in
+it, the charge counted between readings and pulled towards what the
+sag-corrected voltage says in a lithium cell's table. The level is shown in
+tenths and moves every few seconds the way the current goes; against it, it
+walks rather than jumps. A reboot keeps it where it was. `battery -v`
+shows everything, including the cell's **cycles** (what was used since it
+was fitted, over its capacity) and **health** (what a discharge from full
+shows it holds, against the first ones when it was new: it needs a full
+charge and a run down to 20% before it has a figure). After fitting a new
+cell, `battery -c MAH` with its capacity starts all of that again. A cell
+run flat powers off, and wakes every quarter of an hour to see whether a
+charger has come.
+
+**The clock** sets itself from the network whenever Wi-Fi connects, and
+again every hour, and `make flash` or `make time` on the PC sets it too.
+The chip keeps time through restarts, and through deep sleep on an RC
+oscillator that wanders with temperature; the system learns how far from
+what the network says after each sleep, and allows for it on the next wake.
+For a power cut the time is saved in `/etc/clock` every hour and before
+`poweroff` and `suspend`, so the next boot starts from there rather than
+from 1970.
 
 `bench` on this board, at 240 MHz:
 
@@ -264,9 +290,10 @@ open on the card.
 
 Be aware of these before relying on it:
 
-- **A key cannot wake the Freenove board from `suspend`**: its CardKB is on
-  SDA 16 / SCL 15, which the low-power core cannot reach, so the side button
-  does it.
+- **The battery's current is estimated, never measured.** The level,
+  the time left, cycles and health all rest on it. What the charger puts
+  into a 2500 mAh cell is not yet measured (the board file says 50 mA,
+  from a 200 mAh cell); the voltage keeps the level honest either way.
 - **A terminal cannot say when a key is released**, so in games a press
   counts as held for 150 ms. Fine for menus, poor for platformers. A
   Bluetooth pad is the fix, and the driver is written (`pad scan`, `pad

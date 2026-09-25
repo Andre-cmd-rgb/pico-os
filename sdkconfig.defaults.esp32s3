@@ -43,3 +43,10 @@ CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 CONFIG_ULP_COPROC_ENABLED=y
 CONFIG_ULP_COPROC_TYPE_RISCV=y
 CONFIG_ULP_COPROC_RESERVE_MEM=4096
+
+# Deep sleep keeps time on the RTC's slow clock. The 136 kHz RC drifts by
+# percents with temperature; the 17.5 MHz one divided by 256 holds much
+# better for about 5 uA more, and a longer calibration before each sleep
+# measures it closer. kernel/clock.c learns what drift is left.
+CONFIG_RTC_CLK_SRC_INT_8MD256=y
+CONFIG_RTC_CLK_CAL_CYCLES=3000

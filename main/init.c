@@ -217,7 +217,6 @@ void app_main(void)
 	serial_console_init();
 	proc_init();
 	cpufreq_init();
-	battery_init();
 	wifi_init();
 
 #if CONFIG_PT_LCD
@@ -240,6 +239,7 @@ void app_main(void)
 		clock_restore();
 		screen_restore();
 	}
+	battery_init();		/* with what /etc/battery knows of the cell */
 	tmpfs_init();
 	sd_init();
 	wifi_start_supplicant();	/* now that /etc/wifi can be read */

@@ -32,7 +32,7 @@ EXPORT   := . $(IDF_PATH)/export.sh >/dev/null
 IDF      := $(EXPORT) && idf.py -B $(BUILD) -D SDKCONFIG=$(BUILD)/sdkconfig \
 	    -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/$(BOARD).defconfig"
 
-.PHONY: all build defconfig menuconfig flash term monitor clean distclean size font boards \
+.PHONY: all build defconfig menuconfig flash time term monitor clean distclean size font boards \
 	test hosttest hwtest progtest scripttest langtest push pull video stress need-port need-board
 
 all: build
@@ -67,6 +67,11 @@ menuconfig: need-board
 
 flash: need-board need-port
 	@$(IDF) -p $(PORT) flash
+	@$(EXPORT) && python3 ../tools/settime.py "$(PORT)" --boot
+
+# the board's clock from the PC's
+time: need-port
+	@$(EXPORT) && python3 ../tools/settime.py "$(PORT)"
 
 term monitor: need-port
 	@$(IDF) -p $(PORT) monitor

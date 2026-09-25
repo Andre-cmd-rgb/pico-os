@@ -363,12 +363,28 @@ PT_PROGRAM(uname, "print system information\n"
 PT_PROGRAM(date, "show or set the date and time\n"
 	   "usage: date [+format]\n"
 	   "       date -s \"YYYY-MM-DD HH:MM[:SS]\"\n"
-	   "Wi-Fi sets the clock by itself; -s is for when there is none.")
+	   "       date -s @SECONDS[.FRACTION]  since 1970, UTC\n"
+	   "Wi-Fi sets the clock by itself, and `make flash` or\n"
+	   "`make time` on the PC does; -s is for when neither\n"
+	   "can.")
 {
 	char out[128];
 	struct tm tm = { 0 };
 
-	if (argc == 3 && !strcmp(argv[1], "-s")) {
+	if (argc == 3 && !strcmp(argv[1], "-s") && argv[2][0] == '@') {
+		char *end;
+		double at = strtod(argv[2] + 1, &end);
+		struct timeval tv;
+
+		if (end == argv[2] + 1 || *end || at < 0) {
+			pt_dprintf(PT_STDERR, "date: expected @SECONDS since 1970\n");
+			return 2;
+		}
+		tv.tv_sec = (time_t)at;
+		tv.tv_usec = (suseconds_t)((at - (double)tv.tv_sec) * 1e6);
+		settimeofday(&tv, NULL);
+		clock_changed(false);
+	} else if (argc == 3 && !strcmp(argv[1], "-s")) {
 		int sec = 0;
 		int got = sscanf(argv[2], "%d-%d-%d %d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
 				 &tm.tm_hour, &tm.tm_min, &sec);
@@ -626,10 +642,14 @@ PT_PROGRAM(power, "show power state, or switch idle sleep\n"
 		  cpufreq_idle_sleep() ? "on" : "off");
 	struct battery_status b;
 	if (!battery_status(&b) && b.state != BATTERY_NONE && b.state != BATTERY_USB) {
-		pt_printf("battery %d.%02d V (%d%%), %s, %d mA, %+d mV/min\n", b.mv / 1000,
-			  b.mv % 1000 / 10, b.percent, battery_state_name(b.state), b.ma, b.trend);
-		pt_printf("cell %d mAh, %d.%02d ohm\n", b.capacity_mah, b.mohm / 1000,
-			  b.mohm % 1000 / 10);
+		pt_printf("battery %d.%02d V (%d.%d%%), %s, %d mA, %+d mV/h\n", b.mv / 1000,
+			  b.mv % 1000 / 10, b.permille / 10, b.permille % 10,
+			  battery_state_name(b.state), b.ma, b.trend);
+		pt_printf("cell %d mAh, %d.%02d ohm, %d.%d cycles", b.capacity_mah, b.mohm / 1000,
+			  b.mohm % 1000 / 10, b.cycles10 / 10, b.cycles10 % 10);
+		if (b.health >= 0)
+			pt_printf(", health %d%%", b.health);
+		pt_puts("\n");
 	} else if (!battery_status(&b))
 		pt_printf("battery none fitted\n");
 
@@ -640,24 +660,73 @@ PT_PROGRAM(power, "show power state, or switch idle sleep\n"
 	return 0;
 }
 
-PT_PROGRAM(battery, "show the battery level\n"
-	   "usage: battery [-w] [-c mAh]\n"
-	   "  -w  keep watching, once a second, until Ctrl-C\n"
-	   "  -c  the capacity of the cell fitted; a new cell's\n"
-	   "      resistance is learned again from scratch\n"
-	   "The current is estimated from the backlight, CPU and\n"
-	   "radio: the board cannot measure it.")
+static void battery_time(const struct battery_status *b, char *out, size_t size)
 {
-	bool watch = false;
+	out[0] = '\0';
+	if (b->minutes_left > 0)
+		snprintf(out, size, ", about %dh %02dm left", b->minutes_left / 60,
+			 b->minutes_left % 60);
+	else if (b->minutes_full > 0)
+		snprintf(out, size, ", full in about %dh %02dm", b->minutes_full / 60,
+			 b->minutes_full % 60);
+}
+
+/* Everything the driver knows, a line a thing, for `battery -v`. */
+static void battery_details(const struct battery_status *b)
+{
+	char time[40];
+
+	battery_time(b, time, sizeof(time));
+	pt_printf("level    %d.%d%%, %s%s\n", b->permille / 10, b->permille % 10,
+		  battery_state_name(b->state), time);
+	pt_printf("voltage  %d.%02d V, %d.%02d V at rest, %+d mV an hour\n", b->mv / 1000,
+		  b->mv % 1000 / 10, b->rest / 1000, b->rest % 1000 / 10, b->trend);
+	pt_printf("reading  %d mV, the last one as it came\n", b->raw);
+	pt_printf("current  %d mA %s (estimated)\n", abs(b->ma), b->ma < 0 ? "into it" : "out");
+	pt_printf("charger  %s\n", b->usb ? "yes: a PC is on USB" :
+		  b->charger ? "yes, by the voltage" : "no");
+	pt_printf("cell     %d mAh, %d mohm%s\n", b->capacity_mah, b->mohm,
+		  b->mohm_guessed ? " (a guess so far)" : "");
+	pt_printf("cycles   %d.%d (%d mAh used since it was fitted)\n", b->cycles10 / 10,
+		  b->cycles10 % 10, b->used_mah);
+	if (b->health >= 0)
+		pt_printf("health   %d%% of new: holds about %d mAh, by %d\n"
+			  "         discharge%s from full\n", b->health, b->holds_mah,
+			  b->measured, b->measured == 1 ? "" : "s");
+	else
+		pt_printf("health   not measured yet: charge it full, then\n"
+			  "         use it until it is down to 20%%\n");
+}
+
+PT_PROGRAM(battery, "show the battery level\n"
+	   "usage: battery [-v] [-w] [-c mAh]\n"
+	   "  -v  everything known: voltage, current, cycles,\n"
+	   "      health\n"
+	   "  -w  keep watching, once a second, until Ctrl-C\n"
+	   "  -c  a new cell of that capacity is fitted: its\n"
+	   "      cycles, health and resistance start again\n"
+	   "The current is estimated from the backlight, CPU and\n"
+	   "radio: the board cannot measure it. So are cycles\n"
+	   "(what was used, over the capacity) and health (what\n"
+	   "a discharge from full shows it holds, against the\n"
+	   "first ones, when it was new).")
+{
+	bool watch = false, verbose = false;
 	int mah = 0, ret;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-w")) {
 			watch = true;
+		} else if (!strcmp(argv[i], "-v")) {
+			verbose = true;
 		} else if (!strcmp(argv[i], "-c") && i + 1 < argc) {
 			mah = atoi(argv[++i]);
+			if (!mah) {
+				pt_dprintf(PT_STDERR, "battery: the capacity is 50 to 20000 mAh\n");
+				return 2;
+			}
 		} else {
-			pt_dprintf(PT_STDERR, "usage: battery [-w] [-c mAh]\n");
+			pt_dprintf(PT_STDERR, "usage: battery [-v] [-w] [-c mAh]\n");
 			return 2;
 		}
 	}
@@ -669,23 +738,23 @@ PT_PROGRAM(battery, "show the battery level\n"
 		pt_dprintf(PT_STDERR, "battery: the capacity is 50 to 20000 mAh\n");
 		return 2;
 	}
+	if (mah)
+		pt_printf("a new %d mAh cell: 0 cycles, health to be measured\n", mah);
 	do {
 		struct battery_status b;
-		char left[40] = "";
+		char time[40];
 
 		if ((ret = battery_status(&b)))
 			return fail("battery", NULL, ret);
-		if (b.minutes_left > 0)
-			snprintf(left, sizeof(left), ", about %dh %02dm left",
-				 b.minutes_left / 60, b.minutes_left % 60);
-		else if (b.minutes_full > 0)
-			snprintf(left, sizeof(left), ", full in about %dh %02dm",
-				 b.minutes_full / 60, b.minutes_full % 60);
+		battery_time(&b, time, sizeof(time));
 		if (b.state == BATTERY_NONE || b.state == BATTERY_USB)
-			pt_printf("no battery fitted%s", watch ? "   \r" : "\n");
+			pt_printf("no battery fitted (it reads %d.%02d V)%s", b.raw / 1000,
+				  b.raw % 1000 / 10, watch ? "   \r" : "\n");
+		else if (verbose && !watch)
+			battery_details(&b);
 		else
-			pt_printf("%d.%02d V  %d%%  %s%s%s", b.mv / 1000, b.mv % 1000 / 10,
-				  b.percent, battery_state_name(b.state), left,
+			pt_printf("%d.%02d V  %d.%d%%  %s%s%s", b.mv / 1000, b.mv % 1000 / 10,
+				  b.permille / 10, b.permille % 10, battery_state_name(b.state), time,
 				  watch ? "      \r" : "\n");
 		if (watch)
 			pt_sleep_ms(1000);
@@ -695,11 +764,12 @@ PT_PROGRAM(battery, "show the battery level\n"
 	return 0;
 }
 
-PT_PROGRAM(suspend, "deep sleep until the side button is pressed\n"
+PT_PROGRAM(suspend, "deep sleep until a key is pressed\n"
 	   "usage: suspend [-t seconds]\n"
-	   "The side button wakes it, and so does -t after that many seconds.\n"
-	   "Waking is a fresh boot: running programs and anything not saved\n"
-	   "are gone.")
+	   "Any CardKB key wakes it, and so do the side button,\n"
+	   "the next alarm, and -t after that many seconds.\n"
+	   "Waking is a fresh boot: running programs and\n"
+	   "anything not saved are gone.")
 {
 	uint32_t seconds = 0;
 
@@ -715,12 +785,13 @@ PT_PROGRAM(suspend, "deep sleep until the side button is pressed\n"
 	return fail("suspend", NULL, err);
 }
 
-PT_PROGRAM(poweroff, "put the system into deep sleep\nPress the board's reset button to wake it.")
+PT_PROGRAM(poweroff, "put the system into deep sleep\n"
+	   "Enter on the CardKB turns it on again, as do the\n"
+	   "side button and the reset button.")
 {
-	pt_puts("powering off, press reset to wake\n");
-	power_quiesce();
-	pt_sleep_ms(200);
-	esp_deep_sleep_start();
+	pt_puts("powering off: Enter turns it on again\n");
+	pt_sleep_ms(100);
+	power_off();
 	return 0;
 }
 

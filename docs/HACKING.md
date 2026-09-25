@@ -4,11 +4,14 @@
 
 `main/init.c` brings things up in dependency order:
 
-1. kernel log, wake reason after a `suspend`, PSRAM self test
-2. status LED, serial console, process table, CPU frequency policy, battery
+1. kernel log, why it started (a wake from sleep, a crash, power-on...) --
+   and back to sleep at once if a flat cell woke only to find it still flat
+   -- then the PSRAM self test
+2. status LED, serial console, process table, CPU frequency policy
 3. display, terminal and console
 4. sound, then the keyboards: CardKB, USB
-5. `/` (the root filesystem), its standard directories, `/tmp`, `/mnt/sd`
+5. `/` (the root filesystem) and its standard directories; the clock and the
+   battery, which read what they saved there; `/tmp`, `/mnt/sd`
 6. `/etc/rc`, if it exists
 7. a login shell, restarted whenever it exits
 
@@ -56,7 +59,10 @@ then the places that know the chip -- `cpufreq.c` (its speeds),
 `procfs.c` (`/proc/cpuinfo`), `uname`, and the pin ranges in
 `main/Kconfig.projbuild`. On the P4 the key-wake in `suspend` is left out:
 it is written for the S3's ULP RISC-V core, and the P4 has an LP core
-with a different API.
+with a different API. The S3's RTC slow clock is the 17.5 MHz RC divided
+by 256 (`sdkconfig.defaults.esp32s3`), which keeps time through deep sleep
+better than the 136 kHz one; changing it needs `make defconfig`, or the
+same lines in `build-<board>/sdkconfig`.
 
 Adding a driver: a Kconfig option that other options hang off, the source
 under `drivers/<kind>/`, `-ENODEV` stubs in an `#else` so the rest of the
@@ -193,27 +199,49 @@ reason.
 ## Power
 
 - `drivers/power/battery.c`: the cell voltage through the board's divider,
-  curve-fitted where the chip is calibrated. Its task warns on the screen,
-  and at the critical level syncs, unmounts and deep-sleeps. Under
-  `BATTERY_NO_CELL_MV` there is no cell and the board is on USB. The
-  percentage comes from an estimate of the current (`draw_ma`: the board's
-  measured idle and backlight draw from menuconfig, the chip's datasheet
-  figures for the CPU, the radio's measured share, or the charger's set
-  current), the cell's resistance learned from steps in that current, and
-  the charge counted between readings and pulled towards the
-  sag-corrected voltage.
+  the middle half of 64 samples every 5 s. Under `BATTERY_NO_CELL_MV` or
+  over 4.3 V there is no cell (the board is on USB). The level comes from
+  an estimate of the current (`draw_ma`: the board's measured idle and
+  backlight draw from menuconfig, the chip's datasheet figures for the CPU,
+  the radio's share, or the charger's set current), the cell's resistance
+  learned from steps in that current, and the charge counted between
+  readings and pulled towards the sag-corrected voltage in the table of a
+  lithium cell at rest (`curve[]`, 5% steps). The charger is known for
+  certain while a PC talks over USB; otherwise from the step the voltage
+  takes, looked for closely just after the PC goes quiet (a PC that
+  suspends the port has not been unplugged), and failing that from the
+  trend. The level is kept in permille, follows the current at once and
+  walks against it (`STILL`, `CREEP`); 100% only once the charger is done
+  (at 4.17 V and no longer rising). A restart carries everything over in
+  RTC memory (`kept`); a power-on or a wake from sleep starts from the
+  voltage. Cycles are the charge counted out over the capacity; health
+  is what a discharge from full to 20% says it holds, over what the first
+  two said. `/etc/battery` keeps the capacity, resistance, and that life.
+  Flat and falling: `power_off_empty()`.
 - `drivers/power/cpufreq.c`: the frequency policy and idle light sleep through
   `esp_pm`. With `CONFIG_PM_PROFILING`, `power` prints every lock and the time
   spent in each mode; a lock stuck at 100% is what keeps the CPU at 240 MHz.
   Drivers must hold locks only while working (the LED enables its RMT channel
   just for each update for this reason).
-- `drivers/power/suspend.c` and `drivers/power/ulp/wake.c`: deep sleep, woken
-  by the side button (ext1, with the RTC domain's pull-up), or -- where the
-  CardKB is wired to GPIO 0-3 -- by a program on the low-power RISC-V core
-  that reads it over the RTC I2C controller every 100 ms.
+- `drivers/power/suspend.c` and `drivers/power/ulp/wake.c`: deep sleep
+  (`power_suspend`, `power_off`, `power_off_empty`), woken by the side button
+  (ext1, with the RTC domain's pull-up), the timer, or a CardKB key: the
+  low-power RISC-V core asks the CardKB for a key every 100 ms, bit-banging
+  I2C on the RTC pins (any of GPIO 0-21), and counts the polls it asked and
+  had answered, which the next boot logs. `suspend` wakes on any key,
+  `poweroff` on Enter (`ulp_want`). A flat cell's sleep wakes every 15
+  minutes on the timer and goes straight back unless the cell has risen
+  past 3.65 V, before the screen lights. `power_boot_reason()` logs why
+  the chip started.
 - `kernel/clock.c`: the time saved to `/etc/clock` hourly and before sleep,
   put back at boot after a power cut; `wifi.c` starts SNTP on every new
-  address.
+  address and hourly after. Going to sleep marks the moment in RTC memory
+  (`clock_sleeping`); waking corrects the sleep by the learned drift of the
+  RTC clock, and the next network time after a sleep of 30 minutes or more
+  that began with the clock just set teaches the drift (`drift` in
+  `/etc/clock`). `clock_sleep_us()` stretches a timer wake-up by it.
+  `tools/settime.py` (`make time`, and `make flash` after flashing) sets the
+  clock from the PC with `date -s @SECONDS`.
 - `drivers/misc/alarm.c`: alarms, timers and the calendar's reminders, in
   `/etc/alarms`. Its task rings the one due whatever is running: it claims
   the speaker (`audio_claim`: other writers' sound goes nowhere, at its

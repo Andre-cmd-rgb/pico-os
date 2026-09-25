@@ -38,6 +38,15 @@ THINGS WORTH KNOWING
   USB plugged in and no cell it reads about 5 V. The
   system treats anything above 4.3 V as "no battery
   fitted" and leaves the status bar's corner empty.
+  There is no current sensor: the level, cycles and
+  health are worked out from the voltage and what
+  the board is doing (`battery -v`). After fitting a
+  new cell, `battery -c MAH` with its capacity.
+
+  The CardKB wakes the board from `suspend` (any key)
+  and `poweroff` (Enter): the low-power core asks it
+  for a key every 100 ms on its own pins, so a board
+  in a case needs neither button.
 
   The panel is driven at 80 MHz, which is faster than
   its datasheet allows. It is reliable on this board;

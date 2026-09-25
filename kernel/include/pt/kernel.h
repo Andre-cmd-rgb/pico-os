@@ -130,6 +130,8 @@ void	dir_release_all(struct proc *p);	/* sys.c: what the program left open */
 /* clock.c: the time kept in /etc/clock, for a boot after the power was cut */
 void	clock_restore(void);		/* at boot, once / is mounted */
 void	clock_save(void);		/* now: the power is about to go */
+void	clock_sleeping(void);		/* deep sleep is next: mark when it began */
+uint64_t clock_sleep_us(uint64_t us);	/* a timer wake-up, allowing for drift */
 void	clock_changed(bool network);	/* it was set: save it soon */
 void	clock_tick(void);		/* once a second, from a task that may write files */
 

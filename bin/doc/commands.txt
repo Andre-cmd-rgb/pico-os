@@ -80,11 +80,14 @@ SYSTEM
               back); rotate 0 / rotate 180
 
 POWER
-  battery     level, what it is doing, time left
+  battery     level, what it is doing, time left;
+              -v everything: current, cycles,
+              health; -c MAH a new cell fitted
   power       policy, locks, where the time went
   cpufreq     performance | ondemand | powersave
-  suspend     deep sleep until the side button
-  poweroff    deep sleep until reset
+  suspend     deep sleep until any CardKB key
+              (or the side button, -t, an alarm)
+  poweroff    deep sleep until Enter on the CardKB
   led         the status light
 
 SOUND
@@ -101,7 +104,9 @@ NETWORK
   wifi connect #2 PASSWORD
   wifi forget NAME / disconnect / on / off
   ntp               set the clock now (Wi-Fi also
-                    sets it whenever it connects)
+                    sets it whenever it connects;
+                    `make time` on the PC sets it
+                    too)
   ping [-c N] HOST
   wget URL          fetch a file; -c goes on after a
                     break, -O names it
