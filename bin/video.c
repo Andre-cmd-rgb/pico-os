@@ -824,11 +824,12 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			goto done;
 		}
 	}
-	/* Nothing here is idle long enough for the governor to be right
-	 * about it, and a frame missed while the clock ramps up is a
-	 * frame missed. */
+	/* As fast as the policy lets it, all the time: nothing here is idle
+	 * long enough for the governor to be right about it, and a frame
+	 * missed while the clock ramps up is a frame missed. A policy that
+	 * holds it slower (powersave) is kept to, and frames dropped. */
 	cpufreq_get(&was_min, &was_max);
-	cpufreq_set(240, 240);
+	cpufreq_set(was_max, was_max);
 
 	vt_hold_screen(true);
 	power_keep_screen(true);		/* nobody presses keys to watch */
