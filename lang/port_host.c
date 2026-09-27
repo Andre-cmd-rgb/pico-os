@@ -1,6 +1,6 @@
 /*
- * Port layer for a PC (Linux, macOS): POSIX calls. Builds build-host/picoc and
- * build-host/pico, which pick their behaviour from the name they run under.
+ * Port layer for a PC (Linux, macOS): POSIX calls. Builds build/host/picoc and
+ * build/host/pico, which pick their behaviour from the name they run under.
  *
  * PICO_STATS=1 runs the command on a painted 1 MB thread stack and reports
  * the peak heap and stack it used, to check what fits on the device.

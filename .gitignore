@@ -1,0 +1,18 @@
+# Build output: the firmware in build/<board>/, pico's PC tools in lang/build/
+build/
+lang/build/
+
+# Made from sdkconfig.defaults and the board file; those are the source
+sdkconfig
+sdkconfig.old
+
+# Downloaded by the component manager (dependencies.lock pins the versions)
+managed_components/
+
+# Clips made by tools/mkvideo.py and tools/ytgrab.py
+clips/
+
+# Editor and tool caches
+.cache/
+__pycache__/
+*.pyc

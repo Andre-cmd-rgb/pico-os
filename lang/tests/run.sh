@@ -10,7 +10,7 @@
 # instructions unfused (PICO_NOQUICKEN), so fused and plain execution are
 # compared on every test too.
 set -u
-dir=${1:-build-host}
+dir=${1:-build/host}
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 A="$root/$dir/pico"

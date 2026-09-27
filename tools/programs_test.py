@@ -702,7 +702,7 @@ def on_board(port):
     output, which spoils one case's comparison without anything being
     wrong on the board; so a case that disagrees is run again on its own,
     and only one that disagrees twice counts."""
-    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "tools"))
+    sys.path.insert(0, HERE)
     from board import Board, clean
     import xfer
 

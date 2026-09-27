@@ -7,7 +7,7 @@
 #   make term          serial console (Ctrl-] to quit)
 #   make flash term    both
 #   make test          PC tests, then the QEMU image with the device suites
-#   make hosttest      the "a" compiler and VM, and the JPEG decoder, built for this PC
+#   make hosttest      the pico compiler and VM, the JPEG decoder, the text programs
 #   make hwtest        the shell suite on the board at PORT
 #   make progtest      the text programs on the board, against GNU's on this PC
 #   make scripttest    shell control flow (if/for/while/case, functions)
@@ -15,17 +15,18 @@
 #   make push FILE=... [DEST=...]   copy a file to the board (default ~/name)
 #   make pull FILE=... [DEST=...]   copy a file from the board
 #   make video FILE=clip.mp4        convert a video and send it
+#   make yt URL=https://...         fetch one from the web, convert and send it
 #   make stress        hammer the board at PORT for SECONDS (default 600)
 #
 # BOARD picks which drivers and pins to start from (boards/*.defconfig, and
-# boards/README.md); each board builds in its own directory:
+# boards/README.md); each board builds in its own directory, build/BOARD:
 #
 #   make BOARD=devkit-uno-shield flash term
 #
 # PORT defaults to the first /dev/ttyUSB* or /dev/ttyACM* found.
 
 BOARD    ?= freenove-fnk0104b
-BUILD    ?= build-$(BOARD)
+BUILD    ?= build/$(BOARD)
 IDF_PATH ?= $(HOME)/esp/esp-idf
 PORT     ?= $(firstword $(wildcard /dev/ttyUSB*) $(wildcard /dev/ttyACM*))
 EXPORT   := . $(IDF_PATH)/export.sh >/dev/null
@@ -33,7 +34,7 @@ IDF      := $(EXPORT) && idf.py -B $(BUILD) -D SDKCONFIG=$(BUILD)/sdkconfig \
 	    -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/$(BOARD).defconfig"
 
 .PHONY: all build defconfig menuconfig flash time term monitor clean distclean size font boards \
-	test hosttest hwtest progtest scripttest langtest push pull video stress need-port need-board
+	test hosttest hwtest progtest scripttest langtest push pull video yt stress need-port need-board
 
 all: build
 
@@ -67,11 +68,11 @@ menuconfig: need-board
 
 flash: need-board need-port
 	@$(IDF) -p $(PORT) flash
-	@$(EXPORT) && python3 ../tools/settime.py "$(PORT)" --boot
+	@$(EXPORT) && python3 tools/settime.py "$(PORT)" --boot
 
 # the board's clock from the PC's
 time: need-port
-	@$(EXPORT) && python3 ../tools/settime.py "$(PORT)"
+	@$(EXPORT) && python3 tools/settime.py "$(PORT)"
 
 term monitor: need-port
 	@$(IDF) -p $(PORT) monitor
@@ -83,7 +84,7 @@ clean:
 	@$(IDF) fullclean
 
 distclean:
-	rm -rf build-* sdkconfig sdkconfig.old managed_components
+	rm -rf build sdkconfig sdkconfig.old managed_components
 	$(MAKE) -C lang clean
 
 boards:
@@ -107,11 +108,11 @@ hosttest:
 # filesystems, so the qemu board leaves those out and puts / in RAM.
 test: hosttest
 	@$(MAKE) BOARD=qemu build
-	@cd build-qemu && $(EXPORT) && \
+	@cd build/qemu && $(EXPORT) && \
 		esptool --chip esp32s3 merge-bin --pad-to-size 16MB -o flash.bin @flash_args
-	@python3 tools/shell_test.py build-qemu/flash.bin
-	@python3 tools/script_test.py build-qemu/flash.bin
-	@python3 lang/tests/device_test.py build-qemu/flash.bin
+	@python3 tools/shell_test.py build/qemu/flash.bin
+	@python3 tools/script_test.py build/qemu/flash.bin
+	@python3 lang/tests/device_test.py build/qemu/flash.bin
 
 hwtest: need-port
 	@$(EXPORT) && python3 tools/shell_test.py $(PORT)
@@ -126,13 +127,20 @@ langtest: need-port
 	@$(EXPORT) && python3 lang/tests/device_test.py $(PORT)
 
 push pull: need-port
-	@$(EXPORT) && python3 ../tools/xfer.py $@ "$(PORT)" "$(FILE)" "$(DEST)"
+	@$(EXPORT) && python3 tools/xfer.py $@ "$(PORT)" "$(FILE)" "$(DEST)"
 
 # Convert a video into something the board can play, then send it over.
+# The clip stays in clips/, so a board that is not plugged in loses nothing.
+CLIP = clips/$(notdir $(basename $(FILE))).ptv
 video: need-port
-	@python3 ../tools/mkvideo.py "$(FILE)" "$(BUILD)/clip.ptv" $(VIDEOARGS)
-	@$(EXPORT) && python3 ../tools/xfer.py push "$(PORT)" "$(BUILD)/clip.ptv" \
-		"/home/$(shell sed -n 's/^CONFIG_PT_USERNAME="\(.*\)"/\1/p' $(BUILD)/sdkconfig)/video/$(notdir $(basename $(FILE))).ptv"
+	@mkdir -p clips
+	@python3 tools/mkvideo.py "$(FILE)" "$(CLIP)" $(VIDEOARGS)
+	@$(EXPORT) && python3 tools/xfer.py push "$(PORT)" "$(CLIP)" \
+		"~/video/$(notdir $(CLIP))"
+
+# The same, starting from a web link (yt-dlp).
+yt:
+	@$(EXPORT) && python3 tools/ytgrab.py "$(URL)" --push $(if $(PORT),--port "$(PORT)") $(YTARGS)
 
 SECONDS ?= 600
 stress: need-port

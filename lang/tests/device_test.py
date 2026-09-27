@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check the pico language on the device (QEMU, or a board over serial).
 
-    python3 lang/tests/device_test.py [build-qemu/flash.bin | /dev/ttyACM0]
+    python3 lang/tests/device_test.py [build/qemu/flash.bin | /dev/ttyACM0]
 
 It types a small program into the shell, compiles and runs it both ways
 (`pico program.pico` and `picoc` then `./program`), and checks a runtime error and
@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 from shell_test import Board, clean  # noqa: E402
 
-TARGET = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "build-qemu", "flash.bin")
+TARGET = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "build", "qemu", "flash.bin")
 
 # No single quotes in the program: the shell writes it with echo '...'.
 PROGRAM = [

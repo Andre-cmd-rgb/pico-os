@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive the PocketType shell and check the results.
 
-    make test                    boot build-qemu/flash.bin in QEMU
+    make test                    boot build/qemu/flash.bin in QEMU
     make hwtest PORT=/dev/ttyACM0   run the same checks on a real board
 
 On a board the checks work in /tmp/work and clean up after themselves. Opening
@@ -17,10 +17,10 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "tools"))
+sys.path.insert(0, os.path.join(ROOT, "tools"))
 from board import Board, clean, find_qemu, free_port  # noqa: E402,F401
 
-TARGET = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "build-qemu", "flash.bin")
+TARGET = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "build", "qemu", "flash.bin")
 
 
 def main():

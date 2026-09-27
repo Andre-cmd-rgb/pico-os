@@ -11,10 +11,10 @@ make BOARD=devkit-uno-shield flash
 make menuconfig                    # change anything on top of the board file
 ```
 
-The build lands in `build-<board>/`, so several boards can be built side by
+The build lands in `build/<board>/`, so several boards can be built side by
 side without clobbering each other.
 
-A board file only *seeds* a configuration. Once `build-<board>/sdkconfig`
+A board file only *seeds* a configuration. Once `build/<board>/sdkconfig`
 exists it is the truth, and editing the board file changes nothing until:
 
 ```sh

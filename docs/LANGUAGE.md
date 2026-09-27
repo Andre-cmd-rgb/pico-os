@@ -42,9 +42,9 @@ hello, andre
 On the PC, build the tools once:
 
 ```
-$ make -C lang            # builds lang/build-host/picoc and lang/build-host/pico
-$ lang/build-host/pico hello.pico andre
-$ lang/build-host/picoc -o hello hello.pico      # the same executable the board runs
+$ make -C lang            # builds lang/build/host/picoc and lang/build/host/pico
+$ lang/build/host/pico hello.pico andre
+$ lang/build/host/picoc -o hello hello.pico      # the same executable the board runs
 ```
 
 `make -C lang test` runs the test suite, `make -C lang bench` the timings.

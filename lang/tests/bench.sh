@@ -5,7 +5,7 @@
 #
 # The same programs run on the board with `pico bench.pico` and `pico benchmark.pico`.
 set -u
-dir=${1:-build-host}
+dir=${1:-build/host}
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 A="$root/$dir/pico"

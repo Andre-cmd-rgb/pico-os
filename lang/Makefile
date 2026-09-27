@@ -1,6 +1,6 @@
 # The pico compiler and virtual machine, built for this PC.
 #
-#   make                build build-host/picoc and build-host/pico
+#   make                build build/host/picoc and build/host/pico
 #   make test           compile and run every tests/*.pico, check the output
 #   make asan           the same under AddressSanitizer, with no pooling
 #   make bench          timings for the benchmark programs
@@ -14,8 +14,8 @@ LDLIBS := -lm -pthread
 
 SRC := builtins.c compile.c driver.c image.c lex.c port_host.c quicken.c runtime.c vm.c
 HDR := pico.h lex.h port.h driver.h
-B   := build-host
-A   := build-asan
+B   := build/host
+A   := build/asan
 OBJ := $(SRC:%.c=$(B)/%.o)
 AOBJ := $(SRC:%.c=$(A)/%.o)
 ASAN := -fsanitize=address,undefined -fno-omit-frame-pointer -DAL_NO_POOL
