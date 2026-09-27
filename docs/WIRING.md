@@ -200,6 +200,37 @@ The APN belongs to your network and is set in menuconfig
 <command>` sends anything through by hand, for instance `modem at +CSQ`.
 Calls are not supported.
 
+#### The SIM800L
+
+The small red SIM800L board is the cheap one, and it differs from the
+rest in two ways that can each kill it:
+
+- **It runs on 3.4 to 4.4 V, not 5 V.** Its VCC goes to the cell: to
+  OUT+ and OUT- of the charger module, the same two wires the board's
+  battery lead comes from, with a 1000 µF capacitor (6.3 V or more,
+  minus to ground) soldered across VCC and GND at the module. Never the
+  header's 5 V pin.
+- **Its serial lines are 2.8 V.** What goes into its RXD is brought down
+  from the board's 3.3 V with two resistors; what comes out of its TXD
+  the board reads as it is.
+
+| SIM800L | Goes to |
+|---|---|
+| VCC | the cell's + (charger module OUT+), capacitor to GND |
+| GND | the cell's - (OUT-) **and** the header's GND |
+| RXD | GPIO43 through 1 kΩ, and 2.2 kΩ from RXD to GND |
+| TXD | GPIO44 |
+| RST, RING, DTR | not connected |
+
+Screw the antenna on before it is powered. It takes a micro-SIM, whose
+PIN must be turned off first (in a phone): the driver does not enter
+one. It is **2G only** -- GSM and GPRS -- so it registers only where the
+network still runs 2G; mobile data works, at tens of kilobits a second.
+It draws 15 to 20 mA all the time, the board asleep or not, which
+empties the cell in about a week: a switch in its VCC wire is worth it.
+The blue "SIM800L v2" board has a regulator of its own and wants 5 V at
+2 A, from its own supply, never from the header.
+
 ### Wi-Fi
 
 No wiring: the radio is in the chip and its antenna is on the board.
