@@ -312,8 +312,9 @@ static void put(const void *data, size_t n)
 
 /*
  * Sends a command and collects what comes back, up to OK or ERROR. The
- * reply keeps the informational lines only; the final OK is not part of
- * it. News that comes in the middle goes to news().
+ * reply keeps the informational lines, and an error's own line (+CME
+ * ERROR: 10, which says why); the final OK is not part of it. News that
+ * comes in the middle goes to news().
  */
 int modem_at(const char *cmd, char *reply, size_t size, int timeout_ms)
 {
@@ -339,10 +340,14 @@ int modem_at(const char *cmd, char *reply, size_t size, int timeout_ms)
 			news(line);
 			continue;
 		}
-		if (is_final(line, &err))
+		bool final = is_final(line, &err);
+
+		if (final && !err)
 			break;
 		if (reply && len + strlen(line) + 2 < size)
 			len += snprintf(reply + len, size - len, "%s\n", line);
+		if (final)
+			break;		/* an error, its line kept */
 	}
 	if (err == -ETIMEDOUT)
 		late_ms = 500;
@@ -373,6 +378,40 @@ bool modem_present(void)
 	return present;
 }
 
+/*
+ * The SIM's state in words, from AT+CPIN?'s answer or the error it got:
+ * "no card" said for everything that went wrong, it looked like a SIM
+ * that was not there when it was.
+ */
+static void sim_words(int err, const char *reply, char *out, size_t size)
+{
+	static const struct { const char *said, *means; } states[] = {
+		{ "READY", "ready" }, { "SIM PIN", "PIN needed" }, { "SIM PUK", "PUK needed" },
+		{ "NOT INSERTED", "not inserted" }, { "NOT READY", "not ready" },
+	};
+	const char *p;
+
+	if (!err && (p = field(reply, "+CPIN: "))) {
+		for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
+			if (!strncmp(p, states[i].said, strlen(states[i].said))) {
+				strlcpy(out, states[i].means, size);
+				return;
+			}
+		}
+		strlcpy(out, p, strcspn(p, "\n") + 1 < size ? strcspn(p, "\n") + 1 : size);
+		return;
+	}
+	switch ((p = field(reply, "+CME ERROR: ")) ? atoi(p) : -1) {
+	case 10: strlcpy(out, "not inserted", size); break;
+	case 11: strlcpy(out, "PIN needed", size); break;
+	case 12: strlcpy(out, "PUK needed", size); break;
+	case 13: strlcpy(out, "not working", size); break;
+	case 14: strlcpy(out, "busy", size); break;
+	case 15: strlcpy(out, "not readable", size); break;	/* "SIM wrong" */
+	default: strlcpy(out, "cannot tell", size); break;
+	}
+}
+
 int modem_info(struct modem_info *out)
 {
 	char reply[REPLY_MAX];
@@ -395,11 +434,7 @@ int modem_info(struct modem_info *out)
 	 */
 	if ((err = modem_at("AT+CPIN?", reply, sizeof(reply), 3000)) == -ETIMEDOUT)
 		return err;
-	if (!err && (p = field(reply, "+CPIN: ")))
-		strlcpy(out->sim, p, strcspn(p, "\n") + 1 < sizeof(out->sim) ?
-			strcspn(p, "\n") + 1 : sizeof(out->sim));
-	else
-		strlcpy(out->sim, "no card", sizeof(out->sim));
+	sim_words(err, reply, out->sim, sizeof(out->sim));
 	if (!modem_at("AT+CSQ", reply, sizeof(reply), 2000) && (p = field(reply, "+CSQ: "))) {
 		int rssi = atoi(p);
 

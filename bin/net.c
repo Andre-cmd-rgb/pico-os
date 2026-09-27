@@ -408,6 +408,16 @@ static int modem_status(void)
 		pt_printf("radio    off (`modem on` turns it on)\n");
 	pt_printf("imei     %s\n", *m.imei ? m.imei : "-");
 	pt_printf("sim      %s\n", m.sim);
+	/* what to do about it, where there is something to do */
+	if (!strcmp(m.sim, "not inserted") || !strcmp(m.sim, "not working") ||
+	    !strcmp(m.sim, "not readable"))
+		pt_printf("         gold contacts to the board, pushed right\n"
+			  "         in; an adapter can shift off them\n");
+	else if (!strcmp(m.sim, "PIN needed") || !strcmp(m.sim, "PUK needed"))
+		pt_printf("         turn its PIN off in a phone first\n");
+	else if (!strcmp(m.sim, "not ready") || !strcmp(m.sim, "busy"))
+		pt_printf("         %s\n", modem_radio_on() ? "still starting: a moment" :
+			  "the radio is off: `modem on`");
 	pt_printf("network  %s%s%s\n", m.reg >= 0 ? modem_network_text(m.reg) :
 		  m.registered ? "registered" : "searching", *m.operator ? " on " : "", m.operator);
 	/* 0..31 of +CSQ, -113..-51 dBm: under -105 or so a GSM call breaks up */
