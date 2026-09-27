@@ -12,13 +12,20 @@
  * deletes the task outright -- though never while it holds a lock, a file
  * system's or a driver's, which would then never be let go. Its memory
  * and files go the usual way, since the kernel keeps count of them.
+ *
+ * Stacks are in PSRAM: there are megabytes of it and only a couple of
+ * hundred kilobytes of internal RAM, which is what ran out when a few
+ * programs were open at once. What a PSRAM stack cannot do -- touch the
+ * flash, go to sleep -- is done for it on a kernel task (internal.c).
  */
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "freertos/idf_additions.h"
 #include "sdkconfig.h"
 
 #include "pt/kernel.h"
@@ -30,6 +37,9 @@
 #define LOADER_STACK_KB		12
 #define DEFAULT_PATH		"/bin:/home/" CONFIG_PT_USERNAME "/bin"
 #define SIGMASK(sig)		(1u << (sig))
+#define STACK_CAPS		(heap_caps_get_total_size(MALLOC_CAP_SPIRAM) ?		\
+				 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT :			\
+				 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
 #define STOPS			(SIGMASK(PT_SIGSTOP) | SIGMASK(PT_SIGTSTP))
 #define ENDS			(SIGMASK(PT_SIGINT) | SIGMASK(PT_SIGTERM) | SIGMASK(PT_SIGKILL))
 
@@ -38,6 +48,7 @@ static SemaphoreHandle_t table_lock;
 static int		 next_pid = 1;
 static struct pt_program *programs;
 static struct pt_loader	 *loaders;
+static QueueHandle_t	 finished;	/* tasks that have exited, to be deleted */
 
 #define LOCK()		xSemaphoreTake(table_lock, portMAX_DELAY)
 #define UNLOCK()	xSemaphoreGive(table_lock)
@@ -323,10 +334,17 @@ static void teardown(struct proc *p, int status)
 void pt_exit(int status)
 {
 	struct proc *p = proc_current();
+	TaskHandle_t self = xTaskGetCurrentTaskHandle();
 
-	if (p)
-		teardown(p, status);
-	vTaskDelete(NULL);
+	if (!p)
+		vTaskDelete(NULL);
+	teardown(p, status);
+	/*
+	 * A task cannot free the stack it is standing on: it stops here and
+	 * the reaper deletes it and frees it.
+	 */
+	xQueueSend(finished, &self, portMAX_DELAY);
+	vTaskSuspend(NULL);
 	for (;;)
 		vTaskDelay(portMAX_DELAY);
 }
@@ -529,18 +547,19 @@ static int spawn(struct proc *parent, const char *cmd, int argc, char *const *ar
 	BaseType_t made = pdFAIL;
 
 	/*
-	 * A process that has exited leaves its stack to be freed by the
-	 * idle task, so a program that spawns in a tight loop can run the
-	 * heap down before that happens. Give the idle task a moment and
-	 * try again rather than failing something that is only briefly
-	 * out of memory.
+	 * The stack comes from PSRAM, or from internal RAM on a board without
+	 * any. A process that has exited leaves its stack to be freed by the
+	 * reaper, so a program that spawns in a tight loop can run the heap
+	 * down before that happens: give the reaper a moment and try again
+	 * rather than failing something that is only briefly out of memory.
 	 */
 	for (int attempt = 0; attempt < 4 && made != pdPASS; attempt++) {
 		if (attempt)
 			vTaskDelay(pdMS_TO_TICKS(2));
-		made = xTaskCreatePinnedToCore(trampoline, p->name, p->stack_kb * 1024, p,
-					       PROC_PRIORITY, &task,
-					       prog && prog->any_core ? tskNO_AFFINITY : PROC_CORE);
+		made = xTaskCreatePinnedToCoreWithCaps(trampoline, p->name, p->stack_kb * 1024, p,
+						       PROC_PRIORITY, &task,
+						       prog && prog->any_core ? tskNO_AFFINITY : PROC_CORE,
+						       STACK_CAPS);
 	}
 	if (made != pdPASS) {
 		teardown(p, -ENOMEM);
@@ -783,7 +802,7 @@ static void force_kill(struct proc *p, int64_t now)
 		return;
 	}
 	LOCK();
-	vTaskDelete(task);
+	vTaskDeleteWithCaps(task);
 	p->task = NULL;
 	UNLOCK();
 	klog("kill: pid %d (%s) ignored SIGKILL, task deleted", p->pid, p->name);
@@ -816,15 +835,19 @@ static int reaper_period_ms(void)
 }
 
 /*
- * The kernel's own task on core 0: kills what SIGKILL did not end, and
- * once a second the clock's chores.
+ * The kernel's own task on core 0: deletes the tasks of processes that
+ * have exited, kills what SIGKILL did not end, and once a second the
+ * clock's chores.
  */
 static void reaper(void *arg)
 {
 	int64_t last_tick = 0;
 
 	for (;;) {
-		vTaskDelay(pdMS_TO_TICKS(reaper_period_ms()));
+		TaskHandle_t done;
+
+		if (xQueueReceive(finished, &done, pdMS_TO_TICKS(reaper_period_ms())))
+			vTaskDeleteWithCaps(done);
 		int64_t now = esp_timer_get_time();
 
 		for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++)
@@ -839,6 +862,7 @@ static void reaper(void *arg)
 void proc_init(void)
 {
 	table_lock = xSemaphoreCreateMutex();
+	finished = xQueueCreate(CONFIG_PT_MAX_PROCS, sizeof(TaskHandle_t));
 	for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++) {
 		procs[i].exited = xSemaphoreCreateBinary();
 		procs[i].cont = xSemaphoreCreateBinary();
@@ -847,5 +871,6 @@ void proc_init(void)
 	 * itself, and one with unwritten data is a write down through FAT
 	 * and the card driver. */
 	xTaskCreatePinnedToCore(reaper, "kreaper", 4096, NULL, 5, NULL, 0);
-	klog("proc: %d process slots, programs on core %d", CONFIG_PT_MAX_PROCS, PROC_CORE);
+	klog("proc: %d process slots, programs on core %d, stacks in %s", CONFIG_PT_MAX_PROCS,
+	     PROC_CORE, (STACK_CAPS & MALLOC_CAP_SPIRAM) ? "PSRAM" : "internal RAM");
 }

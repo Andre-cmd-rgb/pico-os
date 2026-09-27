@@ -386,12 +386,20 @@ static int jpeg_band(void *ctx, int y, int rows, const uint8_t *px, size_t strid
 	return 0;
 }
 
-/* Internal memory if there is room, else any. Tracked, so a program
- * stopped halfway through a picture does not keep it for good. */
+/*
+ * Internal memory if there is plenty, else PSRAM. The reserve is for the
+ * kernel: Wi-Fi waking up needs tens of kilobytes of internal RAM at once,
+ * and a video decodes two of these at a time, all the time. Tracked, so a
+ * program stopped halfway through a picture does not keep it for good.
+ */
+#define INTERNAL_SPARE	(48 * 1024)
+
 static void *fast_alloc(size_t n)
 {
-	void *p = pt_malloc_caps(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	void *p = NULL;
 
+	if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > n + INTERNAL_SPARE)
+		p = pt_malloc_caps(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 	return p ? p : pt_malloc(n);
 }
 

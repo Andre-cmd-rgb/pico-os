@@ -110,6 +110,15 @@ struct pt_procinfo {
 };
 
 void	proc_init(void);
+/*
+ * Process stacks are in PSRAM, which the flash and sleep code cannot use
+ * (internal.c): this runs fn(arg) on a kernel task with an internal stack
+ * and returns what it returns, or calls it directly when the caller's
+ * stack is internal already.
+ */
+void	internal_init(void);
+int	on_internal_stack(int (*fn)(void *arg), void *arg);
+void	restart_now(void);		/* esp_restart(), from any stack */
 struct proc *proc_current(void);	/* NULL for kernel tasks */
 int	proc_spawn_console(int argc, char **argv, struct pt_file *console);
 int	proc_wait_orphan(int pid);	/* for kernel code: wait for a pid it spawned */

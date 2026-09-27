@@ -219,6 +219,7 @@ void app_main(void)
 	memtest_quick();
 	led_init();
 	serial_console_init();
+	internal_init();
 	proc_init();
 	cpufreq_init();
 	wifi_init();

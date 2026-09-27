@@ -591,7 +591,7 @@ PT_PROGRAM(reboot, "restart the system")
 	vfs_sync_all();
 	sd_unmount();
 	pt_sleep_ms(200);
-	esp_restart();
+	restart_now();
 	return 0;
 }
 
@@ -1511,7 +1511,7 @@ PT_PROGRAM_NAMED(factory_reset, "factory-reset", 0,
 	pt_printf("done; rebooting\n");
 	vfs_sync_all();
 	pt_sleep_ms(300);
-	esp_restart();
+	restart_now();
 	return 0;
 }
 

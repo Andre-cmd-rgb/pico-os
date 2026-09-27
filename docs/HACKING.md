@@ -42,7 +42,7 @@ their pins — the same split as Linux's drivers and `arch/*/configs`.
 ```sh
 make boards                          # list
 make BOARD=freenove-fnk0104b flash   # the default board
-make BOARD=devkit-uno-shield build   # another, in its own build-<board>/
+make BOARD=devkit-uno-shield build   # another, in its own build/<board>/
 ```
 
 `SDKCONFIG_DEFAULTS` is `sdkconfig.defaults` plus the board file, so
@@ -62,7 +62,7 @@ it is written for the S3's ULP RISC-V core, and the P4 has an LP core
 with a different API. The S3's RTC slow clock is the 17.5 MHz RC divided
 by 256 (`sdkconfig.defaults.esp32s3`), which keeps time through deep sleep
 better than the 136 kHz one; changing it needs `make defconfig`, or the
-same lines in `build-<board>/sdkconfig`.
+same lines in `build/<board>/sdkconfig`.
 
 Adding a driver: a Kconfig option that other options hang off, the source
 under `drivers/<kind>/`, `-ENODEV` stubs in an `#else` so the rest of the
@@ -303,11 +303,26 @@ reason.
 
 ## Processes
 
-A process that exits leaves its stack for the idle task to free, so a
-program that spawns in a tight loop can run the heap down before that
-happens. `proc_spawn()` therefore waits a couple of milliseconds and
-tries again rather than failing something that is only briefly out of
-memory.
+A process's stack is in **PSRAM** (`xTaskCreatePinnedToCoreWithCaps`),
+not internal RAM: there are megabytes of the one and about 200 KB of the
+other, and with stacks in internal RAM three programs and a video were
+enough to leave no room to start `free`. Two things a PSRAM stack cannot
+do, because they turn the cache off: touch the flash, and go to sleep or
+restart. `kernel/internal.c` does them on `kflash`, a kernel task with a
+small internal stack on the programs' core. Every `esp_flash_*` write
+and erase is wrapped at link time (`--wrap`, `kernel/CMakeLists.txt`), so
+LittleFS, NVS and anything else end up there without knowing; kernel code
+that has to sleep or restart from a process calls
+`on_internal_stack(fn, arg)` or `restart_now()`. A caller whose stack is
+internal already (a kernel task) goes straight through. Flash reads need
+none of this while the program runs from PSRAM (XIP). `bench` measured
+the same with stacks in either place.
+
+A task cannot free the stack it is standing on, so a process that exits
+suspends itself and the reaper deletes it (`vTaskDeleteWithCaps`). A
+program that spawns in a tight loop can run ahead of that, so
+`proc_spawn()` waits a couple of milliseconds and tries again rather than
+failing something that is only briefly out of memory.
 
 
 A process is a FreeRTOS task on **core 1** with Unix bookkeeping: pid, parent,

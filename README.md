@@ -13,7 +13,7 @@ drawn in PIXELTAPE's amber CRT colors on an ILI9341 screen.
 [0.05] power: woke on the keyboard, key 0x6f
 [0.09] memtest: 6016 KB PSRAM ok (40 ms)
 [0.09] serial: console on native USB
-[0.09] proc: 16 process slots, programs on core 1
+[0.09] proc: 16 process slots, programs on core 1, stacks in PSRAM
 [0.09] cpufreq: ondemand, 80-240 MHz, idle sleep off
 [0.43] lcd: ili9341 (alt init) on SPI2 at 80 MHz, 320x240
 [0.43] vt: 53x23 console
@@ -77,7 +77,7 @@ make stress         # hammer the board for 10 minutes (SECONDS=...)
 ```
 
 Every target takes `BOARD=`, and each board builds into its own
-`build-<board>/`, so switching between them costs nothing. The board file
+`build/<board>/`, so switching between them costs nothing. The board file
 picks the console too: the Freenove board has one USB-C port and talks over
 USB Serial/JTAG, while the DevKitC flashes through its **COM** port and
 keeps the native **USB** port for a keyboard (`CONSOLE=usb` moves the
@@ -229,6 +229,19 @@ make push FILE=notes.txt DEST=/mnt/sd/notes.txt
 make pull FILE=~/hello.pico DEST=copy.pico
 ```
 
+### Clips
+
+The board plays its own clip format, `.ptv`: a JPEG a frame and plain PCM
+sound, which is what a 240 MHz chip can decode at 30 frames a second. The
+PC converts a video with ffmpeg, and fetches one first with yt-dlp; both
+need to be on the PATH. A copy stays in `clips/`.
+
+```sh
+make video FILE=film.mp4                 # convert and send to ~/video
+make yt URL=https://...                  # fetch, convert and send
+python3 tools/mkvideo.py film.mp4 film.ptv --fps 24   # just convert
+```
+
 ## Speed and power
 
 `cpufreq` picks a policy the way Linux governors do:
@@ -317,14 +330,14 @@ from 1970.
 |---|---|
 | CPU, CRC-32 | 18.9 MB/s |
 | FPU, Mandelbrot 320x240 | 272 ms |
-| memcpy, internal RAM | 358 MB/s |
+| memcpy, internal RAM | 352 MB/s |
 | memcpy, PSRAM | 30 MB/s |
-| start and reap a process | 0.11 ms |
-| `/` write / read, 512 KB file | 125 KB/s / 6.7 MB/s |
-| `/` create / delete a small file | 100 ms / 11 ms |
-| `/` write, a line at a time | 2,600 lines/s |
+| start and reap a process | 0.19 ms |
+| `/` write / read, 512 KB file | 64 KB/s / 6.7 MB/s |
+| `/` create / delete a small file | 104 ms / 11 ms |
+| `/` write, a line at a time | 1,290 lines/s |
 | `/tmp` write, a line at a time | 49,300 lines/s |
-| display bus, full frames | 55.7 fps (8.2 MB/s) on the Freenove panel at 80 MHz |
+| display bus, full frames | 53 fps (7.8 MB/s) on the Freenove panel at 80 MHz |
 
 The `/` numbers are what the flash sustains once its blocks have been used:
 every 4 KB must be erased before it is written again. Freshly formatted flash
@@ -383,6 +396,14 @@ third_party/ the two things here somebody else wrote: an MP3 decoder and
 shell/      sh: parser, executor, line editor
 bin/        the commands
 lang/       the pico language: compiler, VM, tests and examples
-tools/      font generator, test harnesses, file transfer
+tools/      on the PC: file transfer, video conversion, tests, the font
 docs/       wiring, architecture, the language
 ```
+
+## Licence
+
+Copyright 2026 Andre. PocketType is free software under the GNU General
+Public License, version 2 (`LICENSE`): use it, change it and share it, as
+long as what you share goes out under the same licence, with its source.
+The NES emulator core in `third_party/nofrendo/` is GPL v2 as well; the MP3
+decoder in `third_party/minimp3/` is public domain (CC0).
