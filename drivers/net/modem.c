@@ -10,6 +10,14 @@
  * It has been written against the command set the common modules share
  * (SIM800, SIM7600, A7670, EC200), and asks the module what it is at
  * start-up rather than assuming.
+ *
+ * A module also speaks unasked: a message has come (+CMTI), a call rings
+ * (RING, +CLIP), the network is found or lost (+CREG), its supply sags
+ * (UNDER-VOLTAGE), it has restarted (RDY). kmodem waits for anything the
+ * port receives between commands and hands those lines to news(); a
+ * command that meets one among its answers does the same. The rest of a
+ * restart's settings are made again, and a SIM800 left auto-bauding is
+ * given a fixed speed, so that a restart is heard at all.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +42,7 @@
 #define PROBE_ROUNDS	8		/* at boot: modules take their time to start */
 
 static void probe_task(void *arg);
+static void watch(void);
 
 /*
  * The speeds tried, the configured one first. A SIM800 left at a fixed
@@ -47,6 +56,17 @@ static TaskHandle_t	 reader;
 static bool		 present, data_mode;
 static volatile bool	 probing;		/* AT allowed before `present` */
 static int		 baud = CONFIG_PT_MODEM_BAUD;
+static QueueHandle_t	 events;		/* the UART driver's: bytes came */
+static volatile bool	 resetup, heard_start;	/* it restarted; one started up */
+static volatile int	 new_sms = -1;		/* where a message that came was put */
+static int		 reg = -1;		/* +CREG: the network, last heard */
+static bool		 latin1;		/* texts go as ISO 8859-1, not GSM */
+static char		 ussd[256];
+static SemaphoreHandle_t ussd_done;
+static int64_t		 last_call_us;
+
+static int text_mode(void);
+static int read_sms(int index, struct sms *out, bool peek);
 static char		 model[48], imei[20];
 static ppp_pcb		*ppp;
 static struct netif	 ppp_netif;
@@ -94,14 +114,135 @@ static bool is_final(const char *line, int *err)
 	return false;
 }
 
+/* ------------------------------------------------------------ news */
+
+static const char *const news_kinds[] = {
+	"RING", "+CLIP:", "+CMTI:", "+CREG:", "+CPIN:", "+CUSD:", "+CFUN:", "RDY",
+	"Call Ready", "SMS Ready", "UNDER-VOLTAGE", "OVER-VOLTAGE", "NORMAL POWER DOWN",
+	"+PDP: DEACT",
+};
+
+/*
+ * Whether a line is the module speaking unasked. "+CREG: 1,1" is the
+ * answer to AT+CREG?, not news, so a kind with the name of the command
+ * being answered is taken for its answer -- all but +CUSD, whose answer
+ * only ever comes afterwards.
+ */
+static bool is_news(const char *line, const char *cmd)
+{
+	for (size_t i = 0; i < sizeof(news_kinds) / sizeof(news_kinds[0]); i++) {
+		const char *k = news_kinds[i];
+		size_t n = strlen(k);
+
+		if (strncmp(line, k, n))
+			continue;
+		if (k[0] == '+' && strcmp(k, "+CUSD:") && cmd && !strncmp(cmd, "AT", 2) &&
+		    !strncmp(cmd + 2, k, n - 1))
+			return false;
+		return true;
+	}
+	return false;
+}
+
+/* What the network's registration codes mean, for the log and `modem`. */
+const char *modem_network_text(int state)
+{
+	switch (state) {
+	case 0:	return "not looking for a network";
+	case 1:	return "registered";
+	case 2:	return "searching";
+	case 3:	return "refused by the network: is the SIM activated?";
+	case 5:	return "registered, roaming";
+	default: return "unknown";
+	}
+}
+
+/* The text between the first and the last quote: "+CLIP: \"+39...\",145". */
+static void quoted(const char *line, char *out, size_t size)
+{
+	const char *a = strchr(line, '"'), *b = strrchr(line, '"');
+	size_t n = a && b > a ? (size_t)(b - a - 1) : 0;
+
+	if (n >= size)
+		n = size - 1;
+	memcpy(out, a ? a + 1 : "", n);
+	out[n] = '\0';
+}
+
+/*
+ * One line of news. Only what is quick is done here, where the port is
+ * held; reading the message that came and setting a restarted module up
+ * again are left to kmodem (after_news()).
+ */
+static void news(const char *line)
+{
+	char note[64], who[32];
+
+	if (!strncmp(line, "+CMTI:", 6)) {
+		const char *comma = strchr(line, ',');
+
+		new_sms = comma ? atoi(comma + 1) : 0;
+		klog("modem: a text message has come");
+	} else if (!strncmp(line, "+CLIP:", 6)) {
+		int64_t now = esp_timer_get_time();
+
+		quoted(line, who, sizeof(who));
+		/* rings every few seconds: logged once a call */
+		if (now - last_call_us > 10000000)
+			klog("modem: a call from %s (calls cannot be answered here)",
+			     *who ? who : "a hidden number");
+		last_call_us = now;
+		snprintf(note, sizeof(note), "\u260e %s", *who ? who : "a call");
+		vt_note(note);
+	} else if (!strncmp(line, "+CREG:", 6)) {
+		const char *p = strchr(line, ',');
+		int state = atoi(p ? p + 1 : line + 6);
+
+		if (state != reg)
+			klog("modem: network: %s", modem_network_text(state));
+		reg = state;
+	} else if (!strncmp(line, "+CPIN:", 6)) {
+		klog("modem: the SIM card: %s", line + 7);
+	} else if (!strncmp(line, "+CUSD:", 6)) {
+		strlcpy(ussd, line + 6, sizeof(ussd));
+		xSemaphoreGive(ussd_done);
+	} else if (!strcmp(line, "RDY")) {
+		klog("modem: the module has started");
+		resetup = heard_start = true;
+	} else if (!strncmp(line, "UNDER-VOLTAGE", 13) || !strncmp(line, "OVER-VOLTAGE", 12)) {
+		klog("modem: %s: the module's supply is %s", line,
+		     line[0] == 'U' ? "sagging (it needs 3.4 V, with 2 A to spare)"
+				    : "too high (4.4 V at most)");
+		if (strstr(line, "POWER DOWN"))
+			present = false;
+	} else if (!strcmp(line, "NORMAL POWER DOWN")) {
+		klog("modem: the module has switched itself off");
+		present = false;
+	} else if (!strncmp(line, "+PDP: DEACT", 11)) {
+		klog("modem: the network ended the data session");
+	} else if (!strcmp(line, "SMS Ready")) {
+		heard_start = true;
+	}
+}
+
+/* What is waiting on the port: news, or what is left of an answer nobody waited for. */
+static void drain(void)
+{
+	char line[256];
+
+	while (read_line(line, sizeof(line), 20))
+		if (is_news(line, NULL))
+			news(line);
+}
+
 /*
  * Sends a command and collects what comes back, up to OK or ERROR. The
  * reply keeps the informational lines only; the final OK is not part of
- * it.
+ * it. News that comes in the middle goes to news().
  */
 int modem_at(const char *cmd, char *reply, size_t size, int timeout_ms)
 {
-	char line[256];
+	char line[512];			/* AT+COPS=? answers on one long line */
 	size_t len = 0;
 	int err = -ETIMEDOUT;
 
@@ -112,12 +253,16 @@ int modem_at(const char *cmd, char *reply, size_t size, int timeout_ms)
 	if (reply && size)
 		*reply = '\0';
 	xSemaphoreTake(lock, portMAX_DELAY);
-	uart_flush_input(PORT);
+	drain();
 	uart_write_bytes(PORT, cmd, strlen(cmd));
 	uart_write_bytes(PORT, "\r\n", 2);
 	while (read_line(line, sizeof(line), timeout_ms)) {
 		if (!strcmp(line, cmd))
 			continue;	/* the echo, if it is still on */
+		if (is_news(line, cmd)) {
+			news(line);
+			continue;
+		}
 		if (is_final(line, &err))
 			break;
 		if (reply && len + strlen(line) + 2 < size)
@@ -156,6 +301,7 @@ int modem_info(struct modem_info *out)
 	const char *p;
 
 	memset(out, 0, sizeof(*out));
+	out->reg = -1;
 	if (!present)
 		return -ENODEV;
 	strlcpy(out->model, model, sizeof(out->model));
@@ -163,7 +309,8 @@ int modem_info(struct modem_info *out)
 	out->data = ppp_up;
 
 	if (!modem_at("AT+CPIN?", reply, sizeof(reply), 5000) && (p = field(reply, "+CPIN: ")))
-		strlcpy(out->sim, p, sizeof(out->sim));
+		strlcpy(out->sim, p, strcspn(p, "\n") + 1 < sizeof(out->sim) ?
+			strcspn(p, "\n") + 1 : sizeof(out->sim));
 	else
 		strlcpy(out->sim, "no card", sizeof(out->sim));
 	if (!modem_at("AT+CSQ", reply, sizeof(reply), 2000) && (p = field(reply, "+CSQ: "))) {
@@ -184,6 +331,7 @@ int modem_info(struct modem_info *out)
 		int state = 0;
 
 		sscanf(p, "%*d,%d", &state);
+		out->reg = reg = state;
 		out->registered = state == 1 || state == 5;	/* home or roaming */
 		out->roaming = state == 5;
 	}
@@ -194,20 +342,70 @@ int modem_info(struct modem_info *out)
 
 /*
  * Text mode, because the alternative (PDU mode) means encoding the
- * message by hand and every module in this class supports text.
+ * message by hand and every module in this class supports text. The
+ * texts go to and fro as ISO 8859-1 where the module has it (SIM800
+ * does), so that an Italian's è, à and ù arrive; it turns them into the
+ * GSM alphabet itself. Without it, GSM, and only ASCII gets through.
  */
 static int text_mode(void)
 {
 	int ret = modem_at("AT+CMGF=1", NULL, 0, 2000);
 
-	if (!ret)
-		modem_at("AT+CSCS=\"GSM\"", NULL, 0, 2000);
+	if (!ret) {
+		latin1 = !modem_at("AT+CSCS=\"8859-1\"", NULL, 0, 2000);
+		if (!latin1)
+			modem_at("AT+CSCS=\"GSM\"", NULL, 0, 2000);
+	}
 	return ret;
+}
+
+/* UTF-8 as the module takes it: ISO 8859-1, or ASCII; what it cannot be is '?'. */
+static void to_module(char *out, size_t size, const char *in)
+{
+	const unsigned char *p = (const unsigned char *)in;
+	size_t n = 0;
+
+	while (*p && n + 1 < size) {
+		unsigned c = *p++;
+		int more = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : c >= 0xc0 ? 1 : 0;
+
+		if (c >= 0x80) {
+			if (!more) {
+				c = '?';		/* a stray continuation byte */
+			} else {
+				c &= 0x3f >> more;
+				for (; more && (*p & 0xc0) == 0x80; more--)
+					c = c << 6 | (*p++ & 0x3f);
+				if (more || c > (latin1 ? 0xffu : 0x7fu))
+					c = '?';
+			}
+		}
+		out[n++] = (char)c;
+	}
+	out[n] = '\0';
+}
+
+/* What the module sends, as UTF-8: ISO 8859-1 widened, or as it is. */
+static void from_module(char *out, size_t size, const char *in)
+{
+	size_t n = 0;
+
+	for (const unsigned char *p = (const unsigned char *)in; *p && n + 1 < size; p++) {
+		if (*p < 0x80 || !latin1) {
+			out[n++] = *p < 0x80 ? (char)*p : '?';
+		} else if (n + 2 < size) {
+			out[n++] = (char)(0xc0 | *p >> 6);
+			out[n++] = (char)(0x80 | (*p & 0x3f));
+		} else {
+			break;
+		}
+	}
+	out[n] = '\0';
 }
 
 int modem_sms_send(const char *number, const char *text)
 {
-	char cmd[64], line[256];
+	char cmd[64], line[256], body[200];
 	int err = -ETIMEDOUT;
 	bool prompt = false;
 
@@ -218,9 +416,10 @@ int modem_sms_send(const char *number, const char *text)
 	if ((err = text_mode()))
 		return err;
 
+	to_module(body, sizeof(body), text);
 	snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"", number);
 	xSemaphoreTake(lock, portMAX_DELAY);
-	uart_flush_input(PORT);
+	drain();
 	uart_write_bytes(PORT, cmd, strlen(cmd));
 	uart_write_bytes(PORT, "\r", 1);
 
@@ -237,13 +436,16 @@ int modem_sms_send(const char *number, const char *text)
 		xSemaphoreGive(lock);
 		return -EIO;
 	}
-	uart_write_bytes(PORT, text, strlen(text));
+	uart_write_bytes(PORT, body, strlen(body));
 	uart_write_bytes(PORT, "\x1a", 1);		/* Ctrl-Z sends it */
 
 	err = -ETIMEDOUT;
-	while (read_line(line, sizeof(line), 60000))	/* sending can take a while */
-		if (is_final(line, &err))
+	while (read_line(line, sizeof(line), 60000)) {	/* sending can take a while */
+		if (is_news(line, cmd))
+			news(line);
+		else if (is_final(line, &err))
 			break;
+	}
 	xSemaphoreGive(lock);
 	return err;
 }
@@ -291,10 +493,16 @@ int modem_sms_list(struct sms *out, int max, bool unread_only)
 		return err;
 
 	xSemaphoreTake(lock, portMAX_DELAY);
-	uart_flush_input(PORT);
+	drain();
 	uart_write_bytes(PORT, unread_only ? "AT+CMGL=\"REC UNREAD\"\r\n"
 					   : "AT+CMGL=\"ALL\"\r\n", unread_only ? 22 : 16);
 	while (read_line(line, sizeof(line), 10000)) {
+		bool text_due = n && !*out[n - 1].text;
+
+		if (!text_due && is_news(line, "AT+CMGL")) {
+			news(line);
+			continue;
+		}
 		if (is_final(line, &err))
 			break;
 		if (!strncmp(line, "+CMGL:", 6)) {
@@ -303,15 +511,16 @@ int modem_sms_list(struct sms *out, int max, bool unread_only)
 			memset(&out[n], 0, sizeof(out[n]));
 			parse_header(line + 6, &out[n]);
 			n++;
-		} else if (n && !*out[n - 1].text) {
-			strlcpy(out[n - 1].text, line, sizeof(out[n - 1].text));
+		} else if (text_due) {
+			from_module(out[n - 1].text, sizeof(out[n - 1].text), line);
 		}
 	}
 	xSemaphoreGive(lock);
 	return n;
 }
 
-int modem_sms_read(int index, struct sms *out)
+/* With `peek`, the message keeps its unread mark (AT+CMGR's mode 1). */
+static int read_sms(int index, struct sms *out, bool peek)
 {
 	char cmd[32], reply[REPLY_MAX];
 	const char *p;
@@ -320,7 +529,7 @@ int modem_sms_read(int index, struct sms *out)
 	memset(out, 0, sizeof(*out));
 	if ((ret = text_mode()))
 		return ret;
-	snprintf(cmd, sizeof(cmd), "AT+CMGR=%d", index);
+	snprintf(cmd, sizeof(cmd), peek ? "AT+CMGR=%d,1" : "AT+CMGR=%d", index);
 	if ((ret = modem_at(cmd, reply, sizeof(reply), 10000)))
 		return ret;
 	p = field(reply, "+CMGR: ");
@@ -331,10 +540,15 @@ int modem_sms_read(int index, struct sms *out)
 	out->index = index;
 	p = strchr(p, '\n');
 	if (p)
-		strlcpy(out->text, p + 1, sizeof(out->text));
+		from_module(out->text, sizeof(out->text), p + 1);
 	for (char *nl = strchr(out->text, '\n'); nl; nl = strchr(out->text, '\n'))
 		*nl = ' ';				/* keep it to one line */
 	return 0;
+}
+
+int modem_sms_read(int index, struct sms *out)
+{
+	return read_sms(index, out, false);
 }
 
 int modem_sms_delete(int index)
@@ -394,9 +608,91 @@ bool modem_data_up(void)
 	return ppp_up;
 }
 
+/*
+ * The network's data service: /etc/modem ("apn NAME", "user NAME",
+ * "password WORD", a line each, from `modem apn`), else menuconfig's.
+ */
+int modem_apn(char *apn, size_t asz, char *user, size_t usz, char *pass, size_t psz)
+{
+	char path[64], line[96];
+	FILE *f;
+
+	strlcpy(apn, CONFIG_PT_MODEM_APN, asz);
+	strlcpy(user, CONFIG_PT_MODEM_USER, usz);
+	strlcpy(pass, CONFIG_PT_MODEM_PASSWORD, psz);
+	if (!mount_resolve("/etc/modem", path, sizeof(path)) || !(f = fopen(path, "r")))
+		return 0;
+	while (fgets(line, sizeof(line), f)) {
+		line[strcspn(line, "\r\n")] = '\0';
+		if (!strncmp(line, "apn ", 4))
+			strlcpy(apn, line + 4, asz);
+		else if (!strncmp(line, "user ", 5))
+			strlcpy(user, line + 5, usz);
+		else if (!strncmp(line, "password ", 9))
+			strlcpy(pass, line + 9, psz);
+	}
+	fclose(f);
+	return 1;
+}
+
+/* A USSD answer's text: GSM or 8859-1 as it is, UCS2 (scheme 72) from its hex. */
+static void ussd_text(const char *raw, char *out, size_t size)
+{
+	char text[sizeof(ussd)];
+	const char *comma = strrchr(raw, ',');
+	int dcs = comma ? atoi(comma + 1) : 15;
+	size_t n = 0;
+
+	quoted(raw, text, sizeof(text));
+	if (dcs != 72) {
+		from_module(out, size, text);
+		return;
+	}
+	for (const char *p = text; p[0] && p[1] && p[2] && p[3] && n + 4 < size; p += 4) {
+		char hex[5] = { p[0], p[1], p[2], p[3], 0 };
+		unsigned c = (unsigned)strtoul(hex, NULL, 16);
+
+		if (c < 0x80) {
+			out[n++] = (char)c;
+		} else if (c < 0x800) {
+			out[n++] = (char)(0xc0 | c >> 6);
+			out[n++] = (char)(0x80 | (c & 0x3f));
+		} else {
+			out[n++] = (char)(0xe0 | c >> 12);
+			out[n++] = (char)(0x80 | (c >> 6 & 0x3f));
+			out[n++] = (char)(0x80 | (c & 0x3f));
+		}
+	}
+	out[n] = '\0';
+}
+
+/*
+ * A USSD code -- *123# for the credit, and whatever the network's codes
+ * for its offers are. The answer comes as news some seconds after the
+ * command's OK.
+ */
+int modem_ussd(const char *code, char *out, size_t size)
+{
+	char cmd[80];
+	int err;
+
+	if (!present)
+		return -ENODEV;
+	if (data_mode)
+		return -EBUSY;
+	xSemaphoreTake(ussd_done, 0);
+	snprintf(cmd, sizeof(cmd), "AT+CUSD=1,\"%s\",15", code);
+	if ((err = modem_at(cmd, NULL, 0, 10000)))
+		return err;
+	if (!xSemaphoreTake(ussd_done, pdMS_TO_TICKS(30000)))
+		return -ETIMEDOUT;
+	ussd_text(ussd, out, size);
+	return 0;
+}
+
 int modem_data(bool on)
 {
-	char cmd[96], line[128];
+	char cmd[128], line[128], apn[64], user[32], pass[32];
 	int err = -ETIMEDOUT;
 
 	if (!present)
@@ -422,13 +718,14 @@ int modem_data(bool on)
 	if (ppp)
 		return -EALREADY;
 
-	snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"IP\",\"%s\"", CONFIG_PT_MODEM_APN);
+	modem_apn(apn, sizeof(apn), user, sizeof(user), pass, sizeof(pass));
+	snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"IP\",\"%s\"", apn);
 	if ((err = modem_at(cmd, NULL, 0, 5000)))
 		return err;
 
 	/* ATD dials the packet service; the answer is CONNECT, then PPP. */
 	xSemaphoreTake(lock, portMAX_DELAY);
-	uart_flush_input(PORT);
+	drain();
 	uart_write_bytes(PORT, "ATD*99***1#\r\n", 13);
 	err = -ETIMEDOUT;
 	while (read_line(line, sizeof(line), 30000)) {
@@ -458,9 +755,8 @@ int modem_data(bool on)
 	}
 	ppp_set_usepeerdns(ppp, 1);
 	pppapi_set_default(ppp);
-	if (*CONFIG_PT_MODEM_USER)
-		ppp_set_auth(ppp, PPPAUTHTYPE_ANY, CONFIG_PT_MODEM_USER,
-			     CONFIG_PT_MODEM_PASSWORD);
+	if (*user)
+		ppp_set_auth(ppp, PPPAUTHTYPE_ANY, user, pass);
 	pppapi_connect(ppp, 0);
 	for (int i = 0; i < 300 && !ppp_up; i++)	/* up to 30 s to negotiate */
 		vTaskDelay(pdMS_TO_TICKS(100));
@@ -501,9 +797,10 @@ int modem_init(void)
 	};
 
 	lock = xSemaphoreCreateMutex();
-	if (!lock)
+	ussd_done = xSemaphoreCreateBinary();
+	if (!lock || !ussd_done)
 		return -ENOMEM;
-	if (uart_driver_install(PORT, RX_BUFFER, 512, 0, NULL, 0) ||
+	if (uart_driver_install(PORT, RX_BUFFER, 512, 16, &events, 0) ||
 	    uart_param_config(PORT, &cfg) ||
 	    uart_set_pin(PORT, CONFIG_PT_MODEM_TX, CONFIG_PT_MODEM_RX,
 			 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)) {
@@ -511,7 +808,8 @@ int modem_init(void)
 		return -EIO;
 	}
 
-	xTaskCreatePinnedToCore(probe_task, "kmodem", 4096, NULL, 3, NULL, 0);
+	/* 6 KB: reading a message that came is a command and a message's worth */
+	xTaskCreatePinnedToCore(probe_task, "kmodem", 6144, NULL, 3, NULL, 0);
 	return 0;
 }
 
@@ -534,11 +832,32 @@ static bool answer_at(void)
 	return false;
 }
 
+/*
+ * How it is to behave, at first and again after it restarts: no echo,
+ * errors with numbers, text mode, news of messages (+CMTI), of callers
+ * (+CLIP) and of the network (+CREG), and a fixed speed, kept in its
+ * profile, so that it says RDY at that speed when it restarts.
+ */
+static void setup(void)
+{
+	char cmd[32];
+
+	modem_at("ATE0", NULL, 0, 1000);
+	modem_at("AT+CMEE=1", NULL, 0, 1000);
+	text_mode();
+	modem_at("AT+CNMI=2,1,0,0,0", NULL, 0, 2000);
+	modem_at("AT+CLIP=1", NULL, 0, 2000);
+	modem_at("AT+CREG=1", NULL, 0, 2000);
+	snprintf(cmd, sizeof(cmd), "AT+IPR=%d", baud);
+	if (!modem_at(cmd, NULL, 0, 2000))
+		modem_at("AT&W", NULL, 0, 2000);
+}
+
 /* What it is, once it answers. */
 static void identify(void)
 {
 	static bool registered;
-	char reply[REPLY_MAX];
+	static char reply[REPLY_MAX];		/* on kmodem or a prober: one at a time */
 
 	modem_at("ATE0", NULL, 0, 1000);		/* stop echoing our commands */
 	if (!modem_at("ATI", reply, sizeof(reply), 2000)) {
@@ -555,8 +874,7 @@ static void identify(void)
 			*nl = '\0';
 		strlcpy(imei, reply, sizeof(imei));
 	}
-	modem_at("AT+CMEE=1", NULL, 0, 1000);		/* numeric errors, not silence */
-	text_mode();
+	setup();
 	if (!registered)
 		proc_register("modem", gen_proc_modem);
 	registered = true;
@@ -583,7 +901,63 @@ static void probe_task(void *arg)
 	if (!present)
 		klog("modem: nothing answers on TX %d / RX %d, at any speed from %d to %d baud",
 		     CONFIG_PT_MODEM_TX, CONFIG_PT_MODEM_RX, 9600, 115200);
-	vTaskDelete(NULL);
+	watch();
+}
+
+/*
+ * What news leaves to be done, with the port let go: set a restarted
+ * module up again, look for one that has just started, and say who a
+ * message that came is from (read without taking its unread mark).
+ */
+static void after_news(void)
+{
+	static struct sms m;			/* kmodem's only */
+	char note[64];
+	int index;
+
+	if (!present && heard_start) {
+		heard_start = false;
+		modem_probe();
+	}
+	if (present && resetup) {
+		resetup = false;
+		setup();
+	}
+	if (present && (index = new_sms) >= 0) {
+		new_sms = -1;
+		if (!read_sms(index, &m, true) && *m.from)
+			snprintf(note, sizeof(note), "\u2709 %s", m.from);
+		else
+			snprintf(note, sizeof(note), "\u2709 a new message");
+		vt_note(note);
+	}
+}
+
+/*
+ * kmodem, from the end of the look at boot: whenever the port receives
+ * something with no command waiting for it, that is news.
+ */
+static void watch(void)
+{
+	uart_event_t ev;
+
+	for (;;) {
+		if (!xQueueReceive(events, &ev, portMAX_DELAY))
+			continue;
+		if (ev.type == UART_FIFO_OVF || ev.type == UART_BUFFER_FULL) {
+			if (!data_mode)
+				uart_flush_input(PORT);
+			xQueueReset(events);
+			continue;
+		}
+		if (ev.type != UART_DATA || data_mode || probing)
+			continue;
+		xSemaphoreTake(lock, portMAX_DELAY);
+		if (!data_mode)
+			drain();
+		xSemaphoreGive(lock);
+		after_news();
+	}
 }
 
 /*
@@ -611,6 +985,9 @@ int modem_probe(void)
 
 int  modem_init(void) { return -ENODEV; }
 int  modem_probe(void) { return -ENODEV; }
+const char *modem_network_text(int reg) { return "unknown"; }
+int  modem_ussd(const char *code, char *out, size_t size) { return -ENODEV; }
+int  modem_apn(char *apn, size_t asz, char *user, size_t usz, char *pass, size_t psz) { return 0; }
 bool modem_present(void) { return false; }
 int  modem_at(const char *cmd, char *reply, size_t size, int timeout_ms) { return -ENODEV; }
 int  modem_info(struct modem_info *out) { return -ENODEV; }

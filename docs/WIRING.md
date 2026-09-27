@@ -231,6 +231,40 @@ empties the cell in about a week: a switch in its VCC wire is worth it.
 The blue "SIM800L v2" board has a regulator of its own and wants 5 V at
 2 A, from its own supply, never from the header.
 
+#### The ESP-800L
+
+A SIM800L on a board the shape of an ESP-01, sold as "SIM800L ESP-800L
+core board, pin compatible ESP8266, 5V": a 2x4 header with no labels, a
+diode marked M1 on its supply (5 V in, about 4.3 V to the SIM800L), a
+micro-SIM holder underneath and an IPEX socket for the antenna. The
+pins that matter are the header's four corners, where an ESP-01 has
+them; find them with a meter on its beep setting, the board unpowered:
+
+- **GND** beeps to the antenna socket's outer ring;
+- **VCC** is the corner diagonally opposite, and beeps (or shows half a
+  volt on the diode setting) to one end of M1;
+- **RXD** is the far end of GND's row, **TXD** the far end of VCC's.
+
+| ESP-800L | Board |
+|---|---|
+| GND | GND |
+| VCC | 5V -- with USB in; see below for the cell |
+| RXD | GPIO43 (TX), through 1 kΩ |
+| TXD | GPIO44 (RX) |
+
+The printed antenna beside the module is not the one to count on: an
+antenna on the IPEX socket is. `modem` says `signal none` until it hears
+a network; `modem scan` lists the networks it hears. A module that
+restarts every half a minute (`dmesg` says "modem: the module has
+started" again and again) is short of current when it transmits: a
+1000 µF capacitor across VCC and GND at the module, short thick wires,
+and for good, M1 bridged with solder and VCC from the cell (charger
+module OUT+) -- after which it must never see 5 V again.
+
+The data service's name is set on the board, not in the build:
+`modem apn data.lycamobile.it lmit plus` for Lyca in Italy, say; `modem
+ussd *123#` asks the network for the credit.
+
 ### Wi-Fi
 
 No wiring: the radio is in the chip and its antenna is on the board.

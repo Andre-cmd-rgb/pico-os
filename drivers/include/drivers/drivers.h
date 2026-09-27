@@ -220,6 +220,7 @@ struct modem_info {
 	char	sim[24];		/* "READY", "SIM PIN", "no card" */
 	char	operator[32];
 	int	rssi;			/* dBm, 0 when the module cannot tell */
+	int	reg;			/* +CREG's state, -1 unknown: modem_network_text() */
 	bool	registered, roaming, data;
 };
 
@@ -228,12 +229,15 @@ struct sms {
 	bool	unread;
 	char	from[24];
 	char	when[24];
-	char	text[161];
+	char	text[321];		/* UTF-8: 160 characters, some two bytes */
 };
 
 int	modem_init(void);
 bool	modem_present(void);
 int	modem_probe(void);		/* look again for one: 0 when there is one */
+const char *modem_network_text(int reg);
+int	modem_ussd(const char *code, char *out, size_t size);	/* *123# and the like */
+int	modem_apn(char *apn, size_t asz, char *user, size_t usz, char *pass, size_t psz);
 int	modem_at(const char *cmd, char *reply, size_t size, int timeout_ms);
 int	modem_info(struct modem_info *out);
 int	modem_sms_send(const char *number, const char *text);
