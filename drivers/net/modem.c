@@ -225,12 +225,22 @@ static void news(const char *line)
 	}
 }
 
-/* What is waiting on the port: news, or what is left of an answer nobody waited for. */
+static int		 late_ms;		/* after a timeout: answers may still come */
+
+/*
+ * What is waiting on the port: news, or what is left of an answer nobody
+ * waited for. After a command that timed out, its answer may come yet,
+ * and the next command would take its OK for its own and every answer
+ * after would be one behind (the model's name read as the IMEI): so then
+ * this waits for the line to go quiet for a while first.
+ */
 static void drain(void)
 {
 	char line[256];
+	int quiet = late_ms ? late_ms : 20;
 
-	while (read_line(line, sizeof(line), 20))
+	late_ms = 0;
+	while (read_line(line, sizeof(line), quiet))
 		if (is_news(line, NULL))
 			news(line);
 }
@@ -268,6 +278,8 @@ int modem_at(const char *cmd, char *reply, size_t size, int timeout_ms)
 		if (reply && len + strlen(line) + 2 < size)
 			len += snprintf(reply + len, size - len, "%s\n", line);
 	}
+	if (err == -ETIMEDOUT)
+		late_ms = 500;
 	xSemaphoreGive(lock);
 	return err;
 }
