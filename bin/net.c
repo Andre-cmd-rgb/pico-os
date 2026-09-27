@@ -368,10 +368,33 @@ static int no_modem(const char *prog)
 	return 1;
 }
 
+/* A module powered or plugged in since boot is looked for again. */
+static int find_modem(const char *prog)
+{
+	int err;
+
+	if (modem_present())
+		return 0;
+	pt_printf("looking for a module on the serial header...\n");
+	if ((err = modem_probe()) == -EINPROGRESS) {
+		pt_dprintf(PT_STDERR, "%s: still looking since power-on; a moment\n", prog);
+		return 1;
+	}
+	if (err) {
+		no_modem(prog);
+		pt_dprintf(PT_STDERR, "  Its light should blink once a second. If it\n"
+				      "  does, its TX and RX wires may be swapped.\n");
+		return 1;
+	}
+	return 0;
+}
+
 static int modem_status(void)
 {
 	struct modem_info m;
 
+	if (find_modem("modem"))
+		return 1;
 	if (modem_info(&m))
 		return no_modem("modem");
 	pt_printf("module   %s\n", *m.model ? m.model : "unknown");
@@ -398,8 +421,8 @@ PT_PROGRAM(modem, "talk to the mobile module\n"
 
 	if (argc == 1)
 		return modem_status();
-	if (!modem_present())
-		return no_modem("modem");
+	if (find_modem("modem"))
+		return 1;
 	if (argc == 3 && !strcmp(argv[1], "data")) {
 		bool on = !strcmp(argv[2], "on");
 

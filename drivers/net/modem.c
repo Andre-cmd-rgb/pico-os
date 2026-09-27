@@ -31,13 +31,22 @@
 #define RX_BUFFER	2048
 #define REPLY_MAX	1024
 #define LINE_WAIT_MS	100
-#define PROBE_TRIES	15		/* a second apart: modules boot slowly */
+#define PROBE_ROUNDS	8		/* at boot: modules take their time to start */
 
 static void probe_task(void *arg);
+
+/*
+ * The speeds tried, the configured one first. A SIM800 left at a fixed
+ * speed by whoever used it last answers at that one only; at first
+ * power-on it takes any, from the "AT" it is sent.
+ */
+static const int bauds[] = { CONFIG_PT_MODEM_BAUD, 115200, 57600, 38400, 19200, 9600 };
 
 static SemaphoreHandle_t lock;
 static TaskHandle_t	 reader;
 static bool		 present, data_mode;
+static volatile bool	 probing;		/* AT allowed before `present` */
+static int		 baud = CONFIG_PT_MODEM_BAUD;
 static char		 model[48], imei[20];
 static ppp_pcb		*ppp;
 static struct netif	 ppp_netif;
@@ -96,7 +105,7 @@ int modem_at(const char *cmd, char *reply, size_t size, int timeout_ms)
 	size_t len = 0;
 	int err = -ETIMEDOUT;
 
-	if (!present)
+	if (!present && !probing)
 		return -ENODEV;
 	if (data_mode)
 		return -EBUSY;		/* the port is carrying PPP */
@@ -506,28 +515,31 @@ int modem_init(void)
 	return 0;
 }
 
-/*
- * Modules take their time: a SIM7600 is ten seconds from power to its
- * first answer, and some need the first few commands thrown away. So the
- * probe runs on its own task and the rest of the system boots.
- */
-static void probe_task(void *arg)
+/* One pass over the speeds; true, and the port left at it, when one answers. */
+static bool answer_at(void)
 {
+	for (size_t i = 0; i < sizeof(bauds) / sizeof(bauds[0]); i++) {
+		if (i && bauds[i] == bauds[0])
+			continue;
+		uart_set_baudrate(PORT, bauds[i]);
+		/* the first AT may only teach an auto-bauding module the speed */
+		for (int k = 0; k < 2; k++) {
+			if (!modem_at("AT", NULL, 0, 400)) {
+				baud = bauds[i];
+				return true;
+			}
+		}
+	}
+	uart_set_baudrate(PORT, bauds[0]);
+	return false;
+}
+
+/* What it is, once it answers. */
+static void identify(void)
+{
+	static bool registered;
 	char reply[REPLY_MAX];
 
-	present = true;
-	for (int i = 0; i < PROBE_TRIES; i++) {
-		if (!modem_at("AT", NULL, 0, 1000))
-			goto found;
-		vTaskDelay(pdMS_TO_TICKS(1000));
-	}
-	present = false;
-	klog("modem: nothing answers on TX %d / RX %d at %d baud",
-	     CONFIG_PT_MODEM_TX, CONFIG_PT_MODEM_RX, CONFIG_PT_MODEM_BAUD);
-	uart_driver_delete(PORT);
-	vTaskDelete(NULL);
-	return;
-found:
 	modem_at("ATE0", NULL, 0, 1000);		/* stop echoing our commands */
 	if (!modem_at("ATI", reply, sizeof(reply), 2000)) {
 		char *nl = strchr(reply, '\n');
@@ -545,15 +557,60 @@ found:
 	}
 	modem_at("AT+CMEE=1", NULL, 0, 1000);		/* numeric errors, not silence */
 	text_mode();
-	proc_register("modem", gen_proc_modem);
-	klog("modem: %s on TX %d / RX %d%s%s", *model ? model : "module",
-	     CONFIG_PT_MODEM_TX, CONFIG_PT_MODEM_RX, *imei ? ", imei " : "", imei);
+	if (!registered)
+		proc_register("modem", gen_proc_modem);
+	registered = true;
+	present = true;
+	klog("modem: %s on TX %d / RX %d at %d baud%s%s", *model ? model : "module",
+	     CONFIG_PT_MODEM_TX, CONFIG_PT_MODEM_RX, baud, *imei ? ", imei " : "", imei);
+}
+
+/*
+ * Modules take their time: a SIM7600 is ten seconds from power to its
+ * first answer, and some need the first few commands thrown away. So the
+ * probe at boot runs on its own task and the rest of the system boots.
+ */
+static void probe_task(void *arg)
+{
+	probing = true;
+	for (int i = 0; i < PROBE_ROUNDS && !present; i++) {
+		if (answer_at())
+			identify();
+		else
+			vTaskDelay(pdMS_TO_TICKS(1000));
+	}
+	probing = false;
+	if (!present)
+		klog("modem: nothing answers on TX %d / RX %d, at any speed from %d to %d baud",
+		     CONFIG_PT_MODEM_TX, CONFIG_PT_MODEM_RX, 9600, 115200);
 	vTaskDelete(NULL);
+}
+
+/*
+ * Looks again, for a module plugged in or powered after boot: `modem`
+ * calls this when there is none. -EINPROGRESS while the boot's look is
+ * still going on.
+ */
+int modem_probe(void)
+{
+	if (present)
+		return 0;
+	if (!lock)
+		return -ENODEV;
+	if (probing)
+		return -EINPROGRESS;
+	probing = true;
+	for (int i = 0; i < 2 && !present; i++)
+		if (answer_at())
+			identify();
+	probing = false;
+	return present ? 0 : -ENODEV;
 }
 
 #else /* !CONFIG_PT_MODEM */
 
 int  modem_init(void) { return -ENODEV; }
+int  modem_probe(void) { return -ENODEV; }
 bool modem_present(void) { return false; }
 int  modem_at(const char *cmd, char *reply, size_t size, int timeout_ms) { return -ENODEV; }
 int  modem_info(struct modem_info *out) { return -ENODEV; }

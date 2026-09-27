@@ -233,6 +233,7 @@ struct sms {
 
 int	modem_init(void);
 bool	modem_present(void);
+int	modem_probe(void);		/* look again for one: 0 when there is one */
 int	modem_at(const char *cmd, char *reply, size_t size, int timeout_ms);
 int	modem_info(struct modem_info *out);
 int	modem_sms_send(const char *number, const char *text);
