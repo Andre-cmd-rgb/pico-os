@@ -14,7 +14,9 @@ GETTING AROUND
   help COMMAND    what one command does
   man             these pages
 
-  Tab completes commands and file names.
+  Tab completes commands, their words (theme cu ->
+  theme cursor) and file names -- of the kind the
+  command takes, and in quotes if they have spaces.
   Up and Down walk through what you typed before.
   Esc clears the line; Ctrl-C stops what is running.
 
@@ -26,9 +28,18 @@ THE KEYBOARD
 
   Fn C          Ctrl-C, and Fn plus any other letter
                 is that letter's control code -- Fn
-                D ends input, Fn A goes to the start
-                of a line
+                D ends input, Fn Z stops a program
+  Fn A then Z   doze: dark, everything kept, until a
+                key (Fn A twice sends a real Ctrl-A)
+  Fn A then up  look back at what scrolled away: up,
+                down half a screen, Fn up/down the
+                oldest line and back; Esc, Enter or q
+                return (Shift PgUp on a USB keyboard)
   Fn 1 .. Fn 4  go to that terminal
+  Fn 5 / Fn 6   brightness down / up
+  Fn 7 / Fn 8   volume down / up (both remembered)
+  Fn 9          sound off, and back on
+  Fn 0          doze, as Fn A then Z does
   Fn left/right the terminal before or after this one
   Fn up/down    start and end of the line
   Fn del        delete forwards, as Shift del does
@@ -108,8 +119,10 @@ MOVING FILES
   From the PC, over the serial line:
      make push FILE=thing.txt
      make pull FILE=/home/andre/notes/todo.txt
-  The transfer is base64 with a CRC, so anything
-  binary survives and corruption is noticed.
+  It goes beside the console: nothing is typed on
+  the board and the shell stays free meanwhile. Each
+  piece has a CRC, so anything binary survives and a
+  damaged piece is sent again.
 
 WHEN SOMETHING IS WRONG
 

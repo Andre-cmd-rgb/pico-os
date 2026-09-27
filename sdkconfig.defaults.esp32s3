@@ -50,3 +50,7 @@ CONFIG_ULP_COPROC_RESERVE_MEM=4096
 # measures it closer. kernel/clock.c learns what drift is left.
 CONFIG_RTC_CLK_SRC_INT_8MD256=y
 CONFIG_RTC_CLK_CAL_CYCLES=3000
+
+# The battery's estimate of the current counts the time the chip spends
+# in light sleep, which it learns from these.
+CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y

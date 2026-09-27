@@ -659,25 +659,59 @@ PT_PROGRAM(sync, "write out everything still in file buffers")
 	return err ? fail("sync", NULL, err) : 0;
 }
 
-PT_PROGRAM(df, "show free space on mounted filesystems")
+/* One filesystem's line, the header first if it is the first; false if it has none. */
+static bool df_line(const struct pt_mount *m, bool *header)
 {
-	pt_printf("%-8s %7s %7s %7s %4s %s\n", "Source", "Size", "Used", "Free", "Use%", "Mount");
-	for (int i = 0; i < mount_count(); i++) {
-		const struct pt_mount *m = mount_get(i);
-		uint64_t total, free;
-		char a[16], b[16], c[16];
+	uint64_t total, free;
+	char a[16], b[16], c[16];
+	const char *src = strchr(m->source, ':') ? strchr(m->source, ':') + 1 : m->source;
 
-		if (m->bind || (m->present && !m->present()) || !m->info || m->info(&total, &free))
-			continue;
-		human_size(total, a, sizeof(a));
-		human_size(total - free, b, sizeof(b));
-		human_size(free, c, sizeof(c));
-		const char *src = strchr(m->source, ':') ? strchr(m->source, ':') + 1 : m->source;
-		pt_printf("%-8.8s %7s %7s %7s %3d%% %s\n", src, a, b, c,
-			  total ? (int)((total - free) * 100 / total) : 0, m->path);
+	if ((m->present && !m->present()) || !m->info || m->info(&total, &free))
+		return false;
+	if (!*header) {
+		pt_printf("%-8s %7s %7s %7s %4s %s\n", "Source", "Size", "Used", "Free", "Use%", "Mount");
+		*header = true;
 	}
-	return 0;
+	human_size(total, a, sizeof(a));
+	human_size(total - free, b, sizeof(b));
+	human_size(free, c, sizeof(c));
+	pt_printf("%-8.8s %7s %7s %7s %3d%% %s\n", src, a, b, c,
+		  total ? (int)((total - free) * 100 / total) : 0, m->path);
+	return true;
 }
+
+PT_PROGRAM(df, "show free space on mounted filesystems\n"
+	   "usage: df [file...]\n"
+	   "With files, only the filesystems they are on.")
+{
+	bool header = false;
+	int status = 0;
+
+	if (argc == 1) {
+		for (int i = 0; i < mount_count(); i++)
+			if (!mount_get(i)->bind)	/* the card again, as ~ */
+				df_line(mount_get(i), &header);
+		return 0;
+	}
+	for (int i = 1; i < argc; i++) {
+		char abs[PT_PATH_MAX], vfs[PT_PATH_MAX + 16];
+		const struct pt_mount *m = NULL;
+		struct pt_stat st;
+		int err = pt_stat(argv[i], &st);
+
+		if (!err)
+			err = pt_abspath(argv[i], abs, sizeof(abs));
+		if (!err && !(m = mount_resolve(abs, vfs, sizeof(vfs))))
+			err = -ENOENT;
+		if (!err && !df_line(m, &header))
+			err = -EIO;
+		if (err)
+			status = fail("df", argv[i], err);
+	}
+	return status;
+}
+
+PT_COMPLETE(mount, ": /mnt/sd\n")
 
 PT_PROGRAM(mount, "list mounts, or mount the SD card\nusage: mount [/mnt/sd]")
 {

@@ -1,0 +1,8 @@
+// status: 1
+enum E { A, A }
+enum E { B }
+enum F { C = x }
+struct F { int y; }
+int main() {
+    return 0;
+}

@@ -10,7 +10,7 @@
 #include "pt/kernel.h"
 
 #define PIPE_SIZE	2048
-#define PIPE_POLL	pdMS_TO_TICKS(50)
+#define PIPE_POLL	pdMS_TO_TICKS(proc_poll_ms(50))
 
 struct pipe {
 	StreamBufferHandle_t	sb;

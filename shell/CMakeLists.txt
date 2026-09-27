@@ -2,6 +2,7 @@ idf_component_register(
 	SRCS
 		arith.c
 		builtins.c
+		complete.c
 		exec.c
 		expand.c
 		jobs.c

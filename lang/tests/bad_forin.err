@@ -1,0 +1,9 @@
+bad_forin.pico:4:13: error: 'E' is a type, not a value
+    int x = E;
+            ^
+bad_forin.pico:5:5: error: cannot assign to 'A', a value of an enum
+    A = 3;
+    ^
+bad_forin.pico:6:20: error: expected str, got int; convert with str(x)
+    for (str s in [1, 2]) println(s);
+                   ^

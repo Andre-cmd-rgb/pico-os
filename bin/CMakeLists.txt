@@ -26,18 +26,18 @@ idf_component_register(
 		sums.c
 		sysutils.c
 		textutils.c
+		theme.c
 		todo.c
 		top.c
 		util.c
 		video.c
 		view.c
-		xfer.c
 	REQUIRES kernel drivers codec emu
 	PRIV_REQUIRES esp_app_format esp_driver_gpio esp_hw_support esp_netif esp_system esp_timer heap lwip mbedtls esp_http_client esp-tls
 	WHOLE_ARCHIVE
 	EMBED_TXTFILES
 		doc/intro.txt
 		doc/commands.txt
-		doc/language.txt
+		doc/pico.txt
 		doc/hardware.txt
 )

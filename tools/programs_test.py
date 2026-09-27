@@ -725,7 +725,6 @@ def on_board(port):
     def push(local, remote):
         for attempt in range(3):
             if xfer.push(b, local, remote, os.path.basename(remote)):
-                b.read_until(xfer.PROMPT, 5)	# rx is done with the console
                 return True
             b.send(b"\x15\r")			# a fresh prompt, and again
             b.read_until(xfer.PROMPT, 10)

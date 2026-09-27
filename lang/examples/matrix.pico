@@ -1,0 +1,74 @@
+// Digital rain, as in the film: columns of glyphs falling down the screen.
+//
+//   pico matrix.pico          any key pauses, q or Esc quits
+//
+// Each column is a drop: a bright head that writes a new glyph as it moves
+// down, a green trail behind it, and the screen's own background erasing
+// the tail. Only the cells that change are written, so a whole frame is a
+// few hundred bytes and the board keeps up at twenty frames a second.
+
+const str HIDE = "\e[?25l";
+const str SHOW = "\e[?25h";
+const str HEAD = "\e[1;97m";     // bright white
+const str NEAR = "\e[1;92m";     // bright green, just behind the head
+const str TRAIL = "\e[32m";      // green
+const str RESET = "\e[0m";
+const str GLYPHS = "0123456789ABCDEFZ:.=*+-<>|abcdefxyz";
+
+struct Drop {
+    int y;          // the head's row; above the screen while it waits
+    int len;        // how long its trail is
+    int speed;      // rows it falls every so many frames
+    int wait;       // frames until it falls again
+}
+
+str glyph() {
+    int i = random(len(GLYPHS));
+    return substr(GLYPHS, i, 1);
+}
+
+// Moves the cursor: rows and columns count from 1.
+str at(int row, int col) {
+    return format("\e[%d;%dH", row + 1, col + 1);
+}
+
+Drop new_drop(int rows) {
+    return Drop{y: -random(rows), len: 4 + random(rows / 2), speed: 1 + random(3), wait: 0};
+}
+
+int main() {
+    int cols = term_cols(), rows = term_rows() - 1;
+    Drop[] drops = [];
+    for (int x = 0; x < cols; x++) push(drops, new_drop(rows));
+
+    seed(uptime_ms());
+    raw_mode(true);
+    print(HIDE, "\e[2J");
+    for (;;) {
+        str frame = "";
+        for (int x = 0; x < cols; x++) {
+            Drop d = drops[x];
+            if (d.wait > 0) {
+                d.wait--;
+                continue;
+            }
+            d.wait = 3 - d.speed;
+            d.y++;
+            // the head, the cell behind it turning green, the tail going
+            if (d.y >= 0 && d.y < rows) frame += at(d.y, x) + HEAD + glyph();
+            if (d.y - 1 >= 0 && d.y - 1 < rows) frame += at(d.y - 1, x) + NEAR + glyph();
+            if (d.y - 3 >= 0 && d.y - 3 < rows) frame += at(d.y - 3, x) + TRAIL + glyph();
+            int tail = d.y - d.len;
+            if (tail >= 0 && tail < rows) frame += at(tail, x) + " ";
+            if (tail >= rows) drops[x] = new_drop(rows);
+        }
+        print(frame, RESET);
+
+        int key = readkey(50);
+        if (key == 'q' || key == 'Q' || key == KEY_ESC || key == KEY_EOF) break;
+        if (key != KEY_NONE) readkey();             // paused until the next key
+    }
+    print(RESET, "\e[2J\e[H", SHOW);
+    raw_mode(false);
+    return 0;
+}

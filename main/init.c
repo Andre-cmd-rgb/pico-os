@@ -98,20 +98,23 @@ static bool motd_is_ours(const char *path)
 	return n < sizeof(text) - 1 && strstr(text, "type 'help'") && strcmp(text, motd);
 }
 
-/* The screen the other way up, if `rotate` left it so (/etc/rotate). */
+/*
+ * The screen as it was left: the other way up if `rotate` said so
+ * (/etc/rotate), in the colours `theme` chose (/etc/theme). Before the
+ * first thing is drawn, so the boot log already looks that way.
+ */
 static void screen_restore(void)
 {
 	char buf[VFS_PATH_MAX], line[8] = "";
 	FILE *f = vfs("/etc/rotate", buf) ? fopen(buf, "r") : NULL;
 
-	if (!f)
-		return;
-	fgets(line, sizeof(line), f);
-	fclose(f);
-	if (atoi(line) == 180 && !lcd_set_rotation(lcd_rotation() ^ 2)) {
-		vt_redraw();
-		klog("lcd: turned 180 degrees (/etc/rotate)");
+	if (f) {
+		fgets(line, sizeof(line), f);
+		fclose(f);
+		if (atoi(line) == 180 && !lcd_set_rotation(lcd_rotation() ^ 2))
+			klog("lcd: turned 180 degrees (/etc/rotate)");
 	}
+	theme_restore();
 }
 
 /* Directories every system has, mount points included, as on Linux. */
@@ -177,8 +180,9 @@ static void vt_shell_task(void *arg)
 	int vt = (int)(intptr_t)arg;
 
 	for (;;) {
-		char *login[] = { "sh", "-l", NULL };
-		int status = run_console_on(vt, 2, login);
+		/* the hint about help is under the logo, on the first one only */
+		char *login[] = { "sh", "-l", "-q", NULL };
+		int status = run_console_on(vt, 3, login);
 
 		if (status < 0)
 			break;			/* no memory for another one */
@@ -219,10 +223,19 @@ void app_main(void)
 	cpufreq_init();
 	wifi_init();
 
+	/* / first: it says which way up the screen goes and in what colours */
+	bool root = !rootfs_init();
+
+	if (root) {
+		root_layout();	/* mount points must exist before mounting on them */
+		clock_restore();
+	}
 #if CONFIG_PT_LCD
 	lcd_init();
 #endif
 	vt_init();
+	if (root)
+		screen_restore();
 	tty_init();
 	vt_start_display();
 	replay_log(vt_write);
@@ -234,16 +247,12 @@ void app_main(void)
 	cardkb_init();
 	usbkbd_init();
 	usbmsc_init();
-	if (!rootfs_init()) {
-		root_layout();	/* mount points must exist before mounting on them */
-		clock_restore();
-		screen_restore();
-	}
 	battery_init();		/* with what /etc/battery knows of the cell */
 	tmpfs_init();
 	sd_init();
 	wifi_start_supplicant();	/* now that /etc/wifi can be read */
 	alarm_init();			/* and /etc/alarms */
+	idle_init();			/* and /etc/power */
 	netconsole_init();
 	modem_init();
 	klog("init: %d programs, starting shell", count_programs());
@@ -251,7 +260,7 @@ void app_main(void)
 	/* From here on kernel messages go to dmesg and the serial port only,
 	 * so they never scribble over the shell on screen. */
 	klog_set_console(tty_mirror_output);
-	led_set_mode(LED_HEARTBEAT);
+	led_set_mode(LED_CHARGE);
 
 	logo();
 	if (!pt_stat("/etc/rc", &st) && !st.is_dir) {

@@ -39,6 +39,13 @@ const char *port_strerror(int err);
  * been told to stop).
  */
 int	 port_run(int argc, const char **argv);
+/*
+ * The same, with its output caught rather than shown: *out (allocated,
+ * NUL-terminated, the caller frees it) and *len, at most PORT_OUTPUT_MAX
+ * bytes of it. Its stderr is still ours.
+ */
+#define PORT_OUTPUT_MAX	(1 << 20)
+int	 port_run_output(int argc, const char **argv, char **out, size_t *len);
 const char *port_getenv(const char *name);
 
 /* A signal (Ctrl-C, kill) is waiting: stop the program. */
@@ -51,6 +58,6 @@ int64_t	 port_time(void);
 void	 port_date(int64_t t, char *buf, size_t n);	/* "YYYY-MM-DD HH:MM:SS" */
 
 int	 port_tty_raw(bool on);
-/* A byte from stdin, AL_KEY_EOF, or AL_KEY_NONE after timeout_ms (-1 waits). */
+/* A byte from stdin, PICO_KEY_EOF, or PICO_KEY_NONE after timeout_ms (-1 waits). */
 int	 port_readbyte(int timeout_ms);
 void	 port_tty_size(int *cols, int *rows);

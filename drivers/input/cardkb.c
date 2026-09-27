@@ -21,14 +21,17 @@
  * really gone.
  */
 #define LOST_AFTER	10
+#define DARK_POLL_MS	100	/* while the screen is dark */
 
 /*
  * The Fn layer. The keyboard's firmware sends 0x80-0xaf for Fn plus a key,
  * one code per key in the order the matrix is scanned, so a table of the
  * keys in that order says what was pressed. There is no control key on
  * this keyboard, which would leave a shell with no Ctrl-C and no Ctrl-D,
- * so Fn+letter is it. Fn+digit picks a terminal the way Alt+F1 does on a
- * Linux console, and Fn+left / Fn+right step between them.
+ * so Fn+letter is it. Fn+1 to Fn+4 pick a terminal the way Alt+F1 does on
+ * a Linux console, and Fn+left / Fn+right step between them; Fn+5 to Fn+0
+ * are a laptop's keys: brightness, mute, volume, and doze
+ * (power_shortcut()).
  */
 #define FN_FIRST	0x80
 #define FN_LAST		0xaf
@@ -46,6 +49,9 @@ static void cardkb_fn(uint8_t key)
 	char c = fn_key[key - FN_FIRST];
 	int n = vt_count();
 
+	if (!power_key())
+		return;			/* it lit a dark screen, and does nothing else */
+
 	switch (key) {
 	case 0x98: tty_switch((tty_front() + n - 1) % n); return;	/* left */
 	case 0xa5: tty_switch((tty_front() + 1) % n); return;		/* right */
@@ -53,11 +59,14 @@ static void cardkb_fn(uint8_t key)
 	case 0xa4: tty_input("\x1b[F", 3); return;			/* down: end */
 	case 0x8b: tty_input("\x1b[3~", 4); return;			/* del: forward */
 	}
+	/* Fn 1 to Fn 4 the terminals; Fn 5 to Fn 0 a laptop's keys */
 	if (c >= '0' && c <= '9') {
 		int which = c == '0' ? 9 : c - '1';
 
-		if (which < n)
+		if (which < n && which < 4)
 			tty_switch(which);
+		else
+			power_shortcut(c);
 		return;
 	}
 	if (c >= 'a' && c <= 'z') {
@@ -140,7 +149,10 @@ static void cardkb_task(void *arg)
 		misses = 0;
 		if (key)
 			cardkb_key(key);
-		vTaskDelay(pdMS_TO_TICKS(CONFIG_PT_CARDKB_POLL_MS));
+		/* in the dark a key only has to wake the screen: a tenth of a
+		 * second is quick enough, and the chip sleeps in between */
+		vTaskDelay(pdMS_TO_TICKS(power_screen() == SCREEN_OFF ? DARK_POLL_MS :
+					 CONFIG_PT_CARDKB_POLL_MS));
 	}
 	xSemaphoreGive(stopped);
 	vTaskDelete(NULL);

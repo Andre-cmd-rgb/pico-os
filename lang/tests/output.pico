@@ -1,0 +1,9 @@
+// output(): what a command prints
+int main() {
+    print(output("echo", "hello", "from echo"));
+    println(len(output(["printf", "abc"])));
+    str[] lines = split(output("printf", "one\ntwo\nthree\n"), "\n");
+    println(lines);
+    println("[", output("no-such-command-xyz"), "]");
+    return 0;
+}

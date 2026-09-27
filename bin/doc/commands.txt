@@ -79,19 +79,52 @@ SYSTEM
   rotate      turn the screen upside down (again:
               back); rotate 0 / rotate 180
 
+LOOKS
+  theme             the colours now, and a swatch
+  theme list        every theme (dark and light)
+  theme gruvbox     switch; `light`, `dark` after
+                    the name, or alone, switch half
+  theme auto 7:00 20:00   light by day
+  theme set bg #1d2021    a colour of your own:
+                    fg bg dim bold bar bar-text
+                    cursor, red..., bright-red...
+  theme reset       drop your own colours
+  theme cursor block|underline|bar
+  theme blink on|off, theme bar top|bottom
+  All kept in /etc/theme.
+
 POWER
-  battery     level, what it is doing, time left;
-              -v everything: current, cycles,
-              health; -c MAH a new cell fitted
-  power       policy, locks, where the time went
+  battery     level, what it is doing, time left,
+              cycles; -v everything: current,
+              calibration, health; -l the power
+              log (starts, sleeps, each half hour);
+              -m 4.12 what a meter reads on the
+              cell; -c MAH a new cell fitted
+  power       policy, locks, where the time went;
+              power dim 3m blank 4m suspend 15m
+              (never = off; kept in /etc/power)
   cpufreq     performance | ondemand | powersave
   suspend     deep sleep until any CardKB key
-              (or the side button, -t, an alarm)
+              (or the side button, -t, an alarm);
+              waking is a fresh boot
+  Ctrl-A z    doze, from anywhere: the screen and
+              radio off, everything kept; a key
+              brings it back where it was (Fn 0
+              on the CardKB, or Fn A then Z)
+  Fn 5 Fn 6   brightness down, up; Fn 9 mute,
+  Fn 7 Fn 8   volume down, up. Kept for the next
+              boot, as backlight and volume are
   poweroff    deep sleep until Enter on the CardKB
-  led         the status light
+  led         the charge light: lit while it
+              charges, green when full
+  No key for 3 minutes dims the screen, 4 turn it
+  off (the key that lights it does nothing else);
+  15 with nothing running suspends.
 
 SOUND
-  play FILE   WAV, FLAC, MP3, or raw 16-bit mono
+  play FILE   WAV, FLAC, MP3, or raw 16-bit mono;
+              plays on while a game or a clip on
+              another terminal makes its own sound
   play -n F   decode without playing: speed and a
               checksum, for testing
   rec FILE    record from the microphone
@@ -123,8 +156,9 @@ NETWORK
 
 VIDEO
   video             pick a clip from ~/video
-  video CLIP.ptv    play it; space pauses, s saves a
-                    frame, q stops
+  video CLIP.ptv    play it; space pauses and shows
+                    where it is, s saves a frame,
+                    q stops
   On the PC: make video FILE=something.mp4
 
 PICTURES
@@ -144,7 +178,7 @@ GAMES
   pad watch         see what a pad sends, to map it
                     in /etc/gamepad
 
-THE LANGUAGE
-  a FILE.al     compile and run in one step
-  ac FILE.al    compile to an executable
-  See `man language`.
+THE PICO LANGUAGE
+  pico FILE.pico    compile and run in one step
+  picoc FILE.pico   compile to an executable
+  See `man pico`.

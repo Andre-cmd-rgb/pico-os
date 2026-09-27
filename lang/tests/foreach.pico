@@ -1,0 +1,50 @@
+// for (T x in array), and chars()
+struct Item { str name; int n; }
+
+int main() {
+    int[] xs = [3, 1, 4, 1, 5];
+    int sum = 0;
+    for (int x in xs) sum += x;
+    println("sum ", sum);
+
+    for (str w in split("the quick brown fox jumps")) {
+        if (w == "quick") continue;
+        if (w == "jumps") break;
+        println("word ", w);
+    }
+
+    // references: each item is released as the loop moves on
+    Item[] items = [Item{name: "a", n: 1}, Item{name: "b", n: 2}];
+    for (Item it in items) println(it.name, "=", it.n);
+
+    // nested, over arrays of arrays
+    int[][] grid = [[1, 2], [3], []];
+    for (int[] row in grid) {
+        for (int v in row) print(v, " ");
+        print("| ");
+    }
+    println();
+
+    // an array that grows as it is gone through is gone through to its end
+    int[] grow = [1];
+    for (int v in grow) if (v < 4) push(grow, v + 1);
+    println(grow);
+
+    // the characters of a string, whole
+    for (str ch in chars("héllo")) print("[", ch, "]");
+    println();
+    println(len(chars("")), " ", chars("ab"));
+
+    // an empty array: no times at all
+    str[] none = [];
+    for (str s in none) println("never ", s);
+
+    // return from inside
+    println(first_big([1, 20, 300], 10));
+    return 0;
+}
+
+int first_big(int[] xs, int over) {
+    for (int x in xs) if (x > over) return x;
+    return -1;
+}

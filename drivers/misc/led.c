@@ -4,6 +4,10 @@
  *   LED_ON		steady, used while booting
  *   LED_HEARTBEAT	two short beats per second and a bit, like Linux's
  *			heartbeat trigger: the kernel is alive
+ *   LED_CHARGE		the default: the board has no charge light of its
+ *			own, so this is it -- the colour while the cell
+ *			charges, green once it is full, dark otherwise.
+ *			On the cell it costs nothing and wakes nothing.
  *   LED_OFF
  *
  * The color defaults to the theme's phosphor, dimmed by
@@ -15,6 +19,7 @@
 
 #if CONFIG_PT_LED
 
+#include "driver/gpio.h"
 #include "driver/rmt_tx.h"
 
 #define RESOLUTION_HZ	10000000	/* 100 ns per tick */
@@ -49,14 +54,40 @@ static void show(bool on)
 		ws2812_write(0, 0, 0);
 }
 
+/* What the charge light should show: 0 dark, 1 charging, 2 full. */
+static int charge_light(void)
+{
+	struct battery_status b;
+
+	if (battery_status(&b))
+		return 0;
+	return b.state == BATTERY_CHARGING ? 1 : b.state == BATTERY_FULL ? 2 : 0;
+}
+
 static void led_task(void *arg)
 {
 	/* beat, pause, beat, long pause: milliseconds on/off */
 	static const uint16_t heartbeat[] = { 70, 130, 70, 1000 };
-	int step = 0;
+	const unsigned k = CONFIG_PT_LED_BRIGHTNESS;
+	int step = 0, shown = -1;
 
 	for (;;) {
+		if (mode != LED_CHARGE)
+			shown = -1;
 		switch (mode) {
+		case LED_CHARGE: {
+			int want = charge_light();
+
+			if (want != shown) {
+				if (want == 2)
+					ws2812_write(0, k / 2, 0);
+				else
+					show(want == 1);
+				shown = want;
+			}
+			ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000));
+			break;
+		}
 		case LED_HEARTBEAT:
 			show(step % 2 == 0);
 			ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(heartbeat[step]));
@@ -97,6 +128,8 @@ int led_init(void)
 		klog("led: RMT setup failed on GPIO%d", CONFIG_PT_LED_GPIO);
 		return -EIO;
 	}
+	/* held low through light sleep: floating, the LED can latch noise */
+	gpio_sleep_sel_dis(CONFIG_PT_LED_GPIO);
 	show(true);
 	xTaskCreatePinnedToCore(led_task, "kled", 1536, NULL, 1, &task, 0);
 	return 0;

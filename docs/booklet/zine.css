@@ -1,0 +1,237 @@
+/*
+ * The pocket booklets: eight small pages to an A4 sheet, printed on one
+ * side, folded and cut once (see README.md). zine.js puts the pages, written
+ * in reading order, where the fold needs them.
+ */
+@page { size: A4 landscape; margin: 0; }
+
+:root {
+	--ink: #16181c;
+	--soft: #5b6068;
+	--rule: #c9ccd1;
+	--accent: #c2410c;
+	--accent2: #0f766e;
+	--key: #f1f2f4;
+	--sans: "Noto Sans", sans-serif;
+	--mono: "JetBrainsMono NF", "JetBrainsMono Nerd Font", "Noto Sans Mono", monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { background: #fff; color: var(--ink); }
+
+body {
+	font-family: var(--sans);
+	font-size: 6.3pt;
+	line-height: 1.27;
+	-webkit-print-color-adjust: exact;
+	print-color-adjust: exact;
+}
+
+.sheet {
+	position: relative;
+	width: 297mm;
+	height: 210mm;
+	display: grid;
+	grid-template-columns: repeat(4, 1fr);
+	grid-template-rows: 1fr 1fr;
+	overflow: hidden;
+	page-break-after: always;
+	break-after: page;
+}
+.sheet:last-child { page-break-after: auto; break-after: auto; }
+
+/* Where the one cut goes: across the middle two panels. */
+.sheet::after {
+	content: "";
+	position: absolute;
+	left: 74.25mm;
+	width: 148.5mm;
+	top: 105mm;
+	border-top: 0.2mm dashed #9aa0a8;
+}
+.scissors {
+	position: absolute;
+	left: 70.5mm;
+	top: 102.9mm;
+	font-family: "Noto Sans Symbols 2", "DejaVu Sans", sans-serif;
+	font-size: 8pt;
+	color: #9aa0a8;
+	line-height: 1;
+}
+
+.page {
+	position: relative;
+	padding: 5.8mm 5.2mm 5.5mm;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	border-left: 0.15mm dotted #dfe1e5;
+}
+.page.top { transform: rotate(180deg); }
+.page.bottom { border-top: 0.15mm dotted #dfe1e5; }
+
+.folio {
+	position: absolute;
+	bottom: 3.2mm;
+	font-size: 5.6pt;
+	color: var(--soft);
+	letter-spacing: 0.04em;
+}
+.folio.right { right: 5.5mm; }
+.folio.left { left: 5.5mm; }
+
+h2 {
+	font-size: 10pt;
+	line-height: 1.1;
+	font-weight: 800;
+	letter-spacing: -0.01em;
+	margin-bottom: 1.3mm;
+}
+h3 {
+	font-size: 6.4pt;
+	font-weight: 800;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--accent);
+	margin: 1.8mm 0 0.7mm;
+}
+h3:first-child { margin-top: 0; }
+
+p { margin-bottom: 1mm; }
+p.lead { color: var(--soft); }
+.s { color: var(--soft); }
+b, strong { font-weight: 700; }
+em { font-style: italic; }
+
+code, kbd, pre, dt { font-family: var(--mono); }
+/* != as it is typed, not a joined-up sign that cannot be typed */
+code, kbd, pre, dt, .brand, .what, .ver, .part {
+	font-variant-ligatures: none;
+	font-feature-settings: "liga" 0, "calt" 0;
+}
+code { font-size: 5.9pt; }
+
+kbd {
+	display: inline-block;
+	font-size: 5.4pt;
+	font-weight: 700;
+	line-height: 1;
+	padding: 0.3mm 0.7mm 0.4mm;
+	border: 0.18mm solid #aeb3ba;
+	border-bottom-width: 0.45mm;
+	border-radius: 0.7mm;
+	background: var(--key);
+	white-space: nowrap;
+	vertical-align: 0.1mm;
+}
+
+/* Two columns: what to type, what it does. */
+dl {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	column-gap: 1.8mm;
+	row-gap: 0.45mm;
+	align-items: baseline;
+}
+dt { font-size: 5.9pt; font-weight: 700; white-space: nowrap; }
+dt.k { font-family: var(--sans); }
+
+pre {
+	font-size: 5.6pt;
+	line-height: 1.3;
+	background: #f5f6f7;
+	border-left: 0.6mm solid var(--accent2);
+	padding: 0.9mm 1.3mm;
+	margin: 0.8mm 0 1mm;
+	white-space: pre;
+	overflow: hidden;
+}
+pre .c { color: #7b8089; }
+pre .k { color: var(--accent2); font-weight: 700; }
+pre .t { color: var(--accent); }
+pre.out { border-left-color: #9aa0a8; background: #fafafa; }
+
+.shot {
+	display: block;
+	width: 58%;
+	image-rendering: pixelated;
+	border-radius: 0.8mm;
+	box-shadow: 0 0 0 0.25mm #2a2d33;
+	margin: 1.2mm auto 1.2mm;
+}
+.shot.wide { width: 100%; }
+.shot.small { width: 46%; }
+
+table { border-collapse: collapse; width: 100%; font-size: 6pt; }
+th { text-align: left; font-weight: 700; color: var(--soft); font-size: 5.6pt;
+     text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 0.5mm; }
+td, th { padding: 0.35mm 0.8mm 0.35mm 0; border-bottom: 0.15mm solid var(--rule); }
+td.r, th.r { text-align: right; padding-right: 0; white-space: nowrap; }
+
+.tip {
+	margin-top: auto;
+	padding: 1.1mm 1.5mm;
+	border-radius: 1mm;
+	background: #fff4ec;
+	border: 0.2mm solid #f3c7a8;
+	font-size: 6pt;
+}
+.tip b { color: var(--accent); }
+
+/* A two-column list of words: the command index, the built-ins. */
+.cols { columns: 2; column-gap: 2.5mm; font-size: 5.8pt; line-height: 1.32; }
+.cols dl { display: block; }
+.cols dt { display: inline; }
+.cols dd { display: inline; }
+.cols dd::after { content: ""; display: block; }
+.cols .item { break-inside: avoid; }
+
+/* The contents page, filled in by zine.js. */
+ol.contents { list-style: none; font-size: 6.6pt; line-height: 1.55; }
+ol.contents li { display: flex; gap: 1mm; }
+ol.contents li::after { content: ""; order: 1; flex: 1; border-bottom: 0.2mm dotted #c9ccd1; margin-bottom: 1.1mm; }
+ol.contents li .n { order: 2; font-family: var(--mono); color: var(--accent); font-weight: 700; }
+ol.contents li.part { font-weight: 800; color: var(--soft); text-transform: uppercase;
+		      letter-spacing: 0.06em; font-size: 5.8pt; margin-top: 1.2mm; }
+ol.contents li.part::after { display: none; }
+
+/* Covers. */
+.cover .brand {
+	font-family: var(--mono);
+	font-size: 17pt;
+	font-weight: 800;
+	letter-spacing: -0.03em;
+	line-height: 1;
+	margin-top: 3mm;
+}
+.cover .brand span { color: var(--accent); }
+.cover .sub { font-size: 7.6pt; color: var(--soft); margin-top: 1.4mm; }
+.cover .shot { width: 100%; margin-top: 5mm; }
+.cover .what {
+	margin-top: auto;
+	font-family: var(--mono);
+	font-size: 5.9pt;
+	line-height: 1.55;
+	color: var(--soft);
+}
+.cover .what b { color: var(--ink); }
+.cover .ver {
+	display: inline-block;
+	margin-top: 2.5mm;
+	font-family: var(--mono);
+	font-size: 6.2pt;
+	font-weight: 700;
+	color: #fff;
+	background: var(--accent);
+	border-radius: 0.8mm;
+	padding: 0.5mm 1.4mm;
+}
+.cover .part {
+	font-family: var(--mono);
+	font-size: 6pt;
+	color: var(--accent);
+	font-weight: 700;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+}

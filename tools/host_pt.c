@@ -43,6 +43,11 @@ void program_register(struct pt_program *prog)
 	programs = prog;
 }
 
+/* What Tab completes is the shell's business, and there is none here. */
+void completion_register(struct pt_completion *c)
+{
+}
+
 const struct pt_program *program_find(const char *name)
 {
 	for (struct pt_program *p = programs; p; p = p->next)

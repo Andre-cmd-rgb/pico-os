@@ -1,5 +1,5 @@
 /*
- * Port layer for PocketType: the ac and a commands, the executable loader,
+ * Port layer for PocketType: the picoc and pico commands, the executable loader,
  * and the platform calls mapped onto pt/sys.h.
  */
 #include <stdio.h>
@@ -9,50 +9,54 @@
 #include "pt/program.h"
 #include "pt/sys.h"
 
-#include "al.h"
+#include "pico.h"
 #include "driver.h"
 #include "port.h"
 
-_Static_assert((int)AL_KEY_UP == (int)PT_KEY_UP && (int)AL_KEY_F4 == (int)PT_KEY_F4 &&
-	       (int)AL_KEY_UNKNOWN == (int)PT_KEY_UNKNOWN && (int)AL_KEY_EOF == (int)PT_KEY_EOF,
+_Static_assert((int)PICO_KEY_UP == (int)PT_KEY_UP && (int)PICO_KEY_F4 == (int)PT_KEY_F4 &&
+	       (int)PICO_KEY_UNKNOWN == (int)PT_KEY_UNKNOWN && (int)PICO_KEY_EOF == (int)PT_KEY_EOF,
 	       "key codes must match pt/keys.h");
 
-PT_PROGRAM_STACK(ac, 16, "compile an a program\n"
-		 "usage: ac [-o program] [-d] file.al\n"
-		 "  -o  name of the program (default: file.al without .al)\n"
+PT_COMPLETE(picoc, ": -o -d <file:.pico.al>\n*: <file:.pico.al>\n")
+
+PT_PROGRAM_STACK(picoc, 16, "compile a pico program\n"
+		 "usage: picoc [-o program] [-d] file.pico\n"
+		 "  -o  name of the program (default: the file without .pico)\n"
 		 "  -d  print the bytecode instead of writing a program\n"
-		 "Run the result with ./program. See docs/LANGUAGE.md.")
+		 "Run the result with ./program. See `man pico`.")
 {
-	return al_main_ac(argc, argv);
+	return pico_main_compile(argc, argv);
 }
 
-PT_PROGRAM_STACK(a, 16, "run an a program\n"
-		 "usage: a file.al [args...]   compile in memory and run\n"
-		 "       a program [args...]   run a program made by ac")
+PT_COMPLETE(pico, ": <file:.pico.al>\n")
+
+PT_PROGRAM_STACK(pico, 16, "run a pico program\n"
+		 "usage: pico file.pico [args...]   compile in memory and run\n"
+		 "       pico program [args...]     run a program made by picoc")
 {
-	return al_main_a(argc, argv);
+	return pico_main_run(argc, argv);
 }
 
 static bool loader_probe(const char *path, const uint8_t *head, size_t n)
 {
-	return al_probe(head, n);
+	return pico_probe(head, n);
 }
 
 static int loader_exec(const char *path, int argc, char **argv)
 {
-	return al_exec(path, argc, argv);
+	return pico_exec(path, argc, argv);
 }
 
-static struct pt_loader al_loader = {
-	.name = "a",
+static struct pt_loader pico_loader = {
+	.name = "pico",
 	.stack_kb = 12,
 	.probe = loader_probe,
 	.exec = loader_exec,
 };
 
-__attribute__((constructor)) static void al_loader_register(void)
+__attribute__((constructor)) static void pico_loader_register(void)
 {
-	loader_register(&al_loader);
+	loader_register(&pico_loader);
 }
 
 void *port_alloc(size_t n)
@@ -190,6 +194,94 @@ int port_run(int argc, const char **argv)
 	return stopped ? PORT_EINTR : status;
 }
 
+/* Keeps what `fd` gives until its end, in *buf; beyond the most, drops it. */
+static long take_output(int fd, int pid, char **buf, size_t *n, bool *stopped)
+{
+	size_t cap = 4096;
+	char scrap[256];
+
+	*buf = port_alloc(cap);
+	*n = 0;
+	for (;;) {
+		long got;
+
+		if (*buf && *n + 1 >= cap && cap < PORT_OUTPUT_MAX + 1) {
+			char *more = port_realloc(*buf, cap * 2 > PORT_OUTPUT_MAX + 1 ? PORT_OUTPUT_MAX + 1 : cap * 2);
+
+			if (more) {
+				*buf = more;
+				cap = cap * 2 > PORT_OUTPUT_MAX + 1 ? PORT_OUTPUT_MAX + 1 : cap * 2;
+			}
+		}
+		if (*buf && *n + 1 < cap)
+			got = pt_read(fd, *buf + *n, cap - *n - 1);
+		else
+			got = pt_read(fd, scrap, sizeof(scrap));	/* full: drain it */
+		if (got == -EINTR) {
+			if (!*stopped)
+				pt_kill(pid, PT_SIGINT);
+			*stopped = true;
+			pt_sigcatch(true);
+			if (pt_interrupted())
+				pt_sigcatch(false);
+			continue;
+		}
+		if (got <= 0)
+			break;
+		if (*buf && *n + 1 < cap)
+			*n += got;
+	}
+	if (*buf)
+		(*buf)[*n] = '\0';
+	return *buf ? 0 : -ENOMEM;
+}
+
+int port_run_output(int argc, const char **argv, char **out, size_t *len)
+{
+	struct pt_spawn req = {
+		.cmd = argv[0],
+		.argc = argc,
+		.argv = (char *const *)argv,
+		.fd = { -1, -1, -1 },
+	};
+	bool stopped = false;
+	int fds[2], status = 0, err;
+
+	*out = NULL;
+	*len = 0;
+	if ((err = pt_pipe(fds)))
+		return err;
+	req.fd[1] = fds[1];
+	pt_sigcatch(true);
+	int pid = pt_spawn(&req);
+	pt_close(fds[1]);		/* the child's copy is the one that ends it */
+	if (pid < 0) {
+		pt_close(fds[0]);
+		pt_sigcatch(false);
+		return pid;
+	}
+	err = (int)take_output(fds[0], pid, out, len, &stopped);
+	pt_close(fds[0]);
+	for (;;) {
+		int r = pt_wait(pid, &status, false);
+		if (r != -EINTR)
+			break;
+		if (!stopped)
+			pt_kill(pid, PT_SIGINT);
+		stopped = true;
+		pt_sigcatch(true);
+		if (pt_interrupted())
+			pt_sigcatch(false);
+	}
+	pt_sigcatch(false);
+	if (stopped || err) {
+		port_free(*out);
+		*out = NULL;
+		return stopped ? PORT_EINTR : err;
+	}
+	return status;
+}
+
 const char *port_getenv(const char *name)
 {
 	return pt_getenv(name);
@@ -248,10 +340,10 @@ int port_readbyte(int timeout_ms)
 	if (n == 1)
 		return c;
 	if (n == -EAGAIN)
-		return AL_KEY_NONE;
+		return PICO_KEY_NONE;
 	if (n == 0)
-		return AL_KEY_EOF;
-	return n == -EINTR ? AL_KEY_INTR : AL_KEY_ERROR;
+		return PICO_KEY_EOF;
+	return n == -EINTR ? PICO_KEY_INTR : PICO_KEY_ERROR;
 }
 
 void port_tty_size(int *cols, int *rows)

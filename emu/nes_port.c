@@ -7,9 +7,10 @@
  * 256x240 picture placed on a 320x240 screen, sound handed to the codec,
  * and the keyboard pretending to be a joypad.
  *
- * Sound is what paces the whole thing: audio_write() blocks until the
- * codec has taken the samples, which happens at exactly the rate the NES
- * produces them.
+ * Sound is what paces the whole thing: audio_write() blocks while the
+ * game's few frames of queued sound are full, and they empty at exactly
+ * the rate the NES produces them. Music playing on another terminal is
+ * mixed in with it.
  *
  * Switched to another terminal, the game pauses, silent, and carries on
  * where it was when its terminal comes back.
@@ -35,12 +36,14 @@
 
 #define PHOTOS		"/home/" CONFIG_PT_USERNAME "/photos"
 #define SAMPLE_RATE	16000
+#define SOUND_LATENCY_MS 50	/* three frames */
 #define FRAME_US	16639		/* 60.1 frames a second, as on the NES */
 #define HOLD_MS		150		/* how long a key counts as held down */
 #define ROWS_PER_DRAW	24		/* 256 x 24 x 2 bytes is 12 KB */
+#define PX_ALIGN	64		/* a data cache line, for DMA from PSRAM */
 
 static uint16_t	 palette[256];		/* in the order the panel reads them */
-static uint8_t	*rowbuf;
+static uint8_t	*rowbuf, *rowmem;
 static uint8_t	*vidbuf;	/* what the picture unit draws into */
 static apu_t	*apu;		/* the core's own mixed output */
 static int	 origin_x, origin_y;
@@ -217,12 +220,18 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 	if (!mount_resolve(rom_path, vfs, sizeof(vfs)))
 		return -ENOENT;
 
-	/* The row buffer goes to the display by DMA, so it has to be
-	 * internal; the picture buffer is only touched by the CPU and is
-	 * 64 KB, so it goes to PSRAM. Both are counted as the program's, so
-	 * a kill -9 from another terminal frees them. */
-	rowbuf = pt_malloc_caps(NES_SCREEN_WIDTH * ROWS_PER_DRAW * 2,
-				MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	/*
+	 * Both buffers are in PSRAM. The row buffer goes to the display by
+	 * DMA, which reads PSRAM directly if the buffer starts on a cache
+	 * line (the panel's driver writes the cache back first); in internal
+	 * RAM it took 12 KB that music playing on another terminal leaves no
+	 * room for. Both are counted as the program's, so a kill -9 from
+	 * another terminal frees them.
+	 */
+	rowmem = pt_malloc_caps(NES_SCREEN_WIDTH * ROWS_PER_DRAW * 2 + PX_ALIGN - 1,
+				MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+	rowbuf = rowmem ? (uint8_t *)(((uintptr_t)rowmem + PX_ALIGN - 1) & ~(uintptr_t)(PX_ALIGN - 1))
+			: NULL;
 	vidbuf = pt_malloc_caps(NES_SCREEN_PITCH * NES_SCREEN_HEIGHT,
 				MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	if (!rowbuf || !vidbuf) {
@@ -258,8 +267,10 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 	vt_hold_screen(true);		/* the terminal stops repainting */
 	clear_screen();
 	gen = vt_screen_gen();
-	if (opt->sound)
+	if (opt->sound) {
 		audio_set_rate(SAMPLE_RATE);
+		audio_set_latency(SOUND_LATENCY_MS);	/* a game's sound keeps up */
+	}
 
 	memset(&stats, 0, sizeof(stats));
 	started = next_frame = esp_timer_get_time();
@@ -345,9 +356,9 @@ out:
 	nes_shutdown();
 	if (opt->sound)
 		audio_stop();
-	pt_free(rowbuf);
+	pt_free(rowmem);
 	pt_free(vidbuf);
-	rowbuf = vidbuf = NULL;
+	rowbuf = rowmem = vidbuf = NULL;
 	apu = NULL;
 	return ret;
 }

@@ -10,17 +10,20 @@ idf_component_register(
 		misc/alarm.c
 		misc/i2c.c
 		misc/usbhost.c
+		misc/xfer.c
 		net/modem.c
 		net/netconsole.c
 		net/wifi.c
 		misc/led.c
 		power/battery.c
 		power/cpufreq.c
+		power/idle.c
 		power/suspend.c
 		storage/ramdisk.c
 		storage/rootfs.c
 		storage/sdcard.c
 		storage/usbmsc.c
+		tty/theme.c
 		tty/tty.c
 		tty/vt.c
 		video/capture.c

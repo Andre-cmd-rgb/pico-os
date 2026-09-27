@@ -207,9 +207,12 @@ static void cooked_byte(struct tty *tty, uint8_t c, bool last_in_chunk)
 }
 
 /*
- * Ctrl-A then a digit switches terminals, the way screen and tmux do it.
- * Ctrl-A twice sends one through, so a program that wants it can have
- * it. Everything else goes to the terminal in front.
+ * Ctrl-A then a digit switches terminals, the way screen and tmux do it,
+ * and Ctrl-A then z dozes, from wherever you are: dark, with everything
+ * kept, until a key -- the board's own buttons are out of reach in its
+ * case. Ctrl-A twice sends one through,
+ * so a program that wants it can have it. Everything else goes to the
+ * terminal in front.
  */
 static bool switch_key(uint8_t c)
 {
@@ -217,6 +220,10 @@ static bool switch_key(uint8_t c)
 		switch_armed = false;
 		if (c >= '1' && c <= '9') {
 			tty_switch(c - '1');
+			return true;
+		}
+		if (c == 'z' || c == 'Z') {
+			power_doze();
 			return true;
 		}
 		if (c == 0x01)
@@ -229,10 +236,65 @@ static bool switch_key(uint8_t c)
 	return false;
 }
 
+/*
+ * Looking back through what has scrolled off the terminal in front:
+ * Ctrl-A then Up (Fn A, then up, on the CardKB) or Shift-PgUp on a USB
+ * keyboard. Up and Down then go on half a screen at a time, PgUp and PgDn
+ * a screen, Home and End (Fn up, Fn down) to the oldest line and back to
+ * the screen as it is. Esc, Enter or q go back too; any other key goes
+ * back and on to the terminal, as it would have.
+ */
+static bool scrolling;
+
+/* The length of the whole ESC [ ... sequence at `s`, or 0. */
+static size_t seq_len(const char *s, size_t n)
+{
+	if (n < 3 || s[0] != 0x1b || s[1] != '[')
+		return 0;
+	for (size_t i = 2; i < n && i < 8; i++)
+		if (s[i] >= 0x40 && s[i] <= 0x7e)
+			return i + 1;
+	return 0;
+}
+
+/* How far a key moves the view back, negative forward; 0 if it is not one. */
+static int scroll_step(const char *seq, size_t len, bool any)
+{
+	int c, r, page;
+
+	vt_size(&c, &r);
+	page = r > 2 ? r - 1 : 1;
+	if (len >= 4 && seq[len - 1] == '~' && (seq[2] == '5' || seq[2] == '6') &&
+	    (any || (len == 6 && seq[3] == ';' && seq[4] == '2')))	/* shifted */
+		return seq[2] == '5' ? page : -page;
+	if (!any || len != 3)
+		return 0;
+	switch (seq[2]) {
+	case 'A': return page / 2;
+	case 'B': return -(page / 2);
+	case 'H': return 1 << 20;		/* Home: as far back as there is */
+	case 'F': return -(1 << 20);		/* End */
+	}
+	return 0;
+}
+
+/*
+ * Keys from a keyboard on the board. One that lights a dark screen does
+ * nothing else: nobody could see what it would have done.
+ */
 void tty_input(const char *s, size_t n)
+{
+	if (!power_key())
+		return;
+	tty_input_remote(s, n);
+}
+
+/* Typing from the PC over the serial port: no light, but not idle. */
+void tty_input_remote(const char *s, size_t n)
 {
 	struct tty *tty = fg();
 
+	power_remote_activity();
 	if (!tty_ready(tty))
 		return;			/* keys before the console exists */
 	if (alarm_key(s, n))
@@ -240,7 +302,21 @@ void tty_input(const char *s, size_t n)
 	xSemaphoreTake(tty->in_lock, portMAX_DELAY);
 	for (size_t i = 0; i < n; i++) {
 		uint8_t c = (uint8_t)s[i];
+		size_t k = c == 0x1b ? seq_len(s + i, n - i) : 0;
+		int step = k ? scroll_step(s + i, k, scrolling || switch_armed) : 0;
 
+		if (step) {
+			switch_armed = false;
+			scrolling = vt_scroll(step) > 0;
+			i += k - 1;
+			continue;
+		}
+		if (scrolling) {
+			scrolling = false;
+			vt_scroll_end();
+			if (c == '\r' || c == 'q' || (c == 0x1b && i + 1 == n))
+				continue;	/* only the way back */
+		}
 		if (switch_key(c)) {
 			if (tty != fg()) {	/* the switch happened */
 				xSemaphoreGive(tty->in_lock);
@@ -272,6 +348,10 @@ int tty_switch(int which)
 	 */
 	if (!tty_console(which))
 		return -ENOMEM;
+	if (scrolling) {		/* the one left goes back to what it shows */
+		vt_scroll_end();
+		scrolling = false;
+	}
 	front = which;
 	vt_switch(which);
 	if (activate_hook)
@@ -299,8 +379,9 @@ static ssize_t tty_read(struct pt_file *f, void *buf, size_t n)
 
 	int64_t deadline = tty->read_timeout_ms >= 0
 			 ? pt_uptime_us() + tty->read_timeout_ms * 1000LL : 0;
+	/* how often to look for a signal while waiting: less often in the dark */
 	TickType_t poll = tty->read_timeout_ms >= 0 && tty->read_timeout_ms < 50
-			? pdMS_TO_TICKS(tty->read_timeout_ms) : pdMS_TO_TICKS(50);
+			? pdMS_TO_TICKS(tty->read_timeout_ms) : pdMS_TO_TICKS(power_poll_ms(50));
 
 	xSemaphoreTake(tty->read_lock, portMAX_DELAY);
 	for (;;) {

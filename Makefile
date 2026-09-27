@@ -11,7 +11,7 @@
 #   make hwtest        the shell suite on the board at PORT
 #   make progtest      the text programs on the board, against GNU's on this PC
 #   make scripttest    shell control flow (if/for/while/case, functions)
-#   make langtest      the "a" language on the device
+#   make langtest      the pico language on the device
 #   make push FILE=... [DEST=...]   copy a file to the board (default ~/name)
 #   make pull FILE=... [DEST=...]   copy a file from the board
 #   make video FILE=clip.mp4        convert a video and send it

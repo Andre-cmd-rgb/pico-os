@@ -60,7 +60,7 @@ def run_tests(b):
     scratch = " ".join("/tmp/work/" + f for f in
                        "test.txt a d s.sh notes.txt notes.txt.tmp big.txt x1.txt x2.txt".split())
     step("rm -rf " + scratch + "; cd")
-    step("uname -a", "PocketType pockettype 0.1.0")
+    step("uname -a", "PocketType pockettype 1.0-beta2")
     step("help", ["ls", "edit", "ps", "Commands"])
     step("help ls", "list directory contents")
     step("ls /", ["bin/", "dev/", "etc/", "home/", "mnt/", "proc/", "tmp/"], reject="flash")

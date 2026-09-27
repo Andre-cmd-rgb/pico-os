@@ -1,6 +1,6 @@
-bad_infer.al:3:13: error: cannot tell the type of []; declare it, as in int[] a = []
+bad_infer.pico:3:13: error: cannot tell the type of []; declare it, as in int[] a = []
     println([]);
             ^
-bad_infer.al:5:17: error: expected int, got str; parse it with to_int(s)
+bad_infer.pico:5:17: error: expected int, got str; parse it with to_int(s)
     println([1, "two"]);
                 ^

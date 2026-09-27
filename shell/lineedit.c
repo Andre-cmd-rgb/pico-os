@@ -215,14 +215,62 @@ static void list_candidates(struct edit *e, const struct candidates *c)
 	}
 }
 
+/* Whether a word needs quoting to reach a command as it is. */
+static bool needs_quotes(const char *w)
+{
+	if (*w == '#')
+		return true;
+	for (; *w; w++)
+		if (strchr(" \t'\"\\$`&|;<>()*?[]", *w))
+			return true;
+	return false;
+}
+
+/*
+ * The word `w`, written back into the line: as it is if nothing in it is
+ * special, or else in the quotes it was begun with -- double ones if it
+ * was not -- with a leading ~/ kept outside them, where it still means
+ * home. `close` ends the quote, for a word that is finished.
+ */
+static size_t quote_word(const char *w, char quote, bool close, char *out, size_t size)
+{
+	size_t n = 0;
+
+	if (!quote && !needs_quotes(w)) {
+		strlcpy(out, w, size);
+		return strlen(out);
+	}
+	if (!quote)
+		quote = '"';
+	if (w[0] == '~' && (w[1] == '/' || !w[1])) {
+		for (int k = 0; k < 2 && *w && n + 1 < size; k++)
+			out[n++] = *w++;
+	}
+	if (n + 1 < size)
+		out[n++] = quote;
+	for (; *w && n + 3 < size; w++) {
+		if (quote == '"' && strchr("\"\\$`", *w))
+			out[n++] = '\\';
+		else if (quote == '\'' && *w == '\'') {
+			out[n++] = '\'';		/* 'it'\''s' */
+			out[n++] = '\\';
+			out[n++] = '\'';
+		}
+		out[n++] = *w;
+	}
+	if (close && n + 1 < size)
+		out[n++] = quote;
+	out[n] = '\0';
+	return n;
+}
+
 static void complete(struct sh *sh, struct edit *e)
 {
-	size_t start = e->pos;
+	char word[PT_PATH_MAX], raw[PT_PATH_MAX * 2], quote;
 	struct candidates c = { 0 };
+	size_t start = word_scan(e->buf, e->pos, word, sizeof(word), &quote);
 
-	while (start && e->buf[start - 1] != ' ')
-		start--;
-	if (sh_candidates(sh, e->buf, start, e->pos - start, &c) || !c.count) {
+	if (sh_candidates(sh, e->buf, start, word, &c) || !c.count) {
 		candidates_free(&c);
 		return;
 	}
@@ -238,12 +286,28 @@ static void complete(struct sh *sh, struct edit *e)
 	while (common > c.typed && is_cont(c.name[0][common]))
 		common--;
 
-	if (common > c.typed)
-		insert(e, c.name[0] + c.typed, common - c.typed);
-	if (c.count == 1)
-		insert(e, c.is_dir[0] ? "/" : " ", 1);
-	else if (common <= c.typed)
+	if (common > c.typed || c.count == 1) {
+		bool unique = c.count == 1, dir = unique && c.is_dir[0];
+		size_t len = strlen(word), n;
+
+		/* the word as it will be, then written back quoted as it needs */
+		if (len + common - c.typed + 2 < sizeof(word)) {
+			memcpy(word + len, c.name[0] + c.typed, common - c.typed);
+			len += common - c.typed;
+			if (dir)
+				word[len++] = '/';
+			word[len] = '\0';
+		}
+		n = quote_word(word, quote, unique && !dir, raw, sizeof(raw));
+		if (unique && !dir && n + 1 < sizeof(raw)) {
+			raw[n++] = ' ';
+			raw[n] = '\0';
+		}
+		erase_range(e, start, e->pos);
+		insert(e, raw, n);
+	} else {
 		list_candidates(e, &c);
+	}
 	candidates_free(&c);
 }
 

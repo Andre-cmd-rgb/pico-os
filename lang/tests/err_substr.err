@@ -1,1 +1,1 @@
-err_substr.al:5: runtime error: substr() start 9 is outside the string (length 3)
+err_substr.pico:5: runtime error: substr() start 9 is outside the string (length 3)

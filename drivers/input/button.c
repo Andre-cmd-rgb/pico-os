@@ -7,8 +7,13 @@
  * having when the keyboard in front of you has no Ctrl key. Holding it
  * goes back to the first terminal. While an alarm rings, a press snoozes
  * it and holding stops it.
+ *
+ * Nothing polls it while it is up: a press interrupts (and wakes the
+ * chip from light sleep), and it is only watched while held.
  */
 #include "driver/gpio.h"
+#include "esp_attr.h"
+#include "esp_sleep.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
 
@@ -19,6 +24,18 @@
 #define POLL_MS		30
 #define DEBOUNCE_MS	60
 #define HOLD_MS		800
+
+static TaskHandle_t task;
+
+static void IRAM_ATTR pressed(void *arg)
+{
+	BaseType_t woken = pdFALSE;
+
+	gpio_intr_disable(CONFIG_PT_BUTTON_GPIO);	/* the task watches it from here */
+	vTaskNotifyGiveFromISR(task, &woken);
+	if (woken)
+		portYIELD_FROM_ISR();
+}
 
 static void button_task(void *arg)
 {
@@ -38,6 +55,8 @@ static void button_task(void *arg)
 
 			if (woke)
 				woke = false;
+			else if (held >= DEBOUNCE_MS && !power_key())
+				;		/* it lit the screen, and that is all */
 			else if (held >= DEBOUNCE_MS && alarm_button(held >= HOLD_MS))
 				;		/* snoozed or stopped a ringing alarm */
 			else if (held >= HOLD_MS)
@@ -46,7 +65,12 @@ static void button_task(void *arg)
 				tty_switch((tty_front() + 1) % vt_count());
 		}
 		was_down = down;
-		vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+		if (down) {
+			vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+		} else {
+			gpio_intr_enable(CONFIG_PT_BUTTON_GPIO);
+			ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+		}
 	}
 }
 
@@ -60,8 +84,15 @@ int button_init(void)
 
 	if (gpio_config(&cfg) != ESP_OK)
 		return -EIO;
-	if (xTaskCreatePinnedToCore(button_task, "kbutton", 4096, NULL, 4, NULL, 0) != pdPASS)
+	if (xTaskCreatePinnedToCore(button_task, "kbutton", 4096, NULL, 4, &task, 0) != pdPASS)
 		return -ENOMEM;
+	/* a low level, so that it also wakes the chip out of light sleep */
+	gpio_install_isr_service(0);		/* already there is fine */
+	gpio_set_intr_type(CONFIG_PT_BUTTON_GPIO, GPIO_INTR_LOW_LEVEL);
+	gpio_isr_handler_add(CONFIG_PT_BUTTON_GPIO, pressed, NULL);
+	gpio_sleep_sel_dis(CONFIG_PT_BUTTON_GPIO);	/* its pull-up, while dozing */
+	gpio_wakeup_enable(CONFIG_PT_BUTTON_GPIO, GPIO_INTR_LOW_LEVEL);
+	esp_sleep_enable_gpio_wakeup();
 	klog("button: GPIO%d switches terminals (hold for the first)",
 	     CONFIG_PT_BUTTON_GPIO);
 	return 0;

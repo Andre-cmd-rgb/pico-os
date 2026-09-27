@@ -1,16 +1,16 @@
-bad_ops.al:5:15: error: operator '*' does not work on str and int
+bad_ops.pico:5:15: error: operator '*' does not work on str and int
     int n = s * 2;
               ^
-bad_ops.al:6:16: error: the left side of && must be bool, got str
+bad_ops.pico:6:16: error: the left side of && must be bool, got str
     bool b = s && true;
                ^
-bad_ops.al:8:15: error: operator '+' does not work on P and int
+bad_ops.pico:8:15: error: operator '+' does not work on P and int
     int q = p + 1;
               ^
-bad_ops.al:9:9: error: the condition must be bool, got int
+bad_ops.pico:9:9: error: the condition must be bool, got int
     if (n) { println("no"); }
         ^
-bad_ops.al:11:20: error: operator '+' does not work on int and P
+bad_ops.pico:11:20: error: operator '+' does not work on int and P
     int bad = a[0] + p;
                    ^
-bad_ops.al: too many errors, stopping
+bad_ops.pico: too many errors, stopping

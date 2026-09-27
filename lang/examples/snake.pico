@@ -1,0 +1,114 @@
+// Snake, in the terminal.
+//
+//   pico snake.pico           arrows or WASD steer, p pauses, q quits
+//
+// Eat the * to grow; the snake speeds up as it does. Running into a wall
+// or yourself ends the game. Shows enum, switch and for (x in list).
+
+enum Dir { UP, DOWN, LEFT, RIGHT }
+
+struct Point { int x; int y; }
+
+const str HIDE = "\e[?25l";
+const str SHOW = "\e[?25h";
+const str WALL = "\e[2m";
+const str BODY = "\e[1;32m";
+const str FOOD = "\e[1;31m";
+const str RESET = "\e[0m";
+
+int W = 0;
+int H = 0;
+
+void put(int x, int y, str what) {
+    printf("\e[%d;%dH%s", y + 2, x + 2, what);   // inside the frame
+}
+
+bool on_snake(Point[] snake, int x, int y) {
+    for (Point p in snake) if (p.x == x && p.y == y) return true;
+    return false;
+}
+
+Point place_food(Point[] snake) {
+    for (;;) {
+        Point f = Point{x: random(W), y: random(H)};
+        if (!on_snake(snake, f.x, f.y)) return f;
+    }
+}
+
+void frame(int score) {
+    print("\e[2J\e[H", WALL, "+", repeat("-", W), "+\n");
+    for (int y = 0; y < H; y++) print("|", repeat(" ", W), "|\n");
+    print("+", repeat("-", W), "+", RESET);
+    printf("\e[%d;1H score %d   arrows/WASD  p pause  q quit", H + 3, score);
+}
+
+// The direction a key asks for, or the one we had.
+Dir steer(int key, Dir now) {
+    switch (key) {
+    case KEY_UP, 'w', 'W': return now == DOWN ? now : UP;
+    case KEY_DOWN, 's', 'S': return now == UP ? now : DOWN;
+    case KEY_LEFT, 'a', 'A': return now == RIGHT ? now : LEFT;
+    case KEY_RIGHT, 'd', 'D': return now == LEFT ? now : RIGHT;
+    default: return now;
+    }
+}
+
+int main() {
+    W = min(term_cols() - 2, 40);
+    H = min(term_rows() - 4, 18);
+    seed(uptime_ms());
+    raw_mode(true);
+    print(HIDE);
+
+    Point[] snake = [Point{x: W / 2, y: H / 2}, Point{x: W / 2 - 1, y: H / 2}];
+    Dir dir = RIGHT;
+    int score = 0, delay = 160;
+    Point food = place_food(snake);
+    frame(score);
+    for (Point p in snake) put(p.x, p.y, BODY + "o" + RESET);
+    put(food.x, food.y, FOOD + "*" + RESET);
+
+    bool over = false;
+    while (!over) {
+        int key = readkey(delay);
+        if (key == 'q' || key == 'Q' || key == KEY_ESC || key == KEY_EOF) break;
+        if (key == 'p' || key == 'P') {
+            readkey();
+            continue;
+        }
+        dir = steer(key, dir);
+
+        Point head = snake[0];
+        Point next = Point{x: head.x, y: head.y};
+        switch (dir) {
+        case UP: next.y--;
+        case DOWN: next.y++;
+        case LEFT: next.x--;
+        case RIGHT: next.x++;
+        }
+        if (next.x < 0 || next.y < 0 || next.x >= W || next.y >= H ||
+            on_snake(snake, next.x, next.y)) {
+            over = true;
+            break;
+        }
+        insert(snake, 0, next);
+        put(head.x, head.y, BODY + "o" + RESET);
+        put(next.x, next.y, BODY + "@" + RESET);
+        if (next.x == food.x && next.y == food.y) {
+            score += 10;
+            delay = max(60, delay - 8);
+            food = place_food(snake);
+            put(food.x, food.y, FOOD + "*" + RESET);
+            printf("\e[%d;1H score %d ", H + 3, score);
+        } else {
+            Point tail = pop(snake);
+            put(tail.x, tail.y, " ");
+        }
+    }
+
+    printf("\e[%d;1H\e[K", H + 3);
+    if (over) printf(" game over: %d points, %d long\n", score, len(snake));
+    print(RESET, SHOW, "\n");
+    raw_mode(false);
+    return 0;
+}

@@ -67,6 +67,22 @@ const struct pt_program *program_first(void)
 	return programs;
 }
 
+static struct pt_completion *completions;
+
+void completion_register(struct pt_completion *c)
+{
+	c->next = completions;
+	completions = c;
+}
+
+const struct pt_completion *completion_find(const char *prog)
+{
+	for (struct pt_completion *c = completions; c; c = c->next)
+		if (!strcmp(c->prog, prog))
+			return c;
+	return NULL;
+}
+
 void loader_register(struct pt_loader *loader)
 {
 	loader->next = loaders;
@@ -523,7 +539,8 @@ static int spawn(struct proc *parent, const char *cmd, int argc, char *const *ar
 		if (attempt)
 			vTaskDelay(pdMS_TO_TICKS(2));
 		made = xTaskCreatePinnedToCore(trampoline, p->name, p->stack_kb * 1024, p,
-					       PROC_PRIORITY, &task, PROC_CORE);
+					       PROC_PRIORITY, &task,
+					       prog && prog->any_core ? tskNO_AFFINITY : PROC_CORE);
 	}
 	if (made != pdPASS) {
 		teardown(p, -ENOMEM);
@@ -773,20 +790,49 @@ static void force_kill(struct proc *p, int64_t now)
 	teardown(p, 128 + PT_SIGKILL);
 }
 
+static volatile bool quiet;
+
+void proc_set_quiet(bool q)
+{
+	quiet = q;
+}
+
+int proc_poll_ms(int ms)
+{
+	return quiet && ms < 1000 ? 1000 : ms;
+}
+
 /*
- * The kernel's own task on core 0: kills what SIGKILL did not end, ten
- * times a second, and once a second the clock's chores.
+ * Ten times a second while a SIGKILL is waiting to be enforced; once a
+ * second otherwise, which is all the clock's chores need, and which lets
+ * the chip sleep in between.
+ */
+static int reaper_period_ms(void)
+{
+	for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++)
+		if (procs[i].state == PROC_RUNNING && procs[i].kill_deadline_us)
+			return 100;
+	return 1000;
+}
+
+/*
+ * The kernel's own task on core 0: kills what SIGKILL did not end, and
+ * once a second the clock's chores.
  */
 static void reaper(void *arg)
 {
-	for (int tick = 0;; tick++) {
-		vTaskDelay(pdMS_TO_TICKS(100));
+	int64_t last_tick = 0;
+
+	for (;;) {
+		vTaskDelay(pdMS_TO_TICKS(reaper_period_ms()));
 		int64_t now = esp_timer_get_time();
 
 		for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++)
 			force_kill(&procs[i], now);
-		if (tick % 10 == 0)
+		if (now - last_tick >= 1000000) {
+			last_tick = now;
 			clock_tick();
+		}
 	}
 }
 

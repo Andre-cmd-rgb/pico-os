@@ -7,7 +7,7 @@ find, sort and the rest behave like GNU's) and a full-screen editor,
 drawn in PIXELTAPE's amber CRT colors on an ILI9341 screen.
 
 ```
-[0.00] PocketType 0.1.0 (esp-idf v6.1) #1 SMP Sep 25 2026 16:45:53
+[0.00] PocketType 1.0-beta2 (esp-idf v6.1) #1 SMP Sep 25 2026 16:45:53
 [0.05] mem: 218 KB internal, 6138 KB psram available
 [0.05] power: the keyboard answered 2498 of 2498 polls while asleep
 [0.05] power: woke on the keyboard, key 0x6f
@@ -66,11 +66,11 @@ make flash          # flash and reset, then set its clock from the PC's
 make time           # set the board's clock from the PC's
 make term           # serial console; Ctrl-] quits
 make test           # PC tests, then QEMU with the device suites
-make hosttest       # the PC tests: the "a" language, JPEG, the text programs
+make hosttest       # the PC tests: the pico language, JPEG, the text programs
 make hwtest         # the shell suite on the board
 make progtest       # grep, sort, find and the rest on the board, against GNU's
 make scripttest     # shell control flow (if/for/while/case, functions)
-make langtest       # the "a" language on the device
+make langtest       # the pico language on the device
 make push FILE=...  # copy a file to the board's home (DEST=... elsewhere)
 make pull FILE=...  # copy a file back (DEST=... to name it)
 make stress         # hammer the board for 10 minutes (SECONDS=...)
@@ -88,19 +88,39 @@ If the board does not appear as `/dev/ttyACM*`, hold **BOOT**, tap
 
 ## Using it
 
+There is a printed guide to all of this: **[docs/booklet/](docs/booklet/)**
+has `guide.pdf` (using the machine) and `pico.pdf` (its language), each two
+A4 sheets printed on one side and folded into pocket booklets.
+
 The shell is on the screen and on the serial console at the same time. Type
 on the CardKB, a USB keyboard or the PC; all three work together.
 
 There are **four terminals**, as on a Linux console: Ctrl-A then a digit
 switches, or `chvt 2`. Each keeps its own screen and its own shell, and a
-shell only starts when you first switch to its terminal. The bottom line
-of the screen says which one you are on, the time, the battery and the
-network.
+shell only starts when you first switch to its terminal. The status line
+(at the top, or the bottom: `theme bar bottom`) says which one you are
+on, the time, the next alarm, the battery and the network. Programs on
+different terminals run at the same time: music keeps playing while a
+game or a clip on another terminal makes its own sound, and the two are
+mixed.
+
+**Themes**: `theme list` shows ten -- amber and green CRTs, gruvbox,
+nord, dracula, solarized, catppuccin, tokyonight, rosepine and mono --
+each with a dark and a light half. `theme nord light` switches, `theme
+auto 7:00 20:00` is light by day and dark by night, `theme set bg
+#101418` gives any colour (text, background, the status line, the
+cursor, any of the sixteen) your own value, and `theme cursor underline`
+or `theme bar bottom` change the rest. It is all kept in `/etc/theme`
+and applied before the first line of the boot log.
 
 | Key | In the shell |
 |---|---|
 | Ctrl-A then 1-4 | switch terminal (`chvt` does the same) |
-| Tab | complete commands and file names |
+| Ctrl-A then z | doze: screen and radio off, everything kept; a key brings it back where it was (Fn 0 on the CardKB) |
+| Ctrl-A then Up | look back through what scrolled off (Up/Down, Fn Up/Down to the ends, Esc to return); Shift-PgUp on a USB keyboard |
+| Fn 5 / Fn 6 | brightness down / up (CardKB) |
+| Fn 7 / Fn 8, Fn 9 | volume down / up; mute (CardKB). Both are remembered in `/etc/power` |
+| Tab | complete commands, their subcommands and options, and file names of the kind the command takes (quoted when they have spaces) |
 | Up / Down | history (saved in `~/.sh_history`) |
 | Esc | clear the line; stops a running command |
 | Ctrl-C | stop a running command |
@@ -140,13 +160,14 @@ as util-linux's does.
 | diary | `alarm todo calendar cal` |
 | checksums | `cksum md5sum sha1sum sha256sum sha512sum` |
 | scripts | `echo printf seq expr xargs basename dirname realpath yes` |
-| system | `ps top kill free dmesg uptime uname whoami hostname date time sleep env which clear reboot` |
+| system | `ps top kill free dmesg uptime uname whoami hostname date time sleep env which clear reboot theme` |
 | power | `cpufreq power suspend poweroff led battery` |
 | shell | `cd exit export unset set local read eval source type command alias unalias trap jobs fg bg history sh` |
 | sound | `play rec beep volume` |
 | network | `wifi ntp ping wget curl passwd modem sms` |
 | hardware | `bench lcdtest keytest backlight rotate i2cdetect mkfs screenshot chvt` |
-| games | `nes` |
+| pictures | `view video` |
+| games | `nes pad` |
 
 The shell is a POSIX sh: pipes (`|`), redirection (`<`, `>`, `>>`, `2>`,
 `2>&1`) and here-documents (`<<EOF`), lists (`;`, `&&`, `||`), background
@@ -174,33 +195,38 @@ At boot the kernel runs `/etc/rc` if it exists, then a login shell prints
 `/etc/motd` and runs `/etc/profile` and `~/.profile`. Put your own commands in
 `/bin` or `/mnt/sd/bin` (both on `PATH`) as scripts.
 
-### Programs (the `a` language)
+### Programs (the pico language)
 
-`a` is a small C-like language that compiles on the laptop and on the board.
-You write `.al` files; `ac file.al` produces a bytecode executable that the
-kernel runs directly, and `a file.al` compiles and runs in one step. It is
+pico is a small C-like language that compiles on the laptop and on the board.
+You write `.pico` files; `picoc file.pico` produces a bytecode executable that
+the kernel runs directly, and `pico file.pico` compiles and runs in one step. It is
 memory-safe (reference counting, bounds-checked arrays and strings) and a
 mistake stops with the source line, not a crash. See
-**[docs/LANGUAGE.md](docs/LANGUAGE.md)**.
+**[docs/LANGUAGE.md](docs/LANGUAGE.md)**, and **[docs/PICO-TUTORIAL.md](docs/PICO-TUTORIAL.md)**
+to learn it from the start.
 
 ```sh
-make push FILE=hello.al      # send a source file to the board
-ac hello.al && ./hello       # compile it there and run it
+make push FILE=hello.pico    # send a source file to the board
+picoc hello.pico && ./hello  # compile it there and run it
 ```
 
 ### Moving files on and off
 
 `make push` copies a file to the board and `make pull` copies one back, over
-the serial console. The transfer is base64 plus a CRC-32, so any binary is
-safe and corruption is caught. `push` puts the file in the board's home
-directory unless you pass `DEST=` (`~/` means the board's home there too), and
-writes to `DEST.part` first: the old file is replaced only once the whole
-new one has arrived intact. Remember `/tmp` is a RAM disk, emptied on reboot.
+the serial port, beside the console rather than through it: nothing is typed
+on the board and the shell stays free while it goes, so you can carry on
+using it. The transfer is base64 plus a CRC-32 a chunk, so any binary is
+safe and corruption is caught and sent again (about 100 KB/s to the card;
+for big clips, copying on the card itself is quicker). `push` puts the file
+in the board's home directory unless you pass `DEST=` (`~/` means the
+board's home there too, and so does a path not starting with /), and writes
+to `DEST.part` first: the old file is replaced only once the whole new one
+has arrived intact. Remember `/tmp` is a RAM disk, emptied on reboot.
 
 ```sh
-make push FILE=hello.al                  # -> ~/hello.al
+make push FILE=hello.pico                # -> ~/hello.pico
 make push FILE=notes.txt DEST=/mnt/sd/notes.txt
-make pull FILE=~/hello.al DEST=copy.al
+make pull FILE=~/hello.pico DEST=copy.pico
 ```
 
 ## Speed and power
@@ -216,7 +242,24 @@ make pull FILE=~/hello.al DEST=copy.al
 240 MHz is the ESP32-S3's maximum; it cannot be overclocked. The ESP32-P4
 runs at 400, 200 and 100 MHz (360, 180 and 90 before revision 3).
 
-Two more ways to save battery. Neither has been measured with a meter yet.
+**When nobody is using it** the backlight -- the largest draw on the
+board -- is the first thing to go: with no key for 3 minutes the screen
+dims to a quarter, after 4 it goes dark with the panel asleep (the key
+that lights it again does nothing else, since nobody could see what it
+would do). After 15 minutes with nothing running -- every terminal at its
+prompt, no sound playing, no PC on USB -- it suspends. A program left
+open, a note being read or a file being edited, keeps it awake with the
+screen dark instead, since waking from deep sleep is a fresh boot. A clip
+playing in front holds the screen lit. **Ctrl-A z dozes**: the screen goes
+dark at once, the radio rests and the chip light-sleeps between the
+keyboard's polls, with everything kept in memory, so a key brings it back
+exactly where it was (deep sleep cannot: it powers the memory off, and the
+chips' own state cannot be put back, so waking from it is a fresh boot). `power dim 3m blank 4m suspend
+15m` sets the times (`never` turns one off), kept in `/etc/power`. While
+the screen is dark the kernel polls its keyboard and its waits ten
+times less often, so the chip can sleep between them. Away from its
+saved network, Wi-Fi tries again after 5 s, then 10, 20... up to every
+10 minutes, with the radio stopped and its memory given back in between.
 
 - **`power sleep on`**: light sleep whenever nothing is happening. RAM is kept
   and the system carries on at the next key, timer or transfer. It never sleeps
@@ -233,18 +276,31 @@ Two more ways to save battery. Neither has been measured with a meter yet.
 
 **The battery.** There is no current sensor, so `battery` works from the
 voltage and what the board is doing: an estimate of the current (backlight,
-CPU, radio, or the charger's), the cell's resistance learned from steps in
-it, the charge counted between readings and pulled towards what the
-sag-corrected voltage says in a lithium cell's table. The level is shown in
-tenths and moves every few seconds the way the current goes; against it, it
-walks rather than jumps. A reboot keeps it where it was. `battery -v`
-shows everything, including the cell's **cycles** (what was used since it
-was fitted, over its capacity) and **health** (what a discharge from full
-shows it holds, against the first ones when it was new: it needs a full
-charge and a run down to 20% before it has a figure). After fitting a new
-cell, `battery -c MAH` with its capacity starts all of that again. A cell
-run flat powers off, and wakes every quarter of an hour to see whether a
-charger has come.
+CPU, radio, light sleep, or the charger's), the cell's resistance learned
+from the board's own charger coming and going (300 mA, known), the
+backlight's current learned from its steps once that is known, and the
+charge counted between readings and pulled towards what the sag-corrected
+voltage says in a lithium cell's table. The level is shown in tenths and
+moves the way the current goes, never against it: it does not fall on the
+charger or rise on the cell. A reboot keeps it where it was. `battery`
+shows the level and the cell's **cycles** (what was used since it was
+fitted, over its capacity); `battery -v` shows everything, including its
+**health** (what a discharge from full shows it holds, against the first
+ones when it was new: it needs a full charge and a run down to 20% before
+it has a figure). After fitting a new cell, `battery -c MAH` with its
+capacity starts all of that again. A cell run flat powers off, and wakes
+every quarter of an hour to see whether a charger has come.
+
+The readings can be a few percent off -- the ADC and the divider allow for
+it, and near full 3% of the voltage is a third of the charge -- so measure
+the cell with a meter once and tell it: `battery -m 4.075`. On the Freenove
+board the charger (a TP4054, no status pin) does not start on a cell above
+about 4.05 V, so plugged in at 85% it says "on USB, not charging" rather
+than pretending. `battery -l` is the power log: every start (and why),
+every sleep and each half hour awake, with the level, kept in
+`/etc/power.log` -- where a night's charge went can be read back from it.
+The RGB LED is the charge light the board lacks: lit while charging, green
+when full, dark otherwise.
 
 **The clock** sets itself from the network whenever Wi-Fi connects, and
 again every hour, and `make flash` or `make time` on the PC sets it too.
@@ -326,7 +382,7 @@ third_party/ the two things here somebody else wrote: an MP3 decoder and
             a NES emulator core
 shell/      sh: parser, executor, line editor
 bin/        the commands
-lang/       the "a" language: compiler, VM, tests and examples
+lang/       the pico language: compiler, VM, tests and examples
 tools/      font generator, test harnesses, file transfer
 docs/       wiring, architecture, the language
 ```

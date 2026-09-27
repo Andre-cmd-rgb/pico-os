@@ -1,6 +1,6 @@
 // Write a small CSV, read it back, check the numbers.
 int main() {
-    str path = getenv("AL_TMP") + "/roundtrip.csv";
+    str path = getenv("PICO_TMP") + "/roundtrip.csv";
     File out = open(path, "w");
     if (out == null) { println("cannot write"); return 1; }
     for (int i = 1; i <= 5; i++) { write(out, format("row%d,%d\n", i, i * i)); }

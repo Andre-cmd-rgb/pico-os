@@ -12,7 +12,7 @@
 
 #include "pt/sys.h"
 
-#define PT_VERSION	"0.1.0"
+#define PT_VERSION	"1.0-beta2"
 #define PT_MAX_FDS	16
 
 /* ------------------------------------------------------------ klog */
@@ -117,6 +117,12 @@ void	proc_signal_group(int pgid, int sig);
 int	proc_list(struct pt_procinfo *out, int max);
 int	proc_count(void);
 bool	proc_alive(int pid);		/* whether that process is still running */
+/*
+ * How often a wait looks for signals: every `ms` normally, once a second
+ * while nobody is looking (the screen is dark), so the chip can sleep.
+ */
+void	proc_set_quiet(bool quiet);
+int	proc_poll_ms(int ms);
 void	mem_release_all(struct proc *p);
 /*
  * pt_malloc from particular memory -- MALLOC_CAP_INTERNAL for a buffer the

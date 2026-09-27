@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "al.h"
+#include "pico.h"
 #include "port.h"
 
 /* ------------------------------------------------------------ memory */
@@ -18,11 +18,11 @@
 #define POOL_MAX	192
 #define CHUNK_SIZE	4096
 
-static const uint8_t class_size[AL_POOL_CLASSES] = { 16, 24, 32, 48, 64, 96, 128, 192 };
+static const uint8_t class_size[PICO_POOL_CLASSES] = { 16, 24, 32, 48, 64, 96, 128, 192 };
 
 static int size_class(size_t n)
 {
-	for (int i = 0; i < AL_POOL_CLASSES; i++)
+	for (int i = 0; i < PICO_POOL_CLASSES; i++)
 		if (n <= class_size[i])
 			return i;
 	return -1;
@@ -32,12 +32,12 @@ struct chunk {
 	struct chunk	*next;
 };
 
-void *al_alloc(struct al_vm *vm, size_t n)
+void *pico_alloc(struct pico_vm *vm, size_t n)
 {
-	struct al_heap *h = &vm->heap;
+	struct pico_heap *h = &vm->heap;
 	void *p;
 
-#ifdef AL_NO_POOL
+#ifdef PICO_NO_POOL
 	p = port_alloc(n);
 #else
 	int cls = n <= POOL_MAX ? size_class(n) : -1;
@@ -70,12 +70,12 @@ void *al_alloc(struct al_vm *vm, size_t n)
 	return p;
 }
 
-void al_free(struct al_vm *vm, void *p, size_t n)
+void pico_free(struct pico_vm *vm, void *p, size_t n)
 {
 	if (!p)
 		return;
 	vm->heap.bytes -= n;
-#ifdef AL_NO_POOL
+#ifdef PICO_NO_POOL
 	port_free(p);
 #else
 	int cls = n <= POOL_MAX ? size_class(n) : -1;
@@ -89,7 +89,7 @@ void al_free(struct al_vm *vm, void *p, size_t n)
 #endif
 }
 
-void *al_grow(struct al_vm *vm, void *p, size_t old, size_t n)
+void *pico_grow(struct pico_vm *vm, void *p, size_t old, size_t n)
 {
 	if (old > POOL_MAX && n > POOL_MAX) {
 		void *q = port_realloc(p, n);
@@ -97,16 +97,16 @@ void *al_grow(struct al_vm *vm, void *p, size_t old, size_t n)
 			vm->heap.bytes += n - old;
 		return q;
 	}
-	void *q = al_alloc(vm, n);
+	void *q = pico_alloc(vm, n);
 	if (!q)
 		return NULL;
 	if (p)
 		memcpy(q, p, old < n ? old : n);
-	al_free(vm, p, old);
+	pico_free(vm, p, old);
 	return q;
 }
 
-void al_heap_release(struct al_vm *vm)
+void pico_heap_release(struct pico_vm *vm)
 {
 	struct chunk *c = vm->heap.chunks;
 
@@ -124,10 +124,10 @@ void al_heap_release(struct al_vm *vm)
 
 static size_t str_size(uint32_t cap)
 {
-	return sizeof(struct al_str) + cap + 1;
+	return sizeof(struct pico_str) + cap + 1;
 }
 
-struct al_str *al_str_alloc(struct al_vm *vm, size_t len)
+struct pico_str *pico_str_alloc(struct pico_vm *vm, size_t len)
 {
 	if (len > 0x7ffffff0u)
 		return NULL;
@@ -136,8 +136,8 @@ struct al_str *al_str_alloc(struct al_vm *vm, size_t len)
 
 	/* keep the slack of the size class as room to append */
 	if (cls >= 0)
-		cap = class_size[cls] - sizeof(struct al_str) - 1;
-	struct al_str *s = al_alloc(vm, str_size(cap));
+		cap = class_size[cls] - sizeof(struct pico_str) - 1;
+	struct pico_str *s = pico_alloc(vm, str_size(cap));
 	if (!s)
 		return NULL;
 	s->h.refs = 1;
@@ -151,20 +151,20 @@ struct al_str *al_str_alloc(struct al_vm *vm, size_t len)
 	return s;
 }
 
-struct al_str *al_str_new(struct al_vm *vm, const char *data, size_t len)
+struct pico_str *pico_str_new(struct pico_vm *vm, const char *data, size_t len)
 {
-	struct al_str *s = al_str_alloc(vm, len);
+	struct pico_str *s = pico_str_alloc(vm, len);
 
 	if (s && len)
 		memcpy(s->data, data, len);
 	return s;
 }
 
-struct al_str *al_str_concat(struct al_vm *vm, struct al_str *a, struct al_str *b)
+struct pico_str *pico_str_concat(struct pico_vm *vm, struct pico_str *a, struct pico_str *b)
 {
 	if ((size_t)a->len + b->len > 0x7ffffff0u)
 		return NULL;
-	struct al_str *s = al_str_alloc(vm, (size_t)a->len + b->len);
+	struct pico_str *s = pico_str_alloc(vm, (size_t)a->len + b->len);
 
 	if (s) {
 		memcpy(s->data, a->data, a->len);
@@ -174,7 +174,7 @@ struct al_str *al_str_concat(struct al_vm *vm, struct al_str *a, struct al_str *
 }
 
 /* Append b to a, which nobody else references. May move a. */
-struct al_str *al_str_append(struct al_vm *vm, struct al_str *a, struct al_str *b)
+struct pico_str *pico_str_append(struct pico_vm *vm, struct pico_str *a, struct pico_str *b)
 {
 	size_t need = (size_t)a->len + b->len;
 
@@ -184,7 +184,7 @@ struct al_str *al_str_append(struct al_vm *vm, struct al_str *a, struct al_str *
 		size_t cap = a->cap * 2 > need ? a->cap * 2 : need;
 		if (cap > 0x7ffffff0u)
 			cap = need;
-		struct al_str *s = al_grow(vm, a, str_size(a->cap), str_size(cap));
+		struct pico_str *s = pico_grow(vm, a, str_size(a->cap), str_size(cap));
 		if (!s)
 			return NULL;
 		s->cap = cap;
@@ -196,7 +196,7 @@ struct al_str *al_str_append(struct al_vm *vm, struct al_str *a, struct al_str *
 	return a;
 }
 
-int al_str_cmp(const struct al_str *a, const struct al_str *b)
+int pico_str_cmp(const struct pico_str *a, const struct pico_str *b)
 {
 	uint32_t n = a->len < b->len ? a->len : b->len;
 	int r = memcmp(a->data, b->data, n);
@@ -206,9 +206,9 @@ int al_str_cmp(const struct al_str *a, const struct al_str *b)
 	return a->len < b->len ? -1 : a->len > b->len;
 }
 
-struct al_array *al_array_new(struct al_vm *vm, int kind, uint32_t cap)
+struct pico_array *pico_array_new(struct pico_vm *vm, int kind, uint32_t cap)
 {
-	struct al_array *a = al_alloc(vm, sizeof(*a));
+	struct pico_array *a = pico_alloc(vm, sizeof(*a));
 
 	if (!a)
 		return NULL;
@@ -222,9 +222,9 @@ struct al_array *al_array_new(struct al_vm *vm, int kind, uint32_t cap)
 	a->dead = NULL;
 	vm->heap.objects++;
 	if (cap) {
-		a->items = al_alloc(vm, (size_t)cap * sizeof(union al_val));
+		a->items = pico_alloc(vm, (size_t)cap * sizeof(union pico_val));
 		if (!a->items) {
-			al_obj_free(vm, &a->h);
+			pico_obj_free(vm, &a->h);
 			return NULL;
 		}
 		a->cap = cap;
@@ -232,13 +232,13 @@ struct al_array *al_array_new(struct al_vm *vm, int kind, uint32_t cap)
 	return a;
 }
 
-bool al_array_push(struct al_vm *vm, struct al_array *a, union al_val v)
+bool pico_array_push(struct pico_vm *vm, struct pico_array *a, union pico_val v)
 {
 	if (a->len == a->cap) {
 		uint32_t cap = a->cap < 4 ? 4 : a->cap * 2;
 		if (cap > (1u << 26))
 			return false;
-		union al_val *items = al_grow(vm, a->items, (size_t)a->cap * sizeof(*items), (size_t)cap * sizeof(*items));
+		union pico_val *items = pico_grow(vm, a->items, (size_t)a->cap * sizeof(*items), (size_t)cap * sizeof(*items));
 		if (!items)
 			return false;
 		a->items = items;
@@ -248,10 +248,10 @@ bool al_array_push(struct al_vm *vm, struct al_array *a, union al_val v)
 	return true;
 }
 
-struct al_struct *al_struct_new(struct al_vm *vm, uint16_t sid)
+struct pico_struct *pico_struct_new(struct pico_vm *vm, uint16_t sid)
 {
-	const struct al_sdef *def = &vm->prog.structs[sid];
-	struct al_struct *s = al_alloc(vm, sizeof(*s) + def->nfields * sizeof(union al_val));
+	const struct pico_sdef *def = &vm->prog.structs[sid];
+	struct pico_struct *s = pico_alloc(vm, sizeof(*s) + def->nfields * sizeof(union pico_val));
 
 	if (!s)
 		return NULL;
@@ -272,9 +272,9 @@ struct al_struct *al_struct_new(struct al_vm *vm, uint16_t sid)
 	return s;
 }
 
-struct al_file *al_file_new(struct al_vm *vm, int fd, bool std)
+struct pico_file *pico_file_new(struct pico_vm *vm, int fd, bool std)
 {
-	struct al_file *f = al_alloc(vm, sizeof(*f));
+	struct pico_file *f = pico_alloc(vm, sizeof(*f));
 
 	if (!f)
 		return NULL;
@@ -288,63 +288,63 @@ struct al_file *al_file_new(struct al_vm *vm, int fd, bool std)
 }
 
 /* Drop one reference held by a dying container; queue what dies with it. */
-static void drop(struct al_vm *vm, struct al_obj *o, struct al_obj **pending)
+static void drop(struct pico_vm *vm, struct pico_obj *o, struct pico_obj **pending)
 {
 	if (!o || --o->refs)
 		return;
 	if (o->type == OT_ARRAY) {
-		((struct al_array *)o)->dead = *pending;
+		((struct pico_array *)o)->dead = *pending;
 		*pending = o;
 	} else if (o->type == OT_STRUCT) {
-		((struct al_struct *)o)->dead = *pending;
+		((struct pico_struct *)o)->dead = *pending;
 		*pending = o;
 	} else {
-		al_obj_free(vm, o);
+		pico_obj_free(vm, o);
 	}
 }
 
 /* Free an object whose count reached zero. Iterative: a list of a million
  * nodes must not recurse a million deep. */
-void al_obj_free(struct al_vm *vm, struct al_obj *o)
+void pico_obj_free(struct pico_vm *vm, struct pico_obj *o)
 {
 	for (;;) {
-		struct al_obj *next = NULL;
+		struct pico_obj *next = NULL;
 
 		vm->heap.objects--;
 		switch (o->type) {
 		case OT_STR: {
-			struct al_str *s = (struct al_str *)o;
-			al_free(vm, s, str_size(s->cap));
+			struct pico_str *s = (struct pico_str *)o;
+			pico_free(vm, s, str_size(s->cap));
 			break;
 		}
 		case OT_FILE: {
-			struct al_file *f = (struct al_file *)o;
+			struct pico_file *f = (struct pico_file *)o;
 			if (f->fd == 1 || f->std)
-				al_flush(vm);
+				pico_flush(vm);
 			if (f->fd >= 0 && !f->std)
 				port_close(f->fd);
-			al_free(vm, f->rbuf, 512);
-			al_free(vm, f, sizeof(*f));
+			pico_free(vm, f->rbuf, 512);
+			pico_free(vm, f, sizeof(*f));
 			break;
 		}
 		case OT_ARRAY: {
-			struct al_array *a = (struct al_array *)o;
+			struct pico_array *a = (struct pico_array *)o;
 			next = a->dead;
 			if (KIND_IS_REF(a->h.kind))
 				for (uint32_t i = 0; i < a->len; i++)
 					drop(vm, a->items[i].o, &next);
-			al_free(vm, a->items, (size_t)a->cap * sizeof(union al_val));
-			al_free(vm, a, sizeof(*a));
+			pico_free(vm, a->items, (size_t)a->cap * sizeof(union pico_val));
+			pico_free(vm, a, sizeof(*a));
 			break;
 		}
 		case OT_STRUCT: {
-			struct al_struct *s = (struct al_struct *)o;
-			const struct al_sdef *def = &vm->prog.structs[s->h.sid];
+			struct pico_struct *s = (struct pico_struct *)o;
+			const struct pico_sdef *def = &vm->prog.structs[s->h.sid];
 			next = s->dead;
 			for (int i = 0; i < s->h.kind; i++)
 				if (KIND_IS_REF(vm->prog.fields[def->first + i].kind))
 					drop(vm, s->fields[i].o, &next);
-			al_free(vm, s, sizeof(*s) + s->h.kind * sizeof(union al_val));
+			pico_free(vm, s, sizeof(*s) + s->h.kind * sizeof(union pico_val));
 			break;
 		}
 		}
@@ -357,7 +357,7 @@ void al_obj_free(struct al_vm *vm, struct al_obj *o)
 
 /* ------------------------------------------------------------ formatting */
 
-void al_fmt_puts(struct al_vm *vm, struct al_fmt *f, const char *s, size_t n)
+void pico_fmt_puts(struct pico_vm *vm, struct pico_fmt *f, const char *s, size_t n)
 {
 	if (f->oom)
 		return;
@@ -383,7 +383,7 @@ void al_fmt_puts(struct al_vm *vm, struct al_fmt *f, const char *s, size_t n)
 }
 
 /* Out-of-range and not-a-number values saturate rather than trap. */
-int32_t al_float_to_int(float f)
+int32_t pico_float_to_int(float f)
 {
 	if (f != f)
 		return 0;
@@ -427,7 +427,7 @@ static int desc_struct(const char *d)
  * its descriptor. Nested strings are quoted when quote is set. Deep or
  * cyclic structures are cut off with "...".
  */
-void al_fmt_value(struct al_vm *vm, struct al_fmt *f, union al_val v, const char **desc, int depth, bool quote)
+void pico_fmt_value(struct pico_vm *vm, struct pico_fmt *f, union pico_val v, const char **desc, int depth, bool quote)
 {
 	const char *d = *desc, *end = d + strlen(d);
 	char num[48];
@@ -435,99 +435,99 @@ void al_fmt_value(struct al_vm *vm, struct al_fmt *f, union al_val v, const char
 	*desc = desc_skip(d, end);
 	if (!*desc) {
 		*desc = end;
-		al_fmt_puts(vm, f, "?", 1);
+		pico_fmt_puts(vm, f, "?", 1);
 		return;
 	}
 	if (*d == '[') {
-		struct al_array *a = (struct al_array *)v.o;
+		struct pico_array *a = (struct pico_array *)v.o;
 		if (!a) {
-			al_fmt_puts(vm, f, "null", 4);
+			pico_fmt_puts(vm, f, "null", 4);
 			return;
 		}
 		if (depth > 8 || a->h.type != OT_ARRAY) {
-			al_fmt_puts(vm, f, "[...]", 5);
+			pico_fmt_puts(vm, f, "[...]", 5);
 			return;
 		}
-		al_fmt_puts(vm, f, "[", 1);
+		pico_fmt_puts(vm, f, "[", 1);
 		for (uint32_t i = 0; i < a->len && !f->oom; i++) {
 			const char *sub = d + 1;
 			if (i)
-				al_fmt_puts(vm, f, ", ", 2);
-			al_fmt_value(vm, f, a->items[i], &sub, depth + 1, true);
+				pico_fmt_puts(vm, f, ", ", 2);
+			pico_fmt_value(vm, f, a->items[i], &sub, depth + 1, true);
 		}
-		al_fmt_puts(vm, f, "]", 1);
+		pico_fmt_puts(vm, f, "]", 1);
 		return;
 	}
 	switch (*d) {
 	case 'i':
-		al_fmt_puts(vm, f, num, al_fmt_int(num, v.i));
+		pico_fmt_puts(vm, f, num, pico_fmt_int(num, v.i));
 		break;
 	case 'b':
-		al_fmt_puts(vm, f, v.i ? "true" : "false", v.i ? 4 : 5);
+		pico_fmt_puts(vm, f, v.i ? "true" : "false", v.i ? 4 : 5);
 		break;
 	case 'f':
 		fmt_float(num, sizeof(num), v.f);
-		al_fmt_puts(vm, f, num, strlen(num));
+		pico_fmt_puts(vm, f, num, strlen(num));
 		break;
 	case 's': {
-		struct al_str *s = (struct al_str *)v.o;
+		struct pico_str *s = (struct pico_str *)v.o;
 		if (quote)
-			al_fmt_puts(vm, f, "\"", 1);
+			pico_fmt_puts(vm, f, "\"", 1);
 		if (s && s->h.type == OT_STR)
-			al_fmt_puts(vm, f, s->data, s->len);
+			pico_fmt_puts(vm, f, s->data, s->len);
 		else if (s)
-			al_fmt_puts(vm, f, "?", 1);
+			pico_fmt_puts(vm, f, "?", 1);
 		if (quote)
-			al_fmt_puts(vm, f, "\"", 1);
+			pico_fmt_puts(vm, f, "\"", 1);
 		break;
 	}
 	case 'F':
 		if (v.o && v.o->type != OT_FILE)
-			al_fmt_puts(vm, f, "?", 1);
+			pico_fmt_puts(vm, f, "?", 1);
 		else if (v.o)
-			al_fmt_puts(vm, f, num, snprintf(num, sizeof(num), "File(%d)", ((struct al_file *)v.o)->fd));
+			pico_fmt_puts(vm, f, num, snprintf(num, sizeof(num), "File(%d)", ((struct pico_file *)v.o)->fd));
 		else
-			al_fmt_puts(vm, f, "null", 4);
+			pico_fmt_puts(vm, f, "null", 4);
 		break;
 	case 'S': {
-		struct al_struct *s = (struct al_struct *)v.o;
+		struct pico_struct *s = (struct pico_struct *)v.o;
 		int sid = desc_struct(d);
 		if (!s) {
-			al_fmt_puts(vm, f, "null", 4);
+			pico_fmt_puts(vm, f, "null", 4);
 			break;
 		}
 		if (sid >= vm->prog.nstructs)
 			break;
-		const struct al_sdef *def = &vm->prog.structs[sid];
-		const struct al_str *name = vm->prog.strings[def->name];
-		al_fmt_puts(vm, f, name->data, name->len);
+		const struct pico_sdef *def = &vm->prog.structs[sid];
+		const struct pico_str *name = vm->prog.strings[def->name];
+		pico_fmt_puts(vm, f, name->data, name->len);
 		if (depth > 8 || s->h.type != OT_STRUCT) {
-			al_fmt_puts(vm, f, "{...}", 5);
+			pico_fmt_puts(vm, f, "{...}", 5);
 			break;
 		}
-		al_fmt_puts(vm, f, "{", 1);
+		pico_fmt_puts(vm, f, "{", 1);
 		for (int i = 0; i < def->nfields && i < s->h.kind && !f->oom; i++) {
-			const struct al_field *fd = &vm->prog.fields[def->first + i];
-			const struct al_str *fname = vm->prog.strings[fd->name];
+			const struct pico_field *fd = &vm->prog.fields[def->first + i];
+			const struct pico_str *fname = vm->prog.strings[fd->name];
 			const char *sub = vm->prog.strings[fd->desc]->data;
 			if (i)
-				al_fmt_puts(vm, f, ", ", 2);
-			al_fmt_puts(vm, f, fname->data, fname->len);
-			al_fmt_puts(vm, f, ": ", 2);
-			al_fmt_value(vm, f, s->fields[i], &sub, depth + 1, true);
+				pico_fmt_puts(vm, f, ", ", 2);
+			pico_fmt_puts(vm, f, fname->data, fname->len);
+			pico_fmt_puts(vm, f, ": ", 2);
+			pico_fmt_value(vm, f, s->fields[i], &sub, depth + 1, true);
 		}
-		al_fmt_puts(vm, f, "}", 1);
+		pico_fmt_puts(vm, f, "}", 1);
 		break;
 	}
 	default:
-		al_fmt_puts(vm, f, "null", 4);
+		pico_fmt_puts(vm, f, "null", 4);
 		break;
 	}
 }
 
 /* An int in decimal. snprintf does the same through the C library's whole
  * printf machinery, which costs far more than the digits on the ESP32. */
-int al_fmt_int(char *out, int32_t v)
+int pico_fmt_int(char *out, int32_t v)
 {
 	char tmp[11];
 	uint32_t u = v < 0 ? 0u - (uint32_t)v : (uint32_t)v;
@@ -544,28 +544,28 @@ int al_fmt_int(char *out, int32_t v)
 	return len;
 }
 
-struct al_str *al_tostr(struct al_vm *vm, union al_val v, int kind)
+struct pico_str *pico_tostr(struct pico_vm *vm, union pico_val v, int kind)
 {
 	char num[48];
 
 	switch (kind) {
 	case TS_INT:
-		return al_str_new(vm, num, al_fmt_int(num, v.i));
+		return pico_str_new(vm, num, pico_fmt_int(num, v.i));
 	case TS_FLOAT:
 		fmt_float(num, sizeof(num), v.f);
-		return al_str_new(vm, num, strlen(num));
+		return pico_str_new(vm, num, strlen(num));
 	default:
-		return v.i ? al_str_new(vm, "true", 4) : al_str_new(vm, "false", 5);
+		return v.i ? pico_str_new(vm, "true", 4) : pico_str_new(vm, "false", 5);
 	}
 }
 
-struct al_str *al_tostr_desc(struct al_vm *vm, union al_val v, const struct al_str *desc)
+struct pico_str *pico_tostr_desc(struct pico_vm *vm, union pico_val v, const struct pico_str *desc)
 {
-	struct al_fmt f = { 0 };
+	struct pico_fmt f = { 0 };
 	const char *d = desc->data;
 
-	al_fmt_value(vm, &f, v, &d, 0, false);
-	struct al_str *s = f.oom ? NULL : al_str_new(vm, f.buf ? f.buf : "", f.len);
+	pico_fmt_value(vm, &f, v, &d, 0, false);
+	struct pico_str *s = f.oom ? NULL : pico_str_new(vm, f.buf ? f.buf : "", f.len);
 	port_free(f.buf);
 	return s;
 }
@@ -574,7 +574,7 @@ struct al_str *al_tostr_desc(struct al_vm *vm, union al_val v, const struct al_s
  * The next conversion in a printf format. Returns its letter, 0 at the end
  * or -1 when malformed; *spec points at its '%'.
  */
-int al_fmt_next(const char **f, const char *end, const char **spec)
+int pico_fmt_next(const char **f, const char *end, const char **spec)
 {
 	const char *p = *f;
 
@@ -626,7 +626,7 @@ static int write_all(int fd, const char *s, size_t n)
 	return 0;
 }
 
-void al_flush(struct al_vm *vm)
+void pico_flush(struct pico_vm *vm)
 {
 	if (vm->outlen) {
 		write_all(1, vm->out, vm->outlen);
@@ -634,25 +634,25 @@ void al_flush(struct al_vm *vm)
 	}
 }
 
-int al_out(struct al_vm *vm, int fd, const char *s, size_t n)
+int pico_out(struct pico_vm *vm, int fd, const char *s, size_t n)
 {
 	if (fd != 1) {
-		al_flush(vm);
+		pico_flush(vm);
 		return write_all(fd, s, n);
 	}
-	if (vm->outlen + n > AL_OUTBUF) {
-		al_flush(vm);
-		if (n >= AL_OUTBUF)
+	if (vm->outlen + n > PICO_OUTBUF) {
+		pico_flush(vm);
+		if (n >= PICO_OUTBUF)
 			return write_all(1, s, n);
 	}
 	memcpy(vm->out + vm->outlen, s, n);
 	vm->outlen += n;
 	if (vm->line_buffered && memchr(s, '\n', n))
-		al_flush(vm);
+		pico_flush(vm);
 	return 0;
 }
 
-int al_eprintf(const char *fmt, ...)
+int pico_eprintf(const char *fmt, ...)
 {
 	char buf[512];
 	va_list ap;
@@ -669,9 +669,9 @@ int al_eprintf(const char *fmt, ...)
 
 /* ------------------------------------------------------------ errors */
 
-void al_error(struct al_vm *vm, const char *fmt, ...)
+void pico_error(struct pico_vm *vm, const char *fmt, ...)
 {
-	const struct al_prog *p = &vm->prog;
+	const struct pico_prog *p = &vm->prog;
 	const char *file = p->strings[p->source]->data;
 	char msg[300];
 	va_list ap;
@@ -679,7 +679,7 @@ void al_error(struct al_vm *vm, const char *fmt, ...)
 	if (vm->failed)
 		return;
 	vm->failed = true;
-	al_flush(vm);
+	pico_flush(vm);
 	if (vm->raw) {
 		port_tty_raw(false);
 		vm->raw = false;
@@ -687,22 +687,22 @@ void al_error(struct al_vm *vm, const char *fmt, ...)
 	va_start(ap, fmt);
 	vsnprintf(msg, sizeof(msg), fmt, ap);
 	va_end(ap);
-	al_eprintf("%s:%d: runtime error: %s\n", file, al_line_of(p, vm->fn, vm->ip), msg);
+	pico_eprintf("%s:%d: runtime error: %s\n", file, pico_line_of(p, vm->fn, vm->ip), msg);
 
 	if (vm->nframes < 2)
 		return;			/* only main: the line above says it all */
-	al_eprintf("    in %s (%s:%d)\n", p->strings[p->funcs[vm->fn].name]->data, file,
-		   al_line_of(p, vm->fn, vm->ip));
+	pico_eprintf("    in %s (%s:%d)\n", p->strings[p->funcs[vm->fn].name]->data, file,
+		   pico_line_of(p, vm->fn, vm->ip));
 	uint32_t shown = 0;
 	for (uint32_t i = vm->nframes; i-- > 0;) {
-		const struct al_frame *fr = &vm->frames[i];
+		const struct pico_frame *fr = &vm->frames[i];
 		if (!fr->ip)
 			break;
 		if (shown++ == 4) {
-			al_eprintf("    ... %u more\n", (unsigned)(i + 1));
+			pico_eprintf("    ... %u more\n", (unsigned)(i + 1));
 			break;
 		}
-		al_eprintf("    in %s (%s:%d)\n", p->strings[p->funcs[fr->fn].name]->data, file,
-			   al_line_of(p, fr->fn, fr->ip - 1));
+		pico_eprintf("    in %s (%s:%d)\n", p->strings[p->funcs[fr->fn].name]->data, file,
+			   pico_line_of(p, fr->fn, fr->ip - 1));
 	}
 }

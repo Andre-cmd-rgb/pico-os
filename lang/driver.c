@@ -1,10 +1,10 @@
 /*
- * The commands: ac compiles, a compiles and runs (or runs an executable),
- * and the loader runs an executable by name.
+ * The commands: picoc compiles, pico compiles and runs (or runs an
+ * executable), and the loader runs an executable by name.
  */
 #include <string.h>
 
-#include "al.h"
+#include "pico.h"
 #include "driver.h"
 #include "port.h"
 
@@ -71,52 +71,70 @@ static int write_file(const char *path, const uint8_t *data, size_t len)
 
 static bool is_image(const uint8_t *data, size_t len)
 {
-	return len >= 3 && !memcmp(data, AL_MAGIC, 3);
+	return len >= 3 && !memcmp(data, PICO_MAGIC, 3);
 }
 
 /* Takes ownership of data. */
 static int run_image(const char *name, uint8_t *data, size_t len, int argc, char **argv)
 {
-	struct al_vm *vm = al_vm_new();
+	struct pico_vm *vm = pico_vm_new();
 	char err[200];
 
 	if (!vm) {
 		port_free(data);
-		al_eprintf("%s: out of memory\n", name);
+		pico_eprintf("%s: out of memory\n", name);
 		return 1;
 	}
 	vm->prog.image = data;
 	vm->prog.image_len = len;
-	if (al_load(vm, data, len, err, sizeof(err))) {
-		al_eprintf("%s: %s\n", name, err);
-		al_vm_free(vm, false);
+	if (pico_load(vm, data, len, err, sizeof(err))) {
+		pico_eprintf("%s: %s\n", name, err);
+		pico_vm_free(vm, false);
 		return 1;
 	}
-	const char *plain = port_getenv("AL_NOQUICKEN");	/* for the tests */
+	const char *plain = port_getenv("PICO_NOQUICKEN");	/* for the tests */
 	if (!plain || !*plain)
-		al_quicken(vm);
-	int status = al_vm_run(vm, argc, argv);
-	const char *check = port_getenv("AL_LEAKCHECK");
-	al_vm_free(vm, check && *check && !vm->failed && !vm->halted);
+		pico_quicken(vm);
+	int status = pico_vm_run(vm, argc, argv);
+	const char *check = port_getenv("PICO_LEAKCHECK");
+	pico_vm_free(vm, check && *check && !vm->failed && !vm->halted);
 	return status;
 }
 
-static int compile_file(const char *prog, const char *path, struct al_image *img)
+static int compile_file(const char *prog, const char *path, struct pico_image *img)
 {
 	uint8_t *src;
 	size_t len;
-	int err = read_file(path, &src, &len, AL_MAX_SOURCE);
+	int err = read_file(path, &src, &len, PICO_MAX_SOURCE);
 
 	if (err) {
-		al_eprintf("%s: %s: %s\n", prog, path, port_strerror(err));
+		pico_eprintf("%s: %s: %s\n", prog, path, port_strerror(err));
 		return -1;
 	}
-	err = al_compile(path, (const char *)src, len, img);
+	err = pico_compile(path, (const char *)src, len, img);
 	port_free(src);
 	return err;
 }
 
-int al_main_ac(int argc, char **argv)
+/*
+ * The length of a source file's extension: .pico, or .al from when the
+ * language was called a; 0 if it has neither.
+ */
+static size_t source_ext(const char *path)
+{
+	static const char *const exts[] = { ".pico", ".al" };
+	size_t len = strlen(path);
+
+	for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+		size_t n = strlen(exts[i]);
+
+		if (len > n && !strcmp(path + len - n, exts[i]))
+			return n;
+	}
+	return 0;
+}
+
+int pico_main_compile(int argc, char **argv)
 {
 	const char *out = NULL, *src = NULL;
 	bool disasm = false;
@@ -135,20 +153,20 @@ int al_main_ac(int argc, char **argv)
 		}
 	}
 	if (!src) {
-		al_eprintf("usage: ac [-o program] [-d] file.al\n");
+		pico_eprintf("usage: picoc [-o program] [-d] file.pico\n");
 		return 2;
 	}
-	size_t len = strlen(src);
-	if (len < 4 || strcmp(src + len - 3, ".al")) {
-		al_eprintf("ac: %s: source files end in .al\n", src);
+	size_t ext = source_ext(src);
+	if (!ext) {
+		pico_eprintf("picoc: %s: source files end in .pico\n", src);
 		return 2;
 	}
 	if (!out) {
 		const char *base = strrchr(src, '/');
 		base = base ? base + 1 : src;
-		size_t n = strlen(base) - 3;
+		size_t n = strlen(base) - ext;
 		if (n >= sizeof(name) || n == 0) {
-			al_eprintf("ac: %s: bad file name\n", src);
+			pico_eprintf("picoc: %s: bad file name\n", src);
 			return 2;
 		}
 		memcpy(name, base, n);
@@ -156,15 +174,15 @@ int al_main_ac(int argc, char **argv)
 		out = name;
 	}
 	if (!strcmp(out, src)) {
-		al_eprintf("ac: the output would overwrite %s\n", src);
+		pico_eprintf("picoc: the output would overwrite %s\n", src);
 		return 2;
 	}
 
-	struct al_image img;
-	if (compile_file("ac", src, &img))
+	struct pico_image img;
+	if (compile_file("picoc", src, &img))
 		return 1;
 	if (disasm) {
-		struct al_vm *vm = al_vm_new();
+		struct pico_vm *vm = pico_vm_new();
 		char err[200];
 		int status = 0;
 		if (!vm) {
@@ -172,68 +190,68 @@ int al_main_ac(int argc, char **argv)
 			return 1;
 		}
 		vm->prog.image = img.data;
-		if (al_load(vm, img.data, img.len, err, sizeof(err))) {
-			al_eprintf("ac: %s: %s\n", src, err);
+		if (pico_load(vm, img.data, img.len, err, sizeof(err))) {
+			pico_eprintf("picoc: %s: %s\n", src, err);
 			status = 1;
 		} else {
-			al_disasm(vm);
+			pico_disasm(vm);
 		}
-		al_vm_free(vm, false);
+		pico_vm_free(vm, false);
 		return status;
 	}
 	int err = write_file(out, img.data, img.len);
 	port_free(img.data);
 	if (err) {
-		al_eprintf("ac: %s: %s\n", out, port_strerror(err));
+		pico_eprintf("picoc: %s: %s\n", out, port_strerror(err));
 		return 1;
 	}
 	return 0;
 }
 
-int al_main_a(int argc, char **argv)
+int pico_main_run(int argc, char **argv)
 {
 	uint8_t *data;
 	size_t len;
 
 	if (argc < 2 || argv[1][0] == '-') {
-		al_eprintf("usage: a file.al [args...]    compile and run\n"
-			   "       a program [args...]    run a compiled program\n");
+		pico_eprintf("usage: pico file.pico [args...]    compile and run\n"
+			   "       pico program [args...]      run a compiled program\n");
 		return 2;
 	}
-	int err = read_file(argv[1], &data, &len, AL_MAX_IMAGE);
+	int err = read_file(argv[1], &data, &len, PICO_MAX_IMAGE);
 	if (err) {
-		al_eprintf("a: %s: %s\n", argv[1], port_strerror(err));
+		pico_eprintf("pico: %s: %s\n", argv[1], port_strerror(err));
 		return 1;
 	}
 	if (is_image(data, len))
 		return run_image(argv[1], data, len, argc - 1, argv + 1);
 
-	struct al_image img;
-	if (len > AL_MAX_SOURCE) {
+	struct pico_image img;
+	if (len > PICO_MAX_SOURCE) {
 		port_free(data);
-		al_eprintf("a: %s: source file too large\n", argv[1]);
+		pico_eprintf("pico: %s: source file too large\n", argv[1]);
 		return 1;
 	}
-	err = al_compile(argv[1], (const char *)data, len, &img);
+	err = pico_compile(argv[1], (const char *)data, len, &img);
 	port_free(data);
 	if (err)
 		return 1;
 	return run_image(argv[1], img.data, img.len, argc - 1, argv + 1);
 }
 
-bool al_probe(const uint8_t *head, size_t n)
+bool pico_probe(const uint8_t *head, size_t n)
 {
 	return is_image(head, n);
 }
 
-int al_exec(const char *path, int argc, char **argv)
+int pico_exec(const char *path, int argc, char **argv)
 {
 	uint8_t *data;
 	size_t len;
-	int err = read_file(path, &data, &len, AL_MAX_IMAGE);
+	int err = read_file(path, &data, &len, PICO_MAX_IMAGE);
 
 	if (err) {
-		al_eprintf("%s: %s\n", path, port_strerror(err));
+		pico_eprintf("%s: %s\n", path, port_strerror(err));
 		return 1;
 	}
 	return run_image(argc ? argv[0] : path, data, len, argc, argv);

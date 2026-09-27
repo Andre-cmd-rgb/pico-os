@@ -74,11 +74,75 @@ def ppm(path):
     return int(fields[1]), int(fields[2]), pixels
 
 
-def to565(rgb):
-    """RGB888 narrowed to RGB565 and widened back, as the decoder's output is."""
+# The 2x2 ordered dither the decoder adds at full size in 4:2:0 (put_420 in
+# bin/jpeg.c), before cutting to RGB565: one offset for all three colours,
+# by the pixel's column and row, each taken modulo 2.
+DITHER = {(0, 0): 1, (1, 0): 5, (0, 1): 7, (1, 1): 3}
+
+
+def green6(g):
+    """Green's six bits as build_rgb() makes them: stepping with red and blue
+    in the darkest shades, finer above and two down for the shared dither."""
+    return (g >> 3) << 1 if g < 32 else (g - 2) >> 2
+
+
+def clamp(v):
+    return 0 if v < 0 else 255 if v > 255 else int(round(v))
+
+
+def fade(cb, cr, k):
+    """How much of a 2x2 group's chroma is kept near black (fade_faint() in
+    jpeg.c): none up to k, rising back to all of it by 2k, both together."""
+    a = max(abs(cb), abs(cr))
+    return 1 if a >= 2 * k else 0 if a <= k else 2 * (a - k) / a
+
+
+def fade_faint(rgb, w):
+    """Near black, faint colour taken off as put_420() does it: over each 2x2
+    group, by its luma, all of FAINT at black and none from DARK up. The
+    group's chroma is guessed from its pixels that are not clipped; the
+    clipped ones have more colour than their RGB says."""
+    DARK, FAINT = 48, 10
+    rgb = bytearray(rgb)
+    h = len(rgb) // 3 // w
+    for gy in range(0, h - h % 2, 2):
+        for gx in range(0, w - w % 2, 2):
+            px = [((gy + dy) * w + gx + dx) * 3 for dy in (0, 1) for dx in (0, 1)]
+            ycc = []
+            for i in px:
+                r, g, b = rgb[i], rgb[i + 1], rgb[i + 2]
+                y = 0.299 * r + 0.587 * g + 0.114 * b
+                ycc.append((y, (b - y) / 1.772, (r - y) / 1.402))
+            total = sum(clamp(y) for y, _, _ in ycc)
+            if total >= 4 * DARK:
+                continue
+            k = FAINT - total * FAINT // (4 * DARK)
+            clear = [c for i, c in zip(px, ycc) if 0 not in rgb[i:i + 3] and 255 not in rgb[i:i + 3]]
+            if not clear:
+                continue
+            f = fade(sum(c[1] for c in clear) / len(clear), sum(c[2] for c in clear) / len(clear), k)
+            for i, (y, cb, cr) in zip(px, ycc):
+                cb, cr = cb * f, cr * f
+                rgb[i] = clamp(y + 1.402 * cr)
+                rgb[i + 1] = clamp(y - 0.344136 * cb - 0.714136 * cr)
+                rgb[i + 2] = clamp(y + 1.772 * cb)
+    return bytes(rgb)
+
+
+def to565(rgb, w=0):
+    """RGB888 narrowed to RGB565 and widened back, as the decoder's output is.
+    With the width given, dithered first the way the decoder's 4:2:0 path is,
+    after taking faint colour off near black as it does."""
+    if w:
+        rgb = fade_faint(rgb, w)
     out = bytearray(len(rgb))
     for i in range(0, len(rgb), 3):
-        r, g, b = rgb[i] >> 3, rgb[i + 1] >> 2, rgb[i + 2] >> 3
+        r, g, b = rgb[i], rgb[i + 1], rgb[i + 2]
+        if w:
+            px = i // 3
+            o = DITHER[(px % w % 2, px // w % 2)]
+            r, g, b = min(r + o, 255), min(g + o, 255), min(b + o, 255)
+        r, g, b = r >> 3, green6(g), b >> 3
         out[i] = r << 3 | r >> 2
         out[i + 1] = g << 2 | g >> 4
         out[i + 2] = b << 3 | b >> 2
@@ -156,7 +220,8 @@ def main():
                     print(f"FAIL {name} 1/{1 << scale}: {w}x{h}, not {want[0]}x{want[1]}")
                     failed += 1
                     continue
-                psnr, worst = compare(got, to565(shrink(full, rw, rh, scale)))
+                dither = rw if scale == 0 and ("2x2" in name or "mjpeg" in name) else 0
+                psnr, worst = compare(got, to565(shrink(full, rw, rh, scale), dither))
                 # At full size the arithmetic is libjpeg's fast IDCT, which
                 # truncates where this one rounds: within a step of RGB565 (9,
                 # once widened) everywhere. Scaled down, each output pixel is

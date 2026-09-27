@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<!--
+  The PocketType pocket guide: how to use the machine, in sixteen small
+  pages on two A4 sheets, each printed on one side, folded and cut once
+  into an eight-page booklet (README.md says how). The pages are written
+  here in reading order; zine.js lays them out for the fold, numbers them
+  and makes the contents page. `make` prints guide.pdf.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PocketType pocket guide</title>
+<link rel="stylesheet" href="zine.css">
+<script src="zine.js"></script>
+</head>
+<body>
+
+<!-- ================================================= part 1: the machine -->
+
+<section class="page cover nofolio">
+	<div class="part">Part 1 of 2 &middot; the machine</div>
+	<div class="brand">Pocket<span>Type</span></div>
+	<div class="sub">the pocket guide</div>
+	<img class="shot" src="img/cover.png" alt="">
+	<div class="what">
+		<b>Part 1</b> getting started, keys, the shell,<br>
+		power and battery, notes<br>
+		<b>Part 2</b> calendar, music, video, games,<br>
+		the internet, looks, every command
+	</div>
+	<div><span class="ver">1.0 beta 2</span></div>
+</section>
+
+<section class="page toc">
+	<h2>Contents</h2>
+	<ol class="contents"></ol>
+	<div class="tip" style="margin-top:3mm">
+		<b>How to read it.</b> <code>commands look like this</code>: type them and
+		press <kbd>Enter</kbd>. <kbd>Fn</kbd> <kbd>X</kbd> means tap Fn, let go,
+		then tap X. <code>help</code> and <code>man</code> on the machine say more
+		about everything here.
+	</div>
+</section>
+
+<section class="page" data-part="Part 1: the machine">
+	<h2>What it is</h2>
+	<p class="lead">A computer that fits in a pocket, running a small Unix of its
+	own. You talk to it by typing; it answers in text, on four screens at once.</p>
+	<p>It keeps your notes, a calendar, a to-do list and alarms; it plays music
+	and video; it runs NES games; it reaches the internet over Wi-Fi; and it
+	has its own programming language, pico, with its own booklet.</p>
+	<h3>What is in it</h3>
+	<dl>
+		<dt class="k">brain</dt><dd>ESP32-S3: two cores at 240 MHz, 8 MB of memory</dd>
+		<dt class="k">screen</dt><dd>2.8", 320 &times; 240, 53 &times; 23 letters</dd>
+		<dt class="k">keys</dt><dd>the CardKB, a keyboard the size of a card</dd>
+		<dt class="k">sound</dt><dd>a speaker, and a microphone</dd>
+		<dt class="k">storage</dt><dd>a microSD card: all your files</dd>
+		<dt class="k">power</dt><dd>a 2500 mAh cell, days of use</dd>
+		<dt class="k">radio</dt><dd>Wi-Fi, and Bluetooth for a gamepad</dd>
+	</dl>
+	<h3>Where things are</h3>
+	<p>Your files are the SD card, which is your home, <code>~</code>. Take it to a
+	PC and they are at the top of it.</p>
+	<dl>
+		<dt>~/music ~/video</dt><dd>songs and clips</dd>
+		<dt>~/notes ~/photos</dt><dd>notes to read, pictures</dd>
+		<dt>~/roms ~/pico</dt><dd>games, pico programs</dd>
+		<dt>/tmp</dt><dd>scratch space, empty after every start</dd>
+	</dl>
+</section>
+
+<section class="page">
+	<h2>First steps</h2>
+	<h3>Waking it</h3>
+	<p>Press any key. After three minutes without one the screen dims, after
+	four it goes dark: the next key only lights it again.</p>
+	<h3>The bar</h3>
+	<img class="shot wide" src="img/bar.png" alt="" style="margin-bottom:0.6mm">
+	<p class="s">which screen (1 of 4) &middot; the time &middot; the next alarm
+	&middot; the battery (&#x26a1; while it charges) &middot; Wi-Fi</p>
+	<h3>A command</h3>
+	<p>Type one and press <kbd>Enter</kbd>. Try these:</p>
+	<dl>
+		<dt>ls</dt><dd>what is here</dd>
+		<dt>cd music</dt><dd>go into a folder; <code>cd</code> alone goes home</dd>
+		<dt>play song.mp3</dt><dd>play it</dd>
+		<dt>cal</dt><dd>this month</dd>
+		<dt>battery</dt><dd>how much is left</dd>
+	</dl>
+	<h3>Help</h3>
+	<dl>
+		<dt>help</dt><dd>every command there is</dd>
+		<dt>help play</dt><dd>what one does, and how</dd>
+		<dt>man intro</dt><dd>the manual, from the start</dd>
+		<dt class="k"><kbd>Tab</kbd></dt><dd>finishes what you are typing</dd>
+	</dl>
+</section>
+
+<section class="page">
+	<h2>The keyboard</h2>
+	<p class="lead">There is no Ctrl key: <b>Fn</b> stands in. It is sticky, so
+	tap <kbd>Fn</kbd>, let go, then the key.</p>
+	<dl style="margin-top:0.6mm">
+		<dt class="k"><kbd>Fn</kbd> <kbd>C</kbd></dt><dd>stop what is running</dd>
+		<dt class="k"><kbd>Fn</kbd> <kbd>Z</kbd></dt><dd>pause it (<code>fg</code> goes on)</dd>
+		<dt class="k"><kbd>Fn</kbd> <kbd>1</kbd>&ndash;<kbd>4</kbd></dt><dd>screen 1 to 4</dd>
+		<dt class="k"><kbd>Fn</kbd> <kbd>&larr;</kbd> <kbd>&rarr;</kbd></dt><dd>the screen before, after</dd>
+		<dt class="k"><kbd>Fn</kbd> <kbd>5</kbd> <kbd>6</kbd></dt><dd>brightness down, up</dd>
+		<dt class="k"><kbd>Fn</kbd> <kbd>7</kbd> <kbd>8</kbd></dt><dd>volume down, up</dd>
+		<dt class="k"><kbd>Fn</kbd> <kbd>9</kbd></dt><dd>sound off and on</dd>
+		<dt class="k"><kbd>Fn</kbd> <kbd>0</kbd></dt><dd>doze: dark, all kept (page 7)</dd>
+		<dt class="k"><kbd>Fn</kbd> <kbd>A</kbd> <kbd>&uarr;</kbd></dt><dd>look back at what scrolled away</dd>
+		<dt class="k"><kbd>Fn</kbd> <kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd>start, end of the line</dd>
+		<dt class="k"><kbd>Fn</kbd> <kbd>Del</kbd></dt><dd>delete forwards</dd>
+		<dt class="k"><kbd>Fn</kbd> <kbd>L</kbd></dt><dd>clear the screen</dd>
+		<dt class="k"><kbd>Esc</kbd></dt><dd>clear the line; leave a program</dd>
+		<dt class="k"><kbd>Tab</kbd></dt><dd>finish a command or a name</dd>
+		<dt class="k"><kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd>what you typed before</dd>
+		<dt class="k"><kbd>Sym</kbd></dt><dd>the symbols printed on the keys</dd>
+		<dt class="k"><kbd>Shift</kbd> &times;2</dt><dd>capitals until pressed again</dd>
+	</dl>
+	<p class="s" style="margin-top:1mm">Brightness and volume are remembered for the
+	next start. On a USB keyboard, Ctrl is Ctrl, and Ctrl-A then 1&ndash;4 changes
+	screen.</p>
+</section>
+
+<section class="page">
+	<h2>Screens and the shell</h2>
+	<p>Four screens, each with its own shell, all running at once: music on 1,
+	a game on 2, notes on 3.</p>
+	<h3>Tab does the typing</h3>
+	<dl>
+		<dt>theme cu<kbd>Tab</kbd></dt><dd>theme cursor</dd>
+		<dt>play "Oa<kbd>Tab</kbd></dt><dd>the whole name, quoted</dd>
+		<dt>video <kbd>Tab</kbd></dt><dd>only clips, and folders</dd>
+	</dl>
+	<p class="s">When there are several it lists them; type more and Tab again.</p>
+	<h3>Looking back</h3>
+	<p><kbd>Fn</kbd> <kbd>A</kbd> then <kbd>&uarr;</kbd> scrolls back through what went
+	past; <kbd>&uarr;</kbd> <kbd>&darr;</kbd> go on, <kbd>Esc</kbd> comes back. The bar
+	shows <code>&uarr;22</code>: that many lines back.</p>
+	<h3>Several at once</h3>
+	<dl>
+		<dt>play x.mp3 &amp;</dt><dd>runs behind; the shell is free</dd>
+		<dt>jobs</dt><dd>what runs behind, or is paused</dd>
+		<dt>fg / bg</dt><dd>to the front, or on behind</dd>
+		<dt>kill %1</dt><dd>stop job 1</dd>
+	</dl>
+	<h3>Plumbing</h3>
+	<pre>ls -l | sort -k5 -n | tail -3
+grep -rn exam ~/notes &gt; found.txt
+find ~ -name '*.mp3' | wc -l</pre>
+</section>
+
+<section class="page">
+	<h2>Power and battery</h2>
+	<h3>Three ways to rest</h3>
+	<dl>
+		<dt class="k"><kbd>Fn</kbd> <kbd>0</kbd></dt><dd><b>doze</b>: dark and quiet, all
+		kept; a key and you are back where you were</dd>
+		<dt>suspend</dt><dd><b>sleep</b>: any key wakes it, as a fresh start;
+		alarms still wake it</dd>
+		<dt>poweroff</dt><dd>deepest: only <kbd>Enter</kbd> wakes it</dd>
+	</dl>
+	<p class="s">Left alone for 15 minutes with nothing running, it goes to
+	sleep by itself (<code>power suspend 30m</code> to change it).</p>
+	<h3>Charging</h3>
+	<p>Plug the charger module's own USB-C in: 1 A, full in about three hours.
+	The board's port runs the machine from the PC but does not charge.</p>
+	<h3>How much is left</h3>
+	<table>
+		<tr><th>doing</th><th class="r">lasts, about</th></tr>
+		<tr><td>reading, screen at half</td><td class="r">1 day</td></tr>
+		<tr><td>music, screen dark</td><td class="r">30 hours</td></tr>
+		<tr><td>video or games</td><td class="r">12 hours</td></tr>
+		<tr><td>dozing</td><td class="r">3 days</td></tr>
+		<tr><td>asleep</td><td class="r">4 days and more</td></tr>
+	</table>
+	<p class="s" style="margin-top:0.8mm"><code>battery -v</code> tells all,
+	<code>battery -l</code> the log of starts and sleeps.</p>
+</section>
+
+<section class="page">
+	<h2>Notes</h2>
+	<p>Put Markdown or text files in <code>~/notes</code> (a folder for each
+	subject) and <code>notes</code> lists them; pick one to read it, laid out
+	for the screen: headings, lists, tables, quotes.</p>
+	<img class="shot" src="img/notes.png" alt="" style="width:62%">
+	<dl>
+		<dt class="k"><kbd>Space</kbd> <kbd>B</kbd></dt><dd>next page, back</dd>
+		<dt class="k"><kbd>O</kbd></dt><dd>the headings, to jump to one</dd>
+		<dt class="k"><kbd>/</kbd> <kbd>N</kbd></dt><dd>find a word, and the next</dd>
+		<dt class="k"><kbd>+</kbd> <kbd>-</kbd></dt><dd>brighter, darker, for reading in bed</dd>
+		<dt class="k"><kbd>E</kbd></dt><dd>open it in the editor</dd>
+		<dt class="k"><kbd>Q</kbd></dt><dd>close it; it reopens where you left it</dd>
+	</dl>
+	<h3>Writing</h3>
+	<p><code>edit FILE</code>: <kbd>Fn</kbd><kbd>S</kbd> save, <kbd>Fn</kbd><kbd>Q</kbd> quit,
+	<kbd>Fn</kbd><kbd>F</kbd> find, <kbd>Fn</kbd><kbd>G</kbd> go to a line,
+	<kbd>Fn</kbd><kbd>K</kbd> cut, <kbd>Fn</kbd><kbd>U</kbd> paste, <kbd>Esc</kbd> all
+	of it in a menu.</p>
+</section>
+
+<!-- ================================================ part 2: apps and more -->
+
+<section class="page cover nofolio" data-part="Part 2: apps and more">
+	<div class="part">Part 2 of 2 &middot; apps and more</div>
+	<div class="brand">Pocket<span>Type</span></div>
+	<div class="sub">the pocket guide</div>
+	<img class="shot" src="img/life.png" alt="">
+	<div class="what">
+		<b>Part 2</b> calendar and to-do, alarms, music,<br>
+		video and photos, games, Wi-Fi and files,<br>
+		themes, when something goes wrong,<br>
+		and every command on the back
+	</div>
+	<div><span class="ver">1.0 beta 2</span></div>
+</section>
+
+<section class="page">
+	<h2>Diary</h2>
+	<img class="shot" src="img/calendar.png" alt="" style="width:56%">
+	<dl>
+		<dt>calendar</dt><dd>the month: arrows move, <kbd>A</kbd> adds, <kbd>D</kbd> deletes</dd>
+		<dt>calendar agenda</dt><dd>the week ahead</dd>
+		<dt>calendar add 30/9 10:00 dentist !30</dt><dd></dd>
+	</dl>
+	<p class="s"><code>!30</code> chimes half an hour before; <code>every mo,we</code>
+	and <code>yearly 2/10</code> repeat.</p>
+	<h3>To do</h3>
+	<dl>
+		<dt>todo</dt><dd>the list, to tick off</dd>
+		<dt>todo add milk @fri</dt><dd>or @today, @30/9</dd>
+		<dt>todo done 1</dt><dd>tick one off</dd>
+	</dl>
+	<h3>Alarms</h3>
+	<dl>
+		<dt>alarm 7:00 mo-fr up</dt><dd>every weekday</dd>
+		<dt>alarm 25m tea</dt><dd>a timer</dd>
+		<dt>alarm</dt><dd>what is set; <code>alarm rm 2</code></dd>
+	</dl>
+	<p class="s">Ringing, any key snoozes it nine minutes and <kbd>Esc</kbd> stops
+	it. It rings even from sleep.</p>
+</section>
+
+<section class="page">
+	<h2>Music</h2>
+	<dl>
+		<dt>play song.mp3</dt><dd>MP3, FLAC or WAV</dd>
+		<dt>play ~/music/*.mp3 &amp;</dt><dd>a whole folder, behind</dd>
+		<dt>jobs, kill %1</dt><dd>what plays; stop it</dd>
+		<dt>volume 60</dt><dd>or <kbd>Fn</kbd> <kbd>7</kbd> <kbd>8</kbd>; <kbd>Fn</kbd> <kbd>9</kbd> mutes</dd>
+	</dl>
+	<p>Music plays on under whatever else you do, a game or a clip on another
+	screen included: the sounds are mixed. Let the screen go dark, or doze, and
+	it plays on for most of a day.</p>
+	<h3>Recording</h3>
+	<dl>
+		<dt>rec memo.wav</dt><dd>until <kbd>Fn</kbd> <kbd>C</kbd></dd>
+		<dt>rec -t 30 memo.wav</dt><dd>thirty seconds</dd>
+		<dt>play memo.wav</dt><dd>hear it</dd>
+		<dt>beep 880 200</dt><dd>a note, for scripts</dd>
+	</dl>
+	<h3>Getting music on</h3>
+	<p>Copy files into <code>music/</code> on the SD card from a PC, or send
+	one with <code>make push FILE=song.mp3 DEST=~/music/song.mp3</code> (page 14).</p>
+</section>
+
+<section class="page">
+	<h2>Video and photos</h2>
+	<img class="shot" src="img/video.png" alt="" style="width:56%">
+	<dl>
+		<dt>video</dt><dd>pick a clip from <code>~/video</code></dd>
+		<dt class="k"><kbd>Space</kbd></dt><dd>pause: a bar shows where it is</dd>
+		<dt class="k"><kbd>S</kbd></dt><dd>keep the picture, in <code>~/photos</code></dd>
+		<dt class="k"><kbd>Q</kbd> <kbd>Esc</kbd></dt><dd>stop</dd>
+	</dl>
+	<h3>Making clips</h3>
+	<p>The machine plays its own kind of file, made on the PC from any video:</p>
+	<pre>tools/mkvideo.py film.mp4 film.ptv
+tools/ytgrab.py <span class="c">YOUTUBE-LINK</span></pre>
+	<p>then copy the <code>.ptv</code> into <code>video/</code> on the SD card.</p>
+	<h3>Photos</h3>
+	<dl>
+		<dt>view</dt><dd>JPEG or BMP from <code>~/photos</code></dd>
+		<dt class="k"><kbd>&larr;</kbd> <kbd>&rarr;</kbd></dt><dd>the one before, after</dd>
+		<dt>screenshot</dt><dd>the screen, kept as a picture</dd>
+	</dl>
+</section>
+
+<section class="page">
+	<h2>Games</h2>
+	<p>A NES inside: put <code>.nes</code> games in <code>~/roms</code> and
+	<code>nes</code> lists them.</p>
+	<img class="shot" src="img/nes.png" alt="" style="width:56%">
+	<dl>
+		<dt class="k"><kbd>&larr;&uarr;&darr;&rarr;</kbd> <kbd>WASD</kbd></dt><dd>move</dd>
+		<dt class="k"><kbd>X</kbd> <kbd>Z</kbd></dt><dd>the A and B buttons</dd>
+		<dt class="k"><kbd>Enter</kbd></dt><dd>start</dd>
+		<dt class="k"><kbd>Space</kbd></dt><dd>select</dd>
+		<dt class="k"><kbd>P</kbd></dt><dd>a screenshot</dd>
+		<dt class="k"><kbd>Q</kbd> <kbd>Esc</kbd></dt><dd>quit</dd>
+	</dl>
+	<p class="s"><code>nes -q</code> plays without sound.</p>
+	<h3>A gamepad</h3>
+	<dl>
+		<dt>pad on</dt><dd>the Bluetooth radio</dd>
+		<dt>pad scan</dt><dd>look for one (press its pairing button)</dd>
+		<dt>pad connect 1</dt><dd>join it; remembered</dd>
+	</dl>
+	<p class="s">More games, in pico: snake, life (pico booklet).</p>
+</section>
+
+<section class="page">
+	<h2>Internet and files</h2>
+	<h3>Wi-Fi</h3>
+	<dl>
+		<dt>wifi scan</dt><dd>networks in range, numbered</dd>
+		<dt>wifi connect #2 PASS</dt><dd>join one; remembered for next time</dd>
+		<dt>wifi</dt><dd>what it is doing; <code>wifi off</code> saves power</dd>
+	</dl>
+	<p class="s">Joining sets the clock too; so does <code>ntp</code>.</p>
+	<dl>
+		<dt>wget URL</dt><dd>fetch a file</dd>
+		<dt>curl URL</dt><dd>what a web address answers</dd>
+		<dt>ping HOST</dt><dd>is it there?</dd>
+		<dt>passwd</dt><dd>then <code>telnet</code> in from a PC, port 23</dd>
+	</dl>
+	<h3>Moving files</h3>
+	<p>Quickest: the SD card into a PC. Or, with the USB cable, from the PC's
+	<code>pico-os</code> folder:</p>
+	<pre>make push FILE=notes.md
+make pull FILE=/home/andre/photos/shot-1.bmp</pre>
+	<p class="s">It goes beside the console: nothing is typed on the machine,
+	and you can go on using it meanwhile.</p>
+</section>
+
+<section class="page">
+	<h2>Looks, and when things go wrong</h2>
+	<img class="shot" src="img/themes.png" alt="" style="width:54%">
+	<dl>
+		<dt>theme list</dt><dd>ten themes: amber, green, gruvbox...</dd>
+		<dt>theme nord</dt><dd>switch; <code>dark</code> or <code>light</code> after it</dd>
+		<dt>theme auto 7 20</dt><dd>light by day, dark at night</dd>
+		<dt>theme set bg #102030</dt><dd>a colour of your own</dd>
+		<dt>rotate 180</dt><dd>the screen the other way up</dd>
+	</dl>
+	<h3>When something goes wrong</h3>
+	<dl>
+		<dt class="k">dark screen</dt><dd>press a key; <kbd>Enter</kbd> if it was off</dd>
+		<dt class="k">stuck program</dt><dd><kbd>Fn</kbd> <kbd>C</kbd>, or <kbd>Esc</kbd></dd>
+		<dt>ps / kill N</dt><dd>see and stop what runs</dd>
+		<dt>free, df</dt><dd>memory, and room on the card</dd>
+		<dt>dmesg</dt><dd>what the system has been saying</dd>
+		<dt>reboot</dt><dd>start again (your files are safe)</dd>
+	</dl>
+	<p class="s"><code>factory-reset -y</code> empties everything but Wi-Fi.</p>
+</section>
+
+<section class="page">
+	<h2>Every command</h2>
+	<div class="cols">
+		<dl>
+			<dt>alarm</dt> <dd>alarms and timers</dd>
+			<dt>backlight</dt> <dd>brightness</dd>
+			<dt>battery</dt> <dd>what is left</dd>
+			<dt>beep</dt> <dd>a note</dd>
+			<dt>cal</dt> <dd>a month, a year</dd>
+			<dt>calendar</dt> <dd>the diary</dd>
+			<dt>cat more</dt> <dd>show a file</dd>
+			<dt>cd ls pwd</dt> <dd>folders</dd>
+			<dt>cp mv rm</dt> <dd>files</dd>
+			<dt>mkdir</dt> <dd>a new folder</dd>
+			<dt>curl wget</dt> <dd>the web</dd>
+			<dt>date</dt> <dd>date and time</dd>
+			<dt>df free</dt> <dd>room left</dd>
+			<dt>diff</dt> <dd>what changed</dd>
+			<dt>dmesg</dt> <dd>system log</dd>
+			<dt>edit</dt> <dd>the editor</dd>
+			<dt>find</dt> <dd>look for files</dd>
+			<dt>grep</dt> <dd>look inside them</dd>
+			<dt>head tail</dt> <dd>ends of a file</dd>
+			<dt>help man</dt> <dd>the manual</dd>
+			<dt>jobs fg bg</dt> <dd>jobs</dd>
+			<dt>kill ps top</dt> <dd>processes</dd>
+			<dt>led</dt> <dd>the charge light</dd>
+			<dt>nes pad</dt> <dd>games</dd>
+			<dt>notes</dt> <dd>read notes</dd>
+			<dt>ntp</dt> <dd>set the clock</dd>
+			<dt>pico picoc</dt> <dd>the language</dd>
+			<dt>ping</dt> <dd>is it there</dd>
+			<dt>play rec</dt> <dd>sound</dd>
+			<dt>power</dt> <dd>sleep times</dd>
+			<dt>poweroff</dt> <dd>switch off</dd>
+			<dt>reboot</dt> <dd>start again</dd>
+			<dt>rotate</dt> <dd>turn the screen</dd>
+			<dt>screenshot</dt> <dd>keep the screen</dd>
+			<dt>sed sort</dt> <dd>change, order text</dd>
+			<dt>suspend</dt> <dd>sleep now</dd>
+			<dt>theme</dt> <dd>colours</dd>
+			<dt>todo</dt> <dd>the to-do list</dd>
+			<dt>uptime</dt> <dd>how long it's up</dd>
+			<dt>video view</dt> <dd>clips, pictures</dd>
+			<dt>volume</dt> <dd>loudness</dd>
+			<dt>wc</dt> <dd>count words</dd>
+			<dt>wifi</dt> <dd>the network</dd>
+		</dl>
+	</div>
+	<p class="s" style="margin-top:1mm"><code>help</code> lists all of them, and
+	<code>help NAME</code> says how to use one.</p>
+</section>
+
+</body>
+</html>

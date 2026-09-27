@@ -48,6 +48,28 @@ config PT_IDLE_SLEEP
 	  after a quiet spell can be lost. Toggle at runtime with
 	  `power sleep on|off`.
 
+config PT_IDLE_DIM_S
+	int "Dim the screen after this many seconds without a key (0 never)"
+	range 0 86400
+	default 180
+
+config PT_IDLE_BLANK_S
+	int "Screen dark after this many seconds without a key (0 never)"
+	range 0 86400
+	default 240
+	help
+	  The lamp goes out and the panel sleeps; the key that lights it
+	  again does nothing else. `power blank` changes it at runtime.
+
+config PT_IDLE_SUSPEND_MIN
+	int "Suspend after this many minutes without a key (0 never)"
+	range 0 1440
+	default 15
+	help
+	  Only when nothing is running: every terminal at its shell prompt,
+	  no sound playing and no PC on the USB port. Deep sleep until a
+	  key, an alarm or the button. `power suspend` changes it.
+
 config PT_VT_COUNT
 	int "Virtual terminals"
 	range 1 6
@@ -221,6 +243,14 @@ config PT_LCD_SPI_CS
 config PT_LCD_SPI_DC
 	int "DC / RS"
 	default 46
+config PT_LCD_MISO
+	int "MISO (the panel's SDO; -1 if it is not wired)"
+	range -1 54 if IDF_TARGET_ESP32P4
+	range -1 48
+	default -1
+	help
+	  With it the panel can be asked which line it is refreshing,
+	  and pictures can be sent in step with the refresh: no tearing.
 config PT_LCD_SPI_RST
 	int "RESET (-1 when it follows the board's reset)"
 	range -1 54 if IDF_TARGET_ESP32P4
@@ -793,7 +823,19 @@ config PT_BATTERY_CHARGE_MA
 	  What the charger pushes into the cell until it is nearly full.
 	  On a TP4054 it is 1000 V over the resistor on the PROG pin, on a
 	  TP4056 1200 V over it. A charging cell reads high by this current
-	  times its resistance, and that is taken off.
+	  times its resistance, and that is taken off. 0 if the board's own
+	  charger does not charge the cell: on USB it rests, and only a
+	  charger module on its wires (below) is counted.
+
+config PT_BATTERY_MODULE_MA
+	int "A charger module on the cell's wires (mA, 0 if none)"
+	range 0 2000
+	default 0
+	help
+	  A TP4056 board between the cell and the battery socket (cell on
+	  B+/B-, board on OUT+/OUT-) charging from its own USB port. It is
+	  found by the step it makes in the cell's voltage; until the cell's
+	  resistance is known, this is taken as its current.
 
 config PT_BATTERY_IDLE_MA
 	int "Board's draw at idle (mA)"

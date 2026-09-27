@@ -1,0 +1,8 @@
+// status: 1
+enum E { A }
+int main() {
+    int x = E;
+    A = 3;
+    for (str s in [1, 2]) println(s);
+    return 0;
+}

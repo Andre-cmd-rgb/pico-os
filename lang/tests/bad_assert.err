@@ -1,1 +1,1 @@
-bad_assert.al:3: runtime error: assertion failed: arithmetic still works
+bad_assert.pico:3: runtime error: assertion failed: arithmetic still works

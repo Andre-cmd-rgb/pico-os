@@ -1,0 +1,87 @@
+// The weather now, from the internet.
+//
+//   pico weather.pico              Milan
+//   pico weather.pico Tokyo        anywhere else
+//
+// Open-Meteo answers without an account: first the place's name is looked
+// up, then the weather there. http_get() fetches each answer and
+// json_get() picks what is wanted out of it. Needs Wi-Fi (`wifi`).
+
+// Spaces and accents are not allowed in an address: %20, %C3%A8 and so on.
+str url_encode(str s) {
+    str out = "";
+    for (int i = 0; i < len(s); i++) {
+        int b = s[i];
+        if ((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') ||
+            b == '-' || b == '_' || b == '.')
+            out += chr(b);
+        else
+            out += format("%%%02X", b);
+    }
+    return out;
+}
+
+// What the WMO weather codes mean.
+str sky(int code) {
+    switch (code) {
+    case 0: return "clear";
+    case 1, 2: return "partly cloudy";
+    case 3: return "overcast";
+    case 45, 48: return "fog";
+    case 51, 53, 55, 56, 57: return "drizzle";
+    case 61, 63, 65, 66, 67: return "rain";
+    case 71, 73, 75, 77: return "snow";
+    case 80, 81, 82: return "showers";
+    case 85, 86: return "snow showers";
+    case 95, 96, 99: return "thunderstorm";
+    default: return "code " + code;
+    }
+}
+
+// The biggest place of that name, as the geocoder writes it in `lang`: its
+// JSON, or "" if none. Several places share a name (there is a Milano in
+// Texas), and a name is found in its own language: Milan in English,
+// Milano in Italian.
+str biggest(str place, str lang, int[] people) {
+    str found = http_get("https://geocoding-api.open-meteo.com/v1/search?count=5&language=" +
+                         lang + "&name=" + url_encode(place));
+    str best = "";
+    int n = to_int(json_get(found, "results.#"));
+    for (int i = 0; i < n; i++) {
+        int count = to_int(json_get(found, "results." + i + ".population"));
+        if (count > people[0]) {
+            people[0] = count;
+            best = json_get(found, "results." + i);
+        }
+    }
+    return best;
+}
+
+int main(str[] args) {
+    str place = len(args) > 1 ? join(slice(args, 1, len(args)), " ") : "Milan";
+
+    int[] people = [-1];
+    str it = biggest(place, "en", people);
+    str other = biggest(place, "it", people);
+    if (other != "") it = other;
+    if (it == "") {
+        println("no place called ", place, " (or no answer: is Wi-Fi on? see `wifi`)");
+        return 1;
+    }
+    str lat = json_get(it, "latitude"), lon = json_get(it, "longitude");
+    str name = json_get(it, "name") + ", " + json_get(it, "country");
+
+    str now = http_get("https://api.open-meteo.com/v1/forecast?latitude=" + lat +
+                       "&longitude=" + lon +
+                       "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code");
+    str temp = json_get(now, "current.temperature_2m");
+    if (temp == "") {
+        println("the weather service did not answer");
+        return 1;
+    }
+    println("\e[1m", name, "\e[0m");
+    printf("  %s C, %s\n", temp, sky(to_int(json_get(now, "current.weather_code"))));
+    printf("  humidity %s%%, wind %s km/h\n", json_get(now, "current.relative_humidity_2m"),
+           json_get(now, "current.wind_speed_10m"));
+    return 0;
+}

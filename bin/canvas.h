@@ -25,6 +25,13 @@ void	canvas_clear(struct canvas *c);
 void	canvas_fit(struct canvas *c);		/* sw/sh in, x0/y0/dw/dh out */
 void	canvas_blit(const struct canvas *c);	/* the whole panel */
 void	canvas_blit_fit(const struct canvas *c);	/* only where the picture is */
+/* The whole panel, without tearing: `native` is a 320x240x2 buffer, on a cache
+ * line, for the turned copy. -ENOTSUP where the panel cannot be read. */
+int	canvas_blit_native(const struct canvas *c, uint8_t *native);
+/* The same in two halves: the turning, which is work for a core, and the
+ * sending, which is mostly waiting on the panel. */
+int	canvas_turn(const struct canvas *c, uint8_t *native);
+int	canvas_send_native(const struct canvas *c, const uint8_t *native);
 
 /*
  * Decoders. Each sets sw/sh, fits the picture and fills the canvas; the

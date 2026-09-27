@@ -15,6 +15,16 @@
  * saved networks in turn, and when a connection drops, wait a few seconds
  * and try again. Everything it does goes to dmesg.
  *
+ * Trying costs: each attempt scans every channel with the receiver on,
+ * about 90 mA for a couple of seconds. Carried away from its network the
+ * board used to do that every twenty seconds for as long as it was
+ * away, which drained the cell faster than the screen did. Now the wait
+ * doubles after every round that finds nothing, up to ten minutes, and
+ * in between the radio is stopped outright. A connection that drops, a
+ * `wifi` command, or waking from sleep starts it at a few seconds again.
+ * Connected, the radio sleeps between the access point's beacons,
+ * waking for every third.
+ *
  * Whenever an address arrives the clock is set from CONFIG_PT_NTP_SERVER,
  * and lwIP asks again every hour while the network stays up.
  */
@@ -36,7 +46,9 @@
 
 #define CONFIG_FILE	"/etc/wifi"
 #define RETRY_MS	5000
+#define RETRY_MAX_MS	(10 * 60 * 1000)
 #define CONNECT_MS	15000
+#define LISTEN_BEACONS	3	/* connected, it wakes for every third beacon */
 #define WIFI_LINE	160
 #define SCAN_KEEP	20	/* how many scan results stay remembered */
 
@@ -45,6 +57,8 @@ static EventGroupHandle_t events;
 static SemaphoreHandle_t lock;		/* one connect or scan at a time */
 static TaskHandle_t	 supplicant;
 static bool		 started, want_connection;
+static bool		 resting;	/* started, but stopped between tries */
+static volatile bool	 paused;	/* dozing: no tries until wifi_retry_soon() */
 static char		 current[33];	/* the network we are on or trying */
 static int		 last_reason;
 static bool		 sntp_ready;
@@ -94,6 +108,40 @@ bool wifi_up(void)
 bool wifi_started(void)
 {
 	return started;
+}
+
+/* Whether the radio is drawing current: on, and not resting between tries. */
+bool wifi_radio_on(void)
+{
+	return started && !resting;
+}
+
+/*
+ * The radio stopped between tries and started again for the next, with
+ * the lock held so that nothing is scanning or connecting at the time.
+ * Resting, the driver gives back its memory as well -- most of 100 KB of
+ * internal RAM, which is what a game or a second terminal is short of --
+ * and takes it again for the next try.
+ */
+static void rest_locked(bool rest)
+{
+	wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+
+	if (rest == resting || !started)
+		return;
+	if (rest) {
+		if (esp_wifi_stop() == ESP_OK && esp_wifi_deinit() == ESP_OK)
+			resting = true;
+		return;
+	}
+	if (esp_wifi_init(&cfg) || esp_wifi_set_storage(WIFI_STORAGE_RAM) ||
+	    esp_wifi_set_mode(WIFI_MODE_STA) || esp_wifi_start()) {
+		esp_wifi_deinit();
+		klog("wifi: no memory to wake the radio; trying later");
+		return;
+	}
+	esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+	resting = false;
 }
 
 /* ------------------------------------------------------------ saved networks */
@@ -236,8 +284,10 @@ int wifi_connect(const char *ssid, const char *pass, int timeout_ms)
 		strlcpy((char *)cfg.sta.password, pass, sizeof(cfg.sta.password));
 	cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;	/* pick the strongest one */
 	cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+	cfg.sta.listen_interval = LISTEN_BEACONS;
 
 	xSemaphoreTake(lock, portMAX_DELAY);
+	rest_locked(false);
 	strlcpy(current, ssid, sizeof(current));
 	want_connection = true;
 	last_reason = 0;
@@ -269,19 +319,70 @@ static bool try_saved(const char *ssid, const char *pass, void *ctx)
 	return wifi_connect(ssid, pass, CONNECT_MS) == 0;
 }
 
+/* Try again soon: something changed that makes it worth it. */
+void wifi_retry_soon(void)
+{
+	paused = false;
+	if (supplicant)
+		xTaskNotifyGive(supplicant);
+}
+
+/*
+ * The system dozes: off the network, the radio stopped and its memory
+ * given back, and no tries until wifi_retry_soon() says someone is back.
+ */
+void wifi_rest(void)
+{
+	if (!started)
+		return;
+	paused = true;
+	xSemaphoreTake(lock, portMAX_DELAY);
+	if (!resting)
+		esp_wifi_disconnect();
+	rest_locked(true);
+	xSemaphoreGive(lock);
+}
+
 /*
  * The supplicant: on the way up, and after every drop, walk the saved
- * networks until one answers. It sleeps in between, so a network that is
- * simply not there costs nothing.
+ * networks until one answers. Between rounds that find none the radio
+ * is stopped and the wait doubles, so a network that is simply not
+ * there costs next to nothing.
  */
 static void supplicant_task(void *arg)
 {
+	int wait = RETRY_MS;
+
 	each_saved(try_saved, NULL);
 	for (;;) {
 		xEventGroupWaitBits(events, BIT_FAILED, pdFALSE, pdFALSE, portMAX_DELAY);
-		vTaskDelay(pdMS_TO_TICKS(RETRY_MS));
-		if (want_connection && !wifi_up())
-			each_saved(try_saved, NULL);
+		if (paused) {
+			ulTaskNotifyTake(pdTRUE, portMAX_DELAY);	/* until a key */
+			wait = RETRY_MS;
+			continue;
+		}
+		if (!want_connection || wifi_up()) {
+			vTaskDelay(pdMS_TO_TICKS(RETRY_MS));
+			continue;
+		}
+		if (wait > RETRY_MS) {
+			xSemaphoreTake(lock, portMAX_DELAY);
+			rest_locked(true);
+			xSemaphoreGive(lock);
+		}
+		/* woken early by wifi_retry_soon() */
+		if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait)))
+			wait = RETRY_MS;
+		if (!want_connection || wifi_up())
+			continue;
+		if (each_saved(try_saved, NULL)) {
+			wait = RETRY_MS;
+		} else {
+			wait = wait * 2 > RETRY_MAX_MS ? RETRY_MAX_MS : wait * 2;
+			if (wait >= 60 * 1000)
+				klog("wifi: no saved network in range; the radio rests %d min",
+				     wait / 60000);
+		}
 	}
 }
 
@@ -312,6 +413,7 @@ int wifi_scan(struct wifi_ap *out, int max)
 	if (!records)
 		return -ENOMEM;
 	xSemaphoreTake(lock, portMAX_DELAY);
+	rest_locked(false);
 	if (esp_wifi_scan_start(NULL, true) || esp_wifi_scan_get_ap_records(&found, records)) {
 		xSemaphoreGive(lock);
 		free(records);
@@ -434,7 +536,8 @@ static int radio_up(void)
 		return -EIO;
 	}
 	started = true;
-	esp_wifi_set_ps(WIFI_PS_MIN_MODEM);		/* sleep between beacons */
+	resting = false;
+	esp_wifi_set_ps(WIFI_PS_MAX_MODEM);		/* sleep between beacons */
 	return 0;
 }
 
@@ -445,10 +548,12 @@ static int radio_down(void)
 	want_connection = false;
 	current[0] = '\0';
 	xEventGroupClearBits(events, BIT_GOT_IP | BIT_FAILED);
-	esp_wifi_disconnect();
-	if (esp_wifi_stop() || esp_wifi_deinit())
-		return -EIO;
-	started = false;
+	if (!resting) {
+		esp_wifi_disconnect();
+		if (esp_wifi_stop() || esp_wifi_deinit())
+			return -EIO;
+	}
+	started = resting = false;
 	return 0;
 }
 
@@ -547,6 +652,7 @@ int wifi_radio(bool on)
 	supplicant_start();			/* `wifi on` means try, saved or not */
 	want_connection = true;
 	xEventGroupSetBits(events, BIT_FAILED);	/* wake the supplicant */
+	wifi_retry_soon();
 	return 0;
 }
 
@@ -556,6 +662,9 @@ int  wifi_init(void) { return -ENODEV; }
 void wifi_start_supplicant(void) { }
 bool wifi_up(void) { return false; }
 bool wifi_started(void) { return false; }
+bool wifi_radio_on(void) { return false; }
+void wifi_rest(void) { }
+void wifi_retry_soon(void) { }
 int  wifi_connect(const char *ssid, const char *pass, int timeout_ms) { return -ENODEV; }
 int  wifi_disconnect(void) { return -ENODEV; }
 int  wifi_scan(struct wifi_ap *out, int max) { return -ENODEV; }

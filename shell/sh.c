@@ -322,99 +322,6 @@ static int interactive(struct sh *sh)
 	return sh->status;
 }
 
-/* ------------------------------------------------------------ completion */
-
-static bool command_position(const char *line, size_t word_start)
-{
-	static const char *const starters[] = {
-		"then", "do", "else", "elif", "if", "while", "until", "{", "!",
-	};
-	size_t i = word_start, end;
-
-	while (i && line[i - 1] == ' ')
-		i--;
-	if (!i || strchr("|;&(", line[i - 1]))
-		return true;
-	for (end = i; i && !strchr(" |;&(", line[i - 1]); i--)
-		;
-	for (size_t k = 0; k < sizeof(starters) / sizeof(starters[0]); k++)
-		if (end - i == strlen(starters[k]) && !strncmp(line + i, starters[k], end - i))
-			return true;
-	return false;
-}
-
-static int add_candidate(struct candidates *c, const char *name, bool is_dir)
-{
-	if (c->count % 32 == 0) {
-		char **names = pt_realloc(c->name, (c->count + 32) * sizeof(*names));
-		bool *dirs = pt_realloc(c->is_dir, (c->count + 32) * sizeof(*dirs));
-		if (names)
-			c->name = names;
-		if (dirs)
-			c->is_dir = dirs;
-		if (!names || !dirs)
-			return -ENOMEM;
-	}
-	c->name[c->count] = pt_strdup(name);
-	c->is_dir[c->count++] = is_dir;
-	return 0;
-}
-
-int sh_candidates(struct sh *sh, const char *line, size_t word_start, size_t word_len,
-		  struct candidates *out)
-{
-	char word[PT_PATH_MAX], dir[PT_PATH_MAX];
-	pt_dir_t *d;
-	struct pt_dirent ent;
-
-	if (word_len >= sizeof(word))
-		return -ENAMETOOLONG;
-	memcpy(word, line + word_start, word_len);
-	word[word_len] = '\0';
-
-	if (command_position(line, word_start) && !strchr(word, '/')) {
-		out->typed = word_len;
-		for (const struct pt_program *p = program_first(); p; p = p->next)
-			if (!strncmp(p->name, word, word_len))
-				add_candidate(out, p->name, false);
-		for (struct function *f = sh->functions; f; f = f->next)
-			if (!strncmp(f->name, word, word_len))
-				add_candidate(out, f->name, false);
-		return 0;
-	}
-
-	char *slash = strrchr(word, '/');
-	const char *prefix = slash ? slash + 1 : word;
-	out->typed = strlen(prefix);
-	if (!slash) {
-		strcpy(dir, ".");
-	} else if (word[0] == '~' && (slash == word + 1)) {
-		const char *home = pt_getenv("HOME");
-		strlcpy(dir, home ? home : "/", sizeof(dir));
-	} else {
-		snprintf(dir, sizeof(dir), "%.*s", slash == word ? 1 : (int)(slash - word), word);
-	}
-	if (pt_opendir(dir, &d))
-		return 0;
-	while (pt_readdir(d, &ent) == 1) {
-		if (ent.name[0] == '.' && prefix[0] != '.')
-			continue;
-		if (!strncmp(ent.name, prefix, out->typed))
-			add_candidate(out, ent.name, ent.is_dir);
-	}
-	pt_closedir(d);
-	return 0;
-}
-
-void candidates_free(struct candidates *c)
-{
-	for (int i = 0; i < c->count; i++)
-		pt_free(c->name[i]);
-	pt_free(c->name);
-	pt_free(c->is_dir);
-	memset(c, 0, sizeof(*c));
-}
-
 /* ------------------------------------------------------------ entry points */
 
 /*
@@ -457,9 +364,10 @@ static struct sh *sh_new(int argc, char **argv)
 }
 
 PT_PROGRAM_STACK(sh, SH_STACK_KB, "command interpreter\n"
-		 "usage: sh [-l] [-c cmd [name args]] [script [args]]\n"
+		 "usage: sh [-l [-q]] [-c cmd [name args]] [script [args]]\n"
 		 "Interactive when input is the terminal. -l prints\n"
-		 "/etc/motd, runs /etc/profile and ~/.profile first.\n"
+		 "/etc/motd, runs /etc/profile and ~/.profile first;\n"
+		 "-q leaves the motd out (terminals 2 to 4 do).\n"
 		 "Scripts: if, while, until, for, case, functions,\n"
 		 "$(cmd), $((1 + 2)), test or [. A line left open\n"
 		 "continues at a > prompt.\n"
@@ -467,16 +375,18 @@ PT_PROGRAM_STACK(sh, SH_STACK_KB, "command interpreter\n"
 		 "last part, \\$ dollar, \\e escape. export PS1='\\W\\$ '")
 {
 	const char *command = NULL;
-	bool login = false;
+	bool login = false, quiet = false;
 	int i = 1;
 
 	for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
 		if (!strcmp(argv[i], "-l")) {
 			login = true;
+		} else if (!strcmp(argv[i], "-q")) {
+			quiet = true;
 		} else if (!strcmp(argv[i], "-c") && i + 1 < argc) {
 			command = argv[++i];
 		} else {
-			pt_dprintf(PT_STDERR, "usage: sh [-l] [-c cmd [name args]] [script [args]]\n");
+			pt_dprintf(PT_STDERR, "usage: sh [-l [-q]] [-c cmd [name args]] [script [args]]\n");
 			return 2;
 		}
 	}
@@ -496,7 +406,8 @@ PT_PROGRAM_STACK(sh, SH_STACK_KB, "command interpreter\n"
 		char profile[PT_PATH_MAX];
 		const char *home = pt_getenv("HOME");
 
-		cat_file("/etc/motd");
+		if (!quiet)
+			cat_file("/etc/motd");
 		if (!pt_stat("/etc/profile", &st))
 			run_file(sh, "/etc/profile");
 		snprintf(profile, sizeof(profile), "%s/.profile", home ? home : "");

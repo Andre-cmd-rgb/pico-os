@@ -1,10 +1,10 @@
-// benchmark.al — a CLI microbenchmark for the a virtual machine.
+// benchmark.pico — a CLI microbenchmark for the pico virtual machine.
 //
-//   a benchmark.al                    default sizes (the smallest)
-//   a benchmark.al cpu                run only the cpu group
-//   a benchmark.al --full             five times the work
-//   a benchmark.al -n 3               three times the work
-//   a benchmark.al --help             this text
+//   pico benchmark.pico                    default sizes (the smallest)
+//   pico benchmark.pico cpu                run only the cpu group
+//   pico benchmark.pico --full             five times the work
+//   pico benchmark.pico -n 3               three times the work
+//   pico benchmark.pico --help             this text
 //
 // Groups: cpu fpu mem io proc. The "op/s" column is the useful one — it
 // shows how fast the VM interprets each kind of code on this machine.
@@ -30,7 +30,7 @@ void result(str name, int items) {
 }
 
 void usage() {
-    println("usage: a benchmark.al [--full|-n N] [cpu|fpu|mem|io|proc]");
+    println("usage: pico benchmark.pico [--full|-n N] [cpu|fpu|mem|io|proc]");
     println("  --full    five times the work   -n N     N times the work");
     println("  --help    this text");
     println("groups: cpu fpu mem io proc");

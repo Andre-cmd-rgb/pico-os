@@ -538,6 +538,8 @@ static int by_line(struct list *l, int line)
 	return -1;
 }
 
+PT_COMPLETE(todo, ": ls add done undo rm clear -f -d\n-f: <file:.md>\n")
+
 PT_PROGRAM(todo, "a to-do list, in ~/todo.md\n"
 	   "usage: todo                 the list, to work on\n"
 	   "       todo ls              print it\n"

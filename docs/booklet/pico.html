@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<!--
+  The pico booklet: the language PocketType speaks, from the first program
+  to games and the internet, in sixteen small pages on two A4 sheets, each
+  printed on one side, folded and cut once (README.md says how). Written in
+  reading order; zine.js lays the pages out. `make` prints pico.pdf.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The pico language</title>
+<link rel="stylesheet" href="zine.css">
+<script src="zine.js"></script>
+</head>
+<body>
+
+<!-- ==================================================== part 1: the language -->
+
+<section class="page cover nofolio">
+	<div class="part">Part 1 of 2 &middot; the language</div>
+	<div class="brand">pico<span>.</span></div>
+	<div class="sub">the language of PocketType</div>
+	<img class="shot" src="img/edit.png" alt="">
+	<div class="what">
+		<b>C-like</b> and typed, <b>safe</b>: a mistake stops<br>
+		the program at its line, never the machine.<br>
+		<b>Part 1</b> the language &middot; <b>Part 2</b> apps:<br>
+		the terminal, games, the internet
+	</div>
+	<div><span class="ver">1.0 beta 2</span></div>
+</section>
+
+<section class="page toc">
+	<h2>Contents</h2>
+	<ol class="contents"></ol>
+	<div class="tip" style="margin-top:3mm">
+		<b>Type along.</b> Every example here runs as it is: save it with
+		<code>edit</code> and run it with <code>pico</code>. The programs of part 2
+		are in <code>~/pico</code>, to read and change. <code>man pico</code> is the
+		short reference on the machine.
+	</div>
+</section>
+
+<section class="page" data-part="Part 1: the language">
+	<h2>The first program</h2>
+	<pre><span class="k">int</span> main() {
+    println(<span class="t">"hello, pocket"</span>);
+    <span class="k">return</span> 0;
+}</pre>
+	<p>Write it with <code>edit hello.pico</code>, then <kbd>Fn</kbd> <kbd>S</kbd>
+	to save and <kbd>Fn</kbd> <kbd>Q</kbd> to leave, and run it:</p>
+	<pre class="out">$ pico hello.pico
+hello, pocket</pre>
+	<p><code>pico</code> compiles and runs in one go. <code>picoc hello.pico</code>
+	makes a program of it, <code>./hello</code>, that starts faster.</p>
+	<p>Every program has a <code>main</code>. What it returns is its exit status:
+	0 means all went well. <code>main</code> can have the words typed after the
+	name:</p>
+	<pre><span class="k">int</span> main(<span class="k">str</span>[] args) {
+    <span class="k">str</span> who = len(args) &gt; 1 ? args[1] : <span class="t">"you"</span>;
+    println(<span class="t">"hello, "</span>, who);
+    <span class="k">return</span> 0;
+}</pre>
+	<pre class="out">$ pico hello.pico andre
+hello, andre</pre>
+</section>
+
+<section class="page">
+	<h2>Values and variables</h2>
+	<p>Every variable has a type, and says it:</p>
+	<pre><span class="k">int</span> count = 3;            <span class="c">// whole numbers</span>
+<span class="k">float</span> price = 2.50;       <span class="c">// with a point</span>
+<span class="k">bool</span> done = <span class="k">false</span>;        <span class="c">// true or false</span>
+<span class="k">str</span> name = <span class="t">"Ada"</span>;         <span class="c">// text</span>
+<span class="k">const int</span> SIZE = 10;      <span class="c">// never changes</span></pre>
+	<h3>Printing</h3>
+	<pre>println(<span class="t">"count is "</span>, count);
+printf(<span class="t">"%s: %d at %.2f\n"</span>, name, count, price);</pre>
+	<h3>Turning one into another</h3>
+	<p>Nothing changes type by itself (except an int where a float is wanted):</p>
+	<dl>
+		<dt>str(42)</dt><dd>"42"</dd>
+		<dt>to_int("17")</dt><dd>17, or 0 if it is not a number</dd>
+		<dt>int(3.9)</dt><dd>3</dd>
+		<dt>"n=" + n</dt><dd>+ joins text, numbers too</dd>
+	</dl>
+	<h3>Sums</h3>
+	<p><code>+ - * / %</code> as usual; <code>x += 2</code>, <code>x++</code>;
+	<code>7 / 2</code> is 3, <code>7.0 / 2</code> is 3.5. <code>random(6)</code>
+	is 0 to 5, <code>sqrt</code>, <code>pow</code>, <code>sin</code>, <code>abs</code>,
+	<code>min</code>, <code>max</code>.</p>
+</section>
+
+<section class="page">
+	<h2>Deciding and repeating</h2>
+	<pre><span class="k">if</span> (count &gt; 5) {
+    println(<span class="t">"many"</span>);
+} <span class="k">else if</span> (count &gt; 0) {
+    println(<span class="t">"some"</span>);
+} <span class="k">else</span> {
+    println(<span class="t">"none"</span>);
+}</pre>
+	<p class="s">A condition is a bool: <code>if (n != 0)</code>, never <code>if (n)</code>.
+	<code>&amp;&amp;</code> and, <code>||</code> or, <code>!</code> not.</p>
+	<pre><span class="k">while</span> (lives &gt; 0) { ... }
+<span class="k">for</span> (<span class="k">int</span> i = 0; i &lt; 10; i++) { ... }</pre>
+	<h3>Each item of a list</h3>
+	<pre><span class="k">str</span>[] fruit = [<span class="t">"apple"</span>, <span class="t">"fig"</span>, <span class="t">"kiwi"</span>];
+<span class="k">for</span> (<span class="k">str</span> f <span class="k">in</span> fruit) println(<span class="t">"I like "</span>, f);</pre>
+	<p class="s"><code>for ... in</code> cannot go past the end. For a text's letters:
+	<code>for (str ch in chars(s))</code>.</p>
+	<p><code>break</code> leaves a loop; <code>continue</code> goes on with the next
+	time round.</p>
+</section>
+
+<section class="page">
+	<h2>Choosing: switch and enum</h2>
+	<p>When one value decides between many things:</p>
+	<pre><span class="k">switch</span> (key) {
+<span class="k">case</span> <span class="t">'q'</span>, KEY_ESC:
+    running = <span class="k">false</span>;
+<span class="k">case</span> KEY_UP:
+    y--;
+<span class="k">default</span>:
+    beeps++;
+}</pre>
+	<p>Only the case that matches runs &mdash; nothing falls through into the
+	next one, as it does in C. A case can list several values; they can be
+	numbers, text or enum values. <code>default</code> comes last.</p>
+	<h3>enum</h3>
+	<p>Names for a handful of choices:</p>
+	<pre><span class="k">enum</span> Dir { UP, DOWN, LEFT, RIGHT }
+
+Dir d = LEFT;
+<span class="k">switch</span> (d) {
+<span class="k">case</span> UP, DOWN: println(<span class="t">"up or down"</span>);
+<span class="k">default</span>: println(<span class="t">"sideways"</span>);
+}</pre>
+	<p class="s">Enum values are ints: UP is 0, DOWN 1, and <code>LEFT = 10</code>
+	sets one.</p>
+</section>
+
+<section class="page">
+	<h2>Functions and lists</h2>
+	<pre><span class="k">int</span> square(<span class="k">int</span> n) {
+    <span class="k">return</span> n * n;
+}
+
+<span class="k">void</span> greet(<span class="k">str</span> who, <span class="k">int</span> times) {
+    <span class="k">for</span> (<span class="k">int</span> i = 0; i &lt; times; i++)
+        println(<span class="t">"hi "</span>, who);
+}</pre>
+	<p class="s">A function can be used above where it is written. One that returns
+	something must return on every path: the compiler checks.</p>
+	<h3>Lists (arrays)</h3>
+	<pre><span class="k">int</span>[] scores = [12, 7, 30];
+push(scores, 18);        <span class="c">// [12, 7, 30, 18]</span>
+sort(scores);            <span class="c">// [7, 12, 18, 30]</span>
+<span class="k">int</span> best = scores[len(scores) - 1];
+<span class="k">int</span> last = pop(scores);  <span class="c">// takes it off</span>
+<span class="k">int</span>[][] grid = [[1, 2], [3, 4]];</pre>
+	<p class="s">Also <code>insert</code>, <code>remove_at</code>, <code>slice</code>,
+	<code>reverse</code>, <code>find</code>. A wrong index stops the program and
+	says where.</p>
+</section>
+
+<section class="page">
+	<h2>Text and structs</h2>
+	<pre><span class="k">str</span> line = <span class="t">"  the quick brown fox  "</span>;
+<span class="k">str</span>[] words = split(trim(line));
+println(join(words, <span class="t">"-"</span>));   <span class="c">// the-quick-brown-fox</span>
+println(upper(<span class="t">"hey"</span>), find(<span class="t">"hello"</span>, <span class="t">"ll"</span>));</pre>
+	<p class="s">Also <code>substr</code>, <code>replace</code>, <code>contains</code>,
+	<code>starts_with</code>, <code>repeat</code>, <code>chars</code>. <code>s[i]</code>
+	is the byte at i, as a number.</p>
+	<h3>Structs</h3>
+	<pre><span class="k">struct</span> Player { <span class="k">str</span> name; <span class="k">int</span> x; <span class="k">int</span> lives; }
+
+Player p = Player{name: <span class="t">"ada"</span>, x: 1, lives: 3};
+p.x += 2;
+println(p);   <span class="c">// Player{name: "ada", x: 3, lives: 3}</span></pre>
+	<p class="s">Structs, lists and text are passed by reference: a function that
+	gets a Player changes that same Player.</p>
+	<h3>Files</h3>
+	<pre>File f = open(<span class="t">"notes.txt"</span>, <span class="t">"w"</span>);
+write(f, <span class="t">"a line\n"</span>);
+close(f);
+<span class="k">str</span> all = read(open(<span class="t">"notes.txt"</span>, <span class="t">"r"</span>));</pre>
+</section>
+
+<!-- ======================================================== part 2: apps -->
+
+<section class="page cover nofolio" data-part="Part 2: apps">
+	<div class="part">Part 2 of 2 &middot; apps</div>
+	<div class="brand">pico<span>.</span></div>
+	<div class="sub">the language of PocketType</div>
+	<img class="shot" src="img/matrix.png" alt="">
+	<div class="what">
+		<b>Part 2</b> colours and keys, a game loop,<br>
+		digital rain, the internet, commands,<br>
+		mistakes, and a reference on the back.<br>
+		All the programs are in <b>~/pico</b>.
+	</div>
+	<div><span class="ver">1.0 beta 2</span></div>
+</section>
+
+<section class="page">
+	<h2>The terminal</h2>
+	<p>The screen is 53 columns by 23 rows (<code>term_cols()</code>,
+	<code>term_rows()</code>). Colours and the cursor are escape codes, which are
+	plain text:</p>
+	<dl>
+		<dt>\e[31m \e[32m</dt><dd>red, green text (30 to 37)</dd>
+		<dt>\e[1m \e[0m</dt><dd>bold; back to normal</dd>
+		<dt>\e[2J</dt><dd>clear the screen</dd>
+		<dt>\e[5;10H</dt><dd>go to row 5, column 10</dd>
+		<dt>\e[?25l \e[?25h</dt><dd>hide, show the cursor</dd>
+	</dl>
+	<h3>Keys, at once</h3>
+	<p>A game needs each key the moment it is pressed: <code>raw_mode(true)</code>.
+	<code>readkey(100)</code> waits at most 100 ms and gives <code>KEY_NONE</code>
+	if nothing came, so the game moves on regardless.</p>
+	<pre><span class="k">int</span> x = 10;
+raw_mode(<span class="k">true</span>);
+print(<span class="t">"\e[2J\e[?25l"</span>);
+<span class="k">for</span> (;;) {
+    printf(<span class="t">"\e[10;%dH o "</span>, x);
+    <span class="k">int</span> key = readkey(100);
+    <span class="k">if</span> (key == <span class="t">'q'</span>) <span class="k">break</span>;
+    <span class="k">if</span> (key == KEY_LEFT) x--;
+    <span class="k">if</span> (key == KEY_RIGHT) x++;
+}
+print(<span class="t">"\e[?25h"</span>);
+raw_mode(<span class="k">false</span>);</pre>
+	<p class="s">Also KEY_UP, KEY_DOWN, KEY_ESC; Enter comes as <code>'\r'</code>.</p>
+</section>
+
+<section class="page">
+	<h2>A game: snake</h2>
+	<img class="shot" src="img/snake.png" alt="" style="width:52%">
+	<p><code>pico ~/pico/snake.pico</code>: the whole game is a loop that reads
+	a key, moves, and draws only what changed. In outline:</p>
+	<pre><span class="k">while</span> (!over) {
+    <span class="k">int</span> key = readkey(delay);
+    dir = steer(key, dir);
+    Point next = ahead(snake[0], dir);
+    <span class="k">if</span> (hits(next)) over = <span class="k">true</span>;
+    insert(snake, 0, next);   <span class="c">// the new head</span>
+    <span class="k">if</span> (at(next, food)) grow();
+    <span class="k">else</span> erase(pop(snake));   <span class="c">// the tail</span>
+}</pre>
+	<p>Steering is a switch over the keys, and an enum names the way it goes:</p>
+	<pre>Dir steer(<span class="k">int</span> key, Dir now) {
+    <span class="k">switch</span> (key) {
+    <span class="k">case</span> KEY_UP, <span class="t">'w'</span>: <span class="k">return</span> UP;
+    ...
+    <span class="k">default</span>: <span class="k">return</span> now;
+    }
+}</pre>
+</section>
+
+<section class="page">
+	<h2>Digital rain</h2>
+	<p><code>pico ~/pico/matrix.pico</code>: a drop for each column falls, a
+	bright head writing new glyphs, a trail fading behind it. In outline:</p>
+	<pre><span class="k">struct</span> Drop { <span class="k">int</span> y; <span class="k">int</span> len; <span class="k">int</span> speed; }
+
+<span class="k">for</span> (;;) {
+    <span class="k">str</span> frame = <span class="t">""</span>;
+    <span class="k">for</span> (<span class="k">int</span> x = 0; x &lt; cols; x++) {
+        Drop d = drops[x];
+        d.y++;
+        frame += at(d.y, x) + HEAD + glyph();
+        frame += at(d.y - 1, x) + GREEN + glyph();
+        frame += at(d.y - d.len, x) + <span class="t">" "</span>;
+        <span class="k">if</span> (d.y - d.len &gt;= rows)
+            drops[x] = new_drop();
+    }
+    print(frame);
+    <span class="k">if</span> (readkey(50) == <span class="t">'q'</span>) <span class="k">break</span>;
+}</pre>
+	<p class="s">The trick of any fast screen: build the frame as one text, write
+	it once, and write only the cells that change.</p>
+	<p class="s"><code>life.pico</code> (Conway's life) and <code>mandel.pico</code>
+	(a Mandelbrot zoom) are next to it.</p>
+</section>
+
+<section class="page">
+	<h2>The internet</h2>
+	<p>With Wi-Fi on, <code>http_get(url)</code> fetches what an address answers,
+	as text (<code>""</code> if it fails). Web APIs answer in JSON, and
+	<code>json_get(text, path)</code> picks one value out of it:</p>
+	<pre><span class="k">str</span> j = http_get(<span class="t">"https://api.open-meteo.com/"</span> +
+    <span class="t">"v1/forecast?latitude=41.9&amp;longitude=12.5"</span> +
+    <span class="t">"&amp;current=temperature_2m"</span>);
+println(json_get(j, <span class="t">"current.temperature_2m"</span>));</pre>
+	<p>A path is names and numbers joined by dots: for
+	<code>{"list": [{"name": "a"}]}</code>, <code>"list.0.name"</code> is
+	<code>a</code> and <code>"list.#"</code> counts the list.</p>
+	<pre class="out">$ pico ~/pico/weather.pico Roma
+Roma, Italia
+  25.4 C, clear
+  humidity 50%, wind 11.9 km/h</pre>
+	<h3>Any command</h3>
+	<p><code>output("date")</code> runs a command and gives back what it printed;
+	<code>run("play", "x.mp3")</code> runs one and lets it print.</p>
+	<pre><span class="k">str</span>[] songs = split(output(<span class="t">"ls"</span>, <span class="t">"/home/andre/music"</span>));</pre>
+</section>
+
+<section class="page">
+	<h2>When it goes wrong</h2>
+	<p>The compiler says where, and often what to do:</p>
+	<pre class="out">hello.pico:4:13: error: expected int, got str;
+parse it with to_int(s)
+    int n = "12";
+            ^</pre>
+	<p>A mistake while it runs stops the program with the line, and how it got
+	there; nothing else is harmed:</p>
+	<pre class="out">list.pico:6: runtime error: index 9 out of
+range (length 3)
+    in main (list.pico:6)</pre>
+	<h3>Finding mistakes</h3>
+	<dl>
+		<dt>println(x)</dt><dd>show a value; lists and structs too</dd>
+		<dt>assert(ok, "why")</dt><dd>stop at once if something is wrong</dd>
+		<dt class="k"><kbd>Fn</kbd> <kbd>C</kbd></dt><dd>stop a program that runs away</dd>
+		<dt>picoc -d x.pico</dt><dd>the compiled instructions</dd>
+	</dl>
+	<h3>Tips</h3>
+	<p class="s">Start from a program in <code>~/pico</code> and change it. Keep
+	functions short. Test on the PC too: <code>make -C lang</code> builds the same
+	<code>pico</code> there. <code>docs/PICO-TUTORIAL.md</code> and
+	<code>docs/LANGUAGE.md</code> have the rest.</p>
+</section>
+
+<section class="page">
+	<h2>Reference</h2>
+	<pre>int float bool str  T[]  File  void
+struct S { int a; }   enum E { A, B }
+const int N = 3;      int[] a = [1, 2];
+if else  while  for (;;)  for (T x in a)
+switch case default  break continue return
+? :   &amp;&amp; || !   + - * / %   == != &lt; &lt;=</pre>
+	<div class="cols">
+		<dl>
+			<dt>print println</dt> <dd>printf format</dd>
+			<dt>len</dt> <dd>of text, list</dd>
+			<dt>push pop</dt> <dd>insert remove_at</dd>
+			<dt>sort reverse</dt> <dd>slice find</dd>
+			<dt>split join</dt> <dd>trim chars</dd>
+			<dt>substr</dt> <dd>replace repeat</dd>
+			<dt>upper lower</dt> <dd>contains</dd>
+			<dt>starts_with</dt> <dd>ends_with</dd>
+			<dt>to_int</dt> <dd>to_float str</dd>
+			<dt>chr ord</dt> <dd>codes</dd>
+			<dt>abs min max</dt> <dd>sqrt pow</dd>
+			<dt>sin cos tan</dt> <dd>atan2 hypot</dd>
+			<dt>floor ceil</dt> <dd>round exp ln</dd>
+			<dt>random</dt> <dd>seed PI</dd>
+			<dt>open close</dt> <dd>read write</dd>
+			<dt>readline</dt> <dd>exists is_dir</dd>
+			<dt>listdir</dt> <dd>mkdir remove</dd>
+			<dt>rename</dt> <dd>stdin stdout</dd>
+			<dt>run output</dt> <dd>getenv exit</dd>
+			<dt>http_get</dt> <dd>json_get</dd>
+			<dt>sleep_ms</dt> <dd>uptime_ms</dd>
+			<dt>time date</dt> <dd>the clock</dd>
+			<dt>raw_mode</dt> <dd>readkey</dd>
+			<dt>term_cols</dt> <dd>term_rows</dd>
+			<dt>assert</dt> <dd>checks</dd>
+			<dt>KEY_UP ...</dt> <dd>KEY_ESC</dd>
+		</dl>
+	</div>
+	<p class="s" style="margin-top:1mm"><code>pico f.pico</code> runs,
+	<code>picoc f.pico</code> compiles, <code>man pico</code> reminds.</p>
+</section>
+
+<section class="page">
+	<h2>Programs to keep</h2>
+	<p>In <code>~/pico</code> on the machine, to run, read and take apart:</p>
+	<dl>
+		<dt>matrix.pico</dt><dd>digital rain, falling glyphs</dd>
+		<dt>snake.pico</dt><dd>the game: arrows or WASD</dd>
+		<dt>weather.pico</dt><dd><code>pico weather.pico Tokyo</code></dd>
+		<dt>life.pico</dt><dd>Conway's game of life</dd>
+		<dt>mandel.pico</dt><dd>a Mandelbrot zoom, in colour</dd>
+		<dt>todo.pico</dt><dd>a to-do list kept in a file</dd>
+		<dt>guess.pico</dt><dd>guess the number</dd>
+		<dt>wc.pico</dt><dd>counts lines, words, bytes</dd>
+		<dt>hello.pico</dt><dd>structs, arrays and a file</dd>
+		<dt>benchmark.pico</dt><dd>how fast the machine is</dd>
+	</dl>
+	<h3>Ideas to try</h3>
+	<p>A clock in big digits. A dice roller. Flash cards from a file in
+	<code>~/notes</code>. The day's news headlines from a JSON feed. A
+	pomodoro timer that runs <code>beep</code> with <code>run()</code>. A
+	maze. A calculator.</p>
+	<h3>Where next</h3>
+	<p><code>man pico</code> on the machine; on the PC,
+	<code>docs/PICO-TUTORIAL.md</code> to learn and <code>docs/LANGUAGE.md</code>
+	for all of it: every built-in, the limits, how the compiler works.</p>
+	<div class="tip">
+		<b>Run a program by its name.</b> <code>picoc snake.pico</code>, put
+		<code>snake</code> in <code>~/bin</code>, and <code>snake</code> is a command.
+	</div>
+</section>
+
+</body>
+</html>

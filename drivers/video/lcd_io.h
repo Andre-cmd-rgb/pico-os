@@ -20,3 +20,10 @@ size_t	lcd_io_max_transfer(void);
 int	lcd_io_reset_gpio(void);
 
 const char *lcd_io_name(void);
+
+/* A register of the panel read back, n bytes; -ENOTSUP where it cannot be. */
+int	lcd_io_read(uint8_t cmd, uint8_t *out, int n);
+
+/* The bus clock, changed at run time; -ENOTSUP where it cannot be. */
+int	lcd_io_set_clock(esp_lcd_panel_io_handle_t *io, int hz);
+int	lcd_io_clock(void);

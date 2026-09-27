@@ -271,7 +271,10 @@ static int bench_lcd(void)
 	}
 	static const uint16_t colors[] = { 0xf800, 0x07e0, 0x001f, 0x0000 };
 	int w = lcd_width(), h = lcd_height(), frames = 0;
-	int64_t start = now();
+	int64_t start;
+
+	power_screen_wake();
+	start = now();
 
 	while (frames < 20 && !pt_interrupted())
 		lcd_fill(0, 0, w, h, colors[frames++ % 4]);
@@ -292,6 +295,8 @@ static int bench_hog(void)
 		spins++;
 	return 0;
 }
+
+PT_COMPLETE(bench, ": all cpu fpu mem spawn lcd fs lines files hog\nfs: <dir>\nlines: <dir>\nfiles: <dir>\n")
 
 PT_PROGRAM_STACK(bench, 12, "measure speed\n"
 		 "usage: bench [all | cpu | fpu | mem | spawn | lcd |\n"

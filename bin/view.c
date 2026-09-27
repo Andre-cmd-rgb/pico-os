@@ -49,6 +49,8 @@ static int show(const char *path, struct canvas *c)
 	return ret;
 }
 
+PT_COMPLETE(view, ": <file:.bmp.jpg.jpeg>\n*: <file:.bmp.jpg.jpeg>\n")
+
 PT_PROGRAM_STACK(view, 8, "look at a picture\n"
 		 "usage: view [file.bmp | file.jpg ...]\n"
 		 "With no file, the pictures in ~/photos are offered as a list.\n"

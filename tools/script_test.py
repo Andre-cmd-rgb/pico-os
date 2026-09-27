@@ -114,7 +114,6 @@ def main():
         import xfer
         here = os.path.dirname(os.path.abspath(__file__))
         if xfer.push(b, os.path.join(here, "sh_features.sh"), "/tmp/work/features.sh", "features.sh"):
-            b.read_until(rb"\$ (\x1b\[K)?(\r\x1b\[\d+C)?$", 5)
             out = b.run("sh features.sh", 30)
             want = open(os.path.join(here, "sh_features.out")).read()
             ok = want.strip() in out

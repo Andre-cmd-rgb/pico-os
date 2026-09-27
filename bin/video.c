@@ -23,10 +23,13 @@
  *
  * Picture and sound are interleaved so that playing is one pass through
  * the file with no seeking, which is what an SD card is good at. The
- * sound is the clock: each frame's sound goes to the codec before its
- * picture is decoded, and audio_write() returns when the codec has room,
- * which paces everything else. A picture that cannot be ready before the
- * sound runs out is skipped, so the sound never stops for the picture.
+ * sound is the clock. Frames are read a few ahead of the one on the
+ * screen and their sound queued at once, enough of it to ride over a slow
+ * read or a slow frame; each frame notes when its sound will be heard,
+ * and its picture goes up at that moment -- not when its sound was
+ * queued, which put the picture a queue's length ahead of what was heard.
+ * A picture that cannot be ready by then is skipped, so the sound never
+ * stops for the picture.
  *
  * On another terminal the clip goes on playing its sound, as music would,
  * and decodes no pictures; back in front, it paints the last one again.
@@ -53,6 +56,28 @@
 #define HELPER_CORE	0		/* programs run on core 1 */
 #define READ_SIZE	(64 * 1024)	/* the file is taken in pieces this big */
 #define SLACK_US	4000		/* kept in hand when judging a frame late */
+/*
+ * Sound queued ahead of the picture, at most. A slow frame and a read from
+ * the card together outlasted 50 ms, and the sound broke up for a moment;
+ * 150 ms rides over that, and the picture leads the sound by no more than
+ * the eye forgives.
+ */
+#define CLIP_LATENCY_MS	150
+#define MAX_AHEAD	12		/* frames read ahead, at most */
+#define SHOW_LEAD_US	8000		/* a frame takes most of a refresh to reach the glass */
+
+/*
+ * A frame read ahead: its slices, its sound, and when that sound is heard
+ * (for a silent clip, when its time comes). The picture's buffer grows to
+ * the biggest frame the slot has held.
+ */
+struct slot {
+	uint8_t	*jpeg;
+	size_t	 cap;
+	size_t	 part[MAX_SLICES + 1];
+	uint8_t	*pcm;
+	int64_t	 play_at;
+};
 
 struct clip {
 	int	w, h, fps, frames;
@@ -136,6 +161,7 @@ struct blitter {
 	TaskHandle_t	  task;
 	SemaphoreHandle_t go, done;
 	struct canvas	 *c;
+	const uint8_t	 *native;	/* its turned copy, when the panel can be read */
 	volatile bool	  quit, pending;
 };
 
@@ -147,7 +173,8 @@ static void blit_task(void *arg)
 		xSemaphoreTake(b->go, portMAX_DELAY);
 		if (b->quit)
 			break;
-		if (vt_screen_begin())
+		/* in step with the panel's refresh if it can be, or else as it is */
+		if (vt_screen_begin() && (!b->native || canvas_send_native(b->c, b->native)))
 			canvas_blit_fit(b->c);
 		vt_screen_end();
 		xSemaphoreGive(b->done);
@@ -164,10 +191,11 @@ static void blit_finish(struct blitter *b)
 	}
 }
 
-static void blit_start(struct blitter *b, struct canvas *c)
+static void blit_start(struct blitter *b, struct canvas *c, const uint8_t *native)
 {
 	blit_finish(b);
 	b->c = c;
+	b->native = native;
 	b->pending = true;
 	xSemaphoreGive(b->go);
 }
@@ -185,7 +213,12 @@ static int task_start(TaskFunction_t fn, const char *name, uint32_t stack, void 
 	return 0;
 }
 
-/* Tells a task started above to finish, and waits until it has. */
+/*
+ * Tells a task started above to finish, and waits until it has. Nothing
+ * may be pending on it: the `done` it gives after work would be taken
+ * for the one it gives on quitting, and its semaphores deleted under it
+ * (a clip stopped with Esc mid-frame crashed the board that way).
+ */
 static void task_stop(TaskHandle_t *task, SemaphoreHandle_t *go, SemaphoreHandle_t *done,
 		      volatile bool *quit)
 {
@@ -259,9 +292,8 @@ static int read_header(struct reader *r, struct clip *c)
 	return 0;
 }
 
-/* Reads frame's slices into `jpeg`, noting where each starts; `part[slices]` is the end. */
-static int read_frame(struct reader *r, const struct clip *c, uint8_t *jpeg,
-		      size_t part[MAX_SLICES + 1], uint8_t *pcm)
+/* Reads a frame's slices into `f`, noting where each starts; `part[slices]` is the end. */
+static int read_frame(struct reader *r, const struct clip *c, struct slot *f)
 {
 	size_t at = 0;
 
@@ -274,15 +306,57 @@ static int read_frame(struct reader *r, const struct clip *c, uint8_t *jpeg,
 		n = le32(len);
 		if (n > MAX_FRAME - at)
 			return -EINVAL;
-		if (reader_get(r, jpeg + at, n))
+		if (at + n > f->cap) {		/* bigger than any frame it has held */
+			size_t cap = at + n > f->cap * 2 ? at + n : f->cap * 2;
+			uint8_t *p;
+
+			cap = cap > MAX_FRAME ? MAX_FRAME : cap;
+			if (!(p = pt_malloc(cap)))
+				return -ENOMEM;
+			if (at)
+				memcpy(p, f->jpeg, at);
+			pt_free(f->jpeg);
+			f->jpeg = p;
+			f->cap = cap;
+		}
+		if (reader_get(r, f->jpeg + at, n))
 			return -EIO;
-		part[s] = at;
+		f->part[s] = at;
 		at += n;
 	}
-	part[c->slices] = at;
-	if (c->audio_bytes && reader_get(r, pcm, c->audio_bytes))
+	f->part[c->slices] = at;
+	if (c->audio_bytes && reader_get(r, f->pcm, c->audio_bytes))
 		return -EIO;
 	return 0;
+}
+
+/* Sleeps until `t` on the microsecond clock, or until a signal. */
+static void wait_until(int64_t t)
+{
+	int64_t now;
+
+	while ((now = esp_timer_get_time()) < t - 1000 && !pt_interrupted())
+		pt_sleep_ms((int)((t - now) / 1000));
+}
+
+/*
+ * The frames read ahead, `from` up to `to`, heard from now on: after a
+ * pause or a picture saved, when their queued sound has been thrown away
+ * (a silent clip's are `away` later instead).
+ */
+static void requeue(struct slot *slots, int ahead, int from, int to, const struct clip *c,
+		    int64_t away)
+{
+	for (int n = from; n < to; n++) {
+		struct slot *f = &slots[n % ahead];
+
+		if (c->audio_bytes) {
+			f->play_at = esp_timer_get_time() + audio_queued_us();
+			audio_write(f->pcm, c->audio_bytes, 1);
+		} else {
+			f->play_at += away;
+		}
+	}
 }
 
 static void save_shot(struct canvas *c, char *shot, size_t size)
@@ -300,6 +374,47 @@ static void repaint(struct canvas *c)
 	vt_screen_end();
 }
 
+static void clock_text(char *out, size_t size, int seconds)
+{
+	if (seconds >= 3600)
+		snprintf(out, size, "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60);
+	else
+		snprintf(out, size, "%d:%02d", seconds / 60, seconds % 60);
+}
+
+/*
+ * Paused: a line along the bottom, in the status line's colours, saying
+ * where in the clip this is -- the time, and a bar filled that far --
+ * and which keys do what. The picture is painted again on the way out.
+ */
+static void pause_bar(const struct clip *clip, int frame)
+{
+	char now[16], all[16], left[40], right[40], line[200];
+	int cols, width, done;
+	size_t n;
+
+	clock_text(now, sizeof(now), frame / clip->fps);
+	clock_text(all, sizeof(all), clip->frames / clip->fps);
+	snprintf(left, sizeof(left), " || %s / %s  ", now, all);
+	snprintf(right, sizeof(right), "  space: play  s: save  q: quit");
+	vt_size(&cols, &width);
+	width = cols - (int)strlen(left) - (int)strlen(right);
+	if (width < 4) {		/* a narrow screen: the keys go */
+		right[0] = '\0';
+		width = cols - (int)strlen(left) - 1;
+	}
+	done = clip->frames ? (int)((int64_t)frame * width / clip->frames) : 0;
+	n = snprintf(line, sizeof(line), "%s", left);
+	for (int i = 0; i < width && n + 4 < sizeof(line); i++)
+		n += snprintf(line + n, sizeof(line) - n, "%s", i < done ? "\u2588" : "\u00b7");
+	snprintf(line + n, sizeof(line) - n, "%s", right);
+	if (vt_screen_begin())
+		vt_bar_line(lcd_height() - vt_line_height(), line);
+	vt_screen_end();
+}
+
+PT_COMPLETE(video, ": <file:.ptv>\n")
+
 PT_PROGRAM_STACK(video, 8, "play a clip\n"
 		 "usage: video [clip.ptv]\n"
 		 "With no file, what is in ~/video is offered as a list.\n"
@@ -312,12 +427,14 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	struct blitter blit = { 0 };
 	struct reader rd = { .fd = -1 };
 	struct clip clip = { 0 };
+	struct slot *slots = NULL;
 	char chosen[PT_PATH_MAX], shot[PT_PATH_MAX];
 	const char *path = argc > 1 ? argv[1] : chosen;
-	uint8_t *jpeg = NULL, *pcm = NULL;
-	int ret, was_rate = 0, was_min = 0, was_max = 0, next = 0;
+	void *native_mem[2] = { NULL, NULL };
+	uint8_t *native[2] = { NULL, NULL };
+	int ret, was_min = 0, was_max = 0, next = 0, ahead = 0, nread = 0, end;
 	int shown_n = 0, dropped = 0, frame_us, buffer_us = 0;
-	int64_t read_us = 0, decode_us = 0, blit_us = 0, started, queued = 0, queued_at = 0;
+	int64_t read_us = 0, decode_us = 0, blit_us = 0, started;
 	int64_t decode_guess = 0;
 	bool keys = true, screen = false;
 	unsigned gen = vt_screen_gen();
@@ -346,16 +463,10 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	}
 	if ((ret = read_header(&rd, &clip)))
 		goto done;
-	jpeg = pt_malloc(MAX_FRAME);
-	pcm = clip.audio_bytes ? pt_malloc(clip.audio_bytes) : NULL;
 	/* Two pages: one being sent to the panel while the next is
 	 * decoded into the other. */
 	if ((ret = canvas_open(&page[0])) || (ret = canvas_open(&page[1])))
 		goto done;
-	if (!jpeg || (clip.audio_bytes && !pcm)) {
-		ret = -ENOMEM;
-		goto done;
-	}
 
 	/*
 	 * Fit the whole picture once, then give slice 0 to this task and
@@ -385,14 +496,42 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 				goto done;
 		}
 	}
+	/*
+	 * Frames go to the panel turned into its own order, in step with its
+	 * refresh, so that nothing that moves tears (canvas_blit_native). The
+	 * turning is done here, on this core, while the frame waits for its
+	 * sound; the blitter on the other core only sends. A turned copy for
+	 * each page, in PSRAM: one is sent while the next is made.
+	 */
+	for (int k = 0; k < 2 && lcd_native_ok(); k++) {
+		native_mem[k] = pt_malloc((size_t)page[0].w * page[0].h * 2 + 63);
+		native[k] = native_mem[k] ?
+			(uint8_t *)(((uintptr_t)native_mem[k] + 63) & ~(uintptr_t)63) : NULL;
+	}
+	if (!native[0] || !native[1])
+		native[0] = native[1] = NULL;	/* then as it is, tearing or not */
 	if ((ret = task_start(blit_task, "vidblit", 3072, &blit, &blit.task, &blit.go, &blit.done)))
 		goto done;
 
 	if (clip.audio_bytes) {
-		was_rate = audio_rate();
-		if ((ret = audio_set_rate(clip.rate)))
+		/* a few frames queued at most, or the sound lags the picture */
+		if ((ret = audio_set_rate(clip.rate)) || (ret = audio_set_latency(CLIP_LATENCY_MS)))
 			goto done;
 		buffer_us = audio_buffer_us();
+	}
+	/* Enough frames ahead to cover the sound queued, and a few more. */
+	frame_us = 1000000 / clip.fps;
+	ahead = (buffer_us + frame_us - 1) / frame_us + 3;
+	ahead = ahead > MAX_AHEAD ? MAX_AHEAD : ahead;
+	if (!(slots = pt_calloc(ahead, sizeof(*slots)))) {
+		ret = -ENOMEM;
+		goto done;
+	}
+	for (int k = 0; k < ahead && clip.audio_bytes; k++) {
+		if (!(slots[k].pcm = pt_malloc(clip.audio_bytes))) {
+			ret = -ENOMEM;
+			goto done;
+		}
 	}
 	/* Nothing here is idle long enough for the governor to be right
 	 * about it, and a frame missed while the clock ramps up is a
@@ -401,49 +540,63 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	cpufreq_set(240, 240);
 
 	vt_hold_screen(true);
+	power_keep_screen(true);		/* nobody presses keys to watch */
 	screen = true;
 	canvas_clear(&page[0]);
 	canvas_clear(&page[1]);
 	repaint(&page[0]);
 	pt_tty_raw(PT_STDIN, true);
-	frame_us = 1000000 / clip.fps;
+	/*
+	 * The helpers on the other core work in this program's memory: a
+	 * kill from another terminal must end the loop and stop them, not
+	 * end the program under them.
+	 */
+	pt_sigcatch(true);
 	started = esp_timer_get_time();
+	end = clip.frames;
 
-	for (int i = 0; i < clip.frames; i++) {
-		size_t part[MAX_SLICES + 1];
-		int64_t mark = esp_timer_get_time(), now;
+	for (int i = 0; i < end && !pt_interrupted(); i++) {
+		int64_t mark, now;
 		struct canvas *into = &page[next];
-		bool late, hidden = !vt_screen_front();
+		struct slot *f;
+		const uint8_t *turned;
+		bool late, hidden;
 		int key;
 
-		if (read_frame(&rd, &clip, jpeg, part, pcm))
-			break;			/* a short file: stop, not an error */
-		now = esp_timer_get_time();
-		read_us += now - mark;
+		/*
+		 * Read ahead while there is a slot free and the sound has room
+		 * for another frame's without waiting. The frame about to be
+		 * shown is read whatever: its sound waiting for room is what
+		 * paces a clip that nobody is watching.
+		 */
+		while (nread < end && nread - i < ahead &&
+		       (nread == i || !clip.audio_bytes || audio_queued_us() + frame_us <= buffer_us)) {
+			struct slot *r = &slots[nread % ahead];
 
-		if (clip.audio_bytes) {
-			/*
-			 * The sound first, then the picture. What is queued
-			 * is worked out rather than asked for -- the I2S
-			 * driver keeps it to itself -- from what went in and
-			 * how long ago: a write that had to wait found the
-			 * ring full. If the picture would take longer to
-			 * make than the sound lasts, it is skipped, and the
-			 * time goes to keeping the sound going.
-			 */
-			queued -= now - queued_at;
-			if (queued < 0)
-				queued = 0;
-			audio_write(pcm, clip.audio_bytes, 1);
-			queued_at = esp_timer_get_time();
-			if (queued_at - now > 1000)
-				queued = buffer_us - buffer_us / 12;	/* full, less half a buffer */
-			else if ((queued += frame_us) > buffer_us)	/* a frame's sound is a frame long */
-				queued = buffer_us;
-			late = queued < decode_guess + read_us / (i + 1) + SLACK_US;
-		} else {
-			late = now > started + (int64_t)(i + 1) * frame_us;
+			mark = esp_timer_get_time();
+			if ((ret = read_frame(&rd, &clip, r))) {
+				if (ret == -ENOMEM)
+					goto done;
+				ret = 0;
+				end = nread;		/* a short file: stop, not an error */
+				break;
+			}
+			now = esp_timer_get_time();
+			read_us += now - mark;
+			if (clip.audio_bytes) {
+				r->play_at = now + audio_queued_us();
+				audio_write(r->pcm, clip.audio_bytes, 1);
+			} else {
+				r->play_at = started + (int64_t)nread * frame_us;
+			}
+			nread++;
 		}
+		if (i >= end)
+			break;
+		f = &slots[i % ahead];
+		hidden = !vt_screen_front();
+		/* not ready before half its sound is gone: let it go */
+		late = esp_timer_get_time() + decode_guess > f->play_at + frame_us / 2;
 
 		if (!hidden && gen != vt_screen_gen()) {
 			gen = vt_screen_gen();
@@ -451,7 +604,7 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			repaint(shown);
 		}
 		if (hidden) {
-			/* another terminal is in front: the sound goes on alone */
+			wait_until(f->play_at);	/* the sound goes on alone, in time */
 		} else if (late) {
 			dropped++;
 		} else {
@@ -463,17 +616,19 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 				struct helper *h = &helpers[s - 1];
 
 				h->c.px = into->px;
-				h->data = jpeg + part[s];
-				h->len = part[s + 1] - part[s];
+				h->data = f->jpeg + f->part[s];
+				h->len = f->part[s + 1] - f->part[s];
 				xSemaphoreGive(h->go);
 			}
-			ret = clip.slices > 1 ? canvas_jpeg_mem(&slice0, jpeg, part[1])
-					      : canvas_jpeg_mem(into, jpeg, part[1]);
+			ret = clip.slices > 1 ? canvas_jpeg_mem(&slice0, f->jpeg, f->part[1])
+					      : canvas_jpeg_mem(into, f->jpeg, f->part[1]);
 			for (int s = 1; s < clip.slices; s++) {
 				xSemaphoreTake(helpers[s - 1].done, portMAX_DELAY);
 				if (helpers[s - 1].ret)
 					ret = helpers[s - 1].ret;
 			}
+			turned = !ret && native[next] && !canvas_turn(into, native[next]) ?
+				 native[next] : NULL;
 			now = esp_timer_get_time();
 			decode_us += now - mark;
 			/* Guess high: a quick frame lowers it slowly, a slow
@@ -481,10 +636,8 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			decode_guess = now - mark > decode_guess ? now - mark
 				     : decode_guess - (decode_guess - (now - mark)) / 8;
 
-			/* A silent clip keeps time by the clock instead. */
-			if (!clip.audio_bytes)
-				while (esp_timer_get_time() < started + (int64_t)i * frame_us)
-					pt_sleep_ms(1);
+			/* up when its sound is heard */
+			wait_until(f->play_at - SHOW_LEAD_US);
 			/*
 			 * The previous frame has had this whole decode to
 			 * reach the panel, and it went from the other page,
@@ -495,7 +648,7 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			blit_finish(&blit);
 			blit_us += esp_timer_get_time() - mark;
 			if (!ret) {
-				blit_start(&blit, into);
+				blit_start(&blit, into, turned);
 				shown = into;
 				next ^= 1;
 				shown_n++;
@@ -516,8 +669,11 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			int64_t paused = esp_timer_get_time();
 
 			blit_finish(&blit);
+			if (clip.audio_bytes)
+				audio_discard();	/* the frames ahead go in again after */
 			if (key == ' ') {		/* paused until the next key */
-				audio_stop();
+				power_keep_screen(false);	/* it may dim while paused */
+				pause_bar(&clip, i);
 				while ((key = pt_readkey_timeout(PT_STDIN, 200)) == 's' ||
 				       key == PT_KEY_NONE) {
 					if (key == 's') {
@@ -525,40 +681,47 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 					} else if (gen != vt_screen_gen()) {
 						gen = vt_screen_gen();
 						repaint(shown);
+						pause_bar(&clip, i);
 					}
 				}
+				power_keep_screen(true);
+				repaint(shown);		/* the bar goes */
 				if (key == 'q' || key == PT_KEY_ESC || key == PT_CTRL('c') ||
 				    key == PT_KEY_EOF || key == PT_KEY_ERROR)
 					break;
 			} else {
 				save_shot(shown, shot, sizeof(shot));
 			}
-			/* Either way the sound ran dry and starts again. */
+			/* Either way the sound starts again from the next frame. */
+			requeue(slots, ahead, i + 1, nread, &clip, esp_timer_get_time() - paused);
 			started += esp_timer_get_time() - paused;
-			queued = 0;
 		}
 	}
 	ret = 0;
 done:
+	blit_finish(&blit);		/* the frame on its way to the panel first */
 	task_stop(&blit.task, &blit.go, &blit.done, &blit.quit);
+	pt_free(native_mem[0]);
+	pt_free(native_mem[1]);
 	for (int i = 0; i < MAX_SLICES - 1; i++)
 		task_stop(&helpers[i].task, &helpers[i].go, &helpers[i].done, &helpers[i].quit);
 	if (screen)
 		pt_tty_raw(PT_STDIN, false);
 	if (was_max)
 		cpufreq_set(was_min, was_max);
-	if (clip.audio_bytes) {
+	if (clip.audio_bytes)
 		audio_stop();
-		if (was_rate > 0)
-			audio_set_rate(was_rate);
-	}
 	canvas_close(&page[0]);
 	canvas_close(&page[1]);
-	pt_free(jpeg);
-	pt_free(pcm);
+	for (int k = 0; slots && k < ahead; k++) {
+		pt_free(slots[k].jpeg);
+		pt_free(slots[k].pcm);
+	}
+	pt_free(slots);
 	pt_free(rd.buf);
 	pt_close(rd.fd);
 	if (screen) {
+		power_keep_screen(false);
 		vt_hold_screen(false);
 		vt_redraw();
 	}

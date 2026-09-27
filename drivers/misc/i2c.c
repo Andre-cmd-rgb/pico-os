@@ -6,6 +6,7 @@
  * two pins. Only one driver may create that bus, so they ask for it here
  * and the first one to ask brings it up.
  */
+#include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 
@@ -57,6 +58,13 @@ int i2c_bus_get(int sda, int scl, i2c_master_bus_handle_t *out)
 		klog("i2c: bus on SDA %d / SCL %d failed", sda, scl);
 		return -EIO;
 	}
+	/*
+	 * Kept as they are through light sleep, pull-ups and all: ESP-IDF
+	 * isolates every pin while the chip dozes, and the CardKB's lines
+	 * have no pull-ups but the chip's own.
+	 */
+	gpio_sleep_sel_dis(sda);
+	gpio_sleep_sel_dis(scl);
 	buses[nbuses++] = (typeof(buses[0])){ sda, scl, handle };
 	*out = handle;
 	return 0;

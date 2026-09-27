@@ -5,6 +5,7 @@
  * because writing it costs nothing: no compression, no second copy of
  * the image, one row at a time straight from the capture buffer.
  */
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -22,6 +23,15 @@ static void put32(uint8_t *p, uint32_t v)
 	p[1] = v >> 8;
 	p[2] = v >> 16;
 	p[3] = v >> 24;
+}
+
+/*
+ * What a failed write was, from the C library's errno: a full disk (a
+ * few screenshots fill /tmp) says so, rather than "I/O error".
+ */
+static int write_error(void)
+{
+	return errno == ENOSPC ? -ENOSPC : -EIO;
 }
 
 int lcd_capture_save(const char *path)
@@ -50,14 +60,16 @@ int lcd_capture_save(const char *path)
 
 	f = fopen(vfs, "wb");
 	if (!f)
-		return -EIO;
+		return write_error();
+	errno = 0;
 	row = malloc((size_t)w * 3);
 	if (!row) {
 		fclose(f);
+		remove(vfs);
 		return -ENOMEM;
 	}
 	if (fwrite(header, 1, sizeof(header), f) != sizeof(header))
-		ret = -EIO;
+		ret = write_error();
 	for (int y = h - 1; y >= 0 && !ret; y--) {
 		const uint8_t *src = pixels + (size_t)y * w * 2;
 
@@ -70,11 +82,13 @@ int lcd_capture_save(const char *path)
 			row[x * 3 + 2] = (c >> 11) << 3;	/* red */
 		}
 		if (fwrite(row, 3, w, f) != (size_t)w)
-			ret = -EIO;
+			ret = write_error();
 	}
 	free(row);
 	if (fclose(f) && !ret)
-		ret = -EIO;
+		ret = write_error();
+	if (ret)
+		remove(vfs);		/* half a picture is no use to anyone */
 	return ret;
 }
 

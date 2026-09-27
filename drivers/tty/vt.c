@@ -5,7 +5,12 @@
  * VT100 subset programs actually use: cursor movement, erase, insert/delete
  * line, SGR colors and cursor visibility. A renderer task on core 0 redraws
  * only cells whose content changed, one span per row per LCD transfer, and
- * blinks a block cursor.
+ * blinks a cursor.
+ *
+ * Colours are indices into a palette the theme sets (theme.c): the
+ * sixteen ANSI colours, then the terminal's own -- its text and
+ * background, faint and bold text, the status line and the cursor --
+ * so a light theme can keep "white" text readable on its background.
  *
  * Without a display the grid is 80x24 and simply not drawn; the serial
  * mirror still carries every byte.
@@ -31,10 +36,15 @@
 #define HEADLESS_COLS	80
 #define HEADLESS_ROWS	24
 #define MAX_PARAMS	8
-#define FG_DEFAULT	7
-#define BG_DEFAULT	0
-#define FG_DIM		4
+#define FG_DEFAULT	VT_FG
+#define BG_DEFAULT	VT_BG
 #define CLEAN_LO	0xffff
+#define HIST_LINES	500		/* lines kept of what scrolled off the top */
+
+/* A cell's colours, packed: the text's index low, the background's high. */
+#define COLOR(fg, bg)	((uint16_t)((fg) | (bg) << 8))
+#define FG_OF(c)	((c) & 0xff)
+#define BG_OF(c)	((c) >> 8)
 
 #ifndef CONFIG_PT_CURSOR_BLINK_MS
 #define CONFIG_PT_CURSOR_BLINK_MS 0		/* display disabled */
@@ -44,24 +54,9 @@
 #define MAX(a, b)	((a) > (b) ? (a) : (b))
 #define CLAMP(v, lo, hi) MIN(MAX(v, lo), hi)
 
-/* ANSI color order: black red green yellow blue magenta cyan white, then bright */
-#if CONFIG_PT_THEME_GREEN
-static const uint32_t theme[16] = {
-	0x030803, 0xff5f3a, 0x33ff66, 0x9cffb5, 0x1f9e45, 0x9cffb5, 0x33ff66, 0x33ff66,
-	0x1a5c2e, 0xff7f5a, 0x66ff8c, 0xccffd9, 0x2fc45c, 0xccffd9, 0x66ff8c, 0xe6ffec,
-};
-#else
-/* PIXELTAPE crt-amber: bg #080604, fg #ffb000, dim #a57823, accent #ffd67a,
- * danger #ff5f3a, line #8a5f0c. Everything else is a step of the same hue. */
-static const uint32_t theme[16] = {
-	0x080604, 0xff5f3a, 0xffb000, 0xffd67a, 0xa57823, 0xffd67a, 0xffb000, 0xffb000,
-	0x8a5f0c, 0xff7f5a, 0xffc53d, 0xffe6a8, 0xc99a3f, 0xffe6a8, 0xffc53d, 0xfff1cc,
-};
-#endif
-
 struct cell {
-	uint8_t glyph;
-	uint8_t color;		/* bg << 4 | fg */
+	uint8_t  glyph;
+	uint16_t color;		/* COLOR(fg, bg) */
 };
 
 enum esc_state {
@@ -72,11 +67,15 @@ enum esc_state {
 
 static int		 cols = HEADLESS_COLS, rows = HEADLESS_ROWS;
 static int		 origin_x, origin_y;	/* the whole area */
-static int		 text_y;		/* the text, below the bar */
+static int		 text_y;		/* the text, beside the bar */
+static int		 bar_y;			/* the status line */
+static bool		 bar_top = true;
 static bool		 display;
 static SemaphoreHandle_t lock;
 static TaskHandle_t	 renderer;
-static uint8_t		 palette[16][2];
+static uint8_t		 palette[VT_COLORS][2];	/* RGB565, high byte first */
+static enum vt_cursor	 cursor_shape = VT_CURSOR_BLOCK;
+static int		 blink_ms = CONFIG_PT_CURSOR_BLINK_MS;
 
 /*
  * One of these per virtual terminal: what is on it, where the cursor is,
@@ -100,6 +99,15 @@ struct screen {
 
 	struct cell	*cells;
 	uint16_t	*dirty_lo, *dirty_hi;
+
+	/*
+	 * What scrolled off the top, a ring of HIST_LINES in PSRAM, made
+	 * the first time a line goes; and how far back it is being looked
+	 * at (vt_scroll), 0 for the screen as it is.
+	 */
+	struct cell	*hist;
+	int		 hist_head, hist_count;
+	int		 view;
 };
 
 static struct screen	 screens[CONFIG_PT_VT_COUNT];
@@ -131,23 +139,25 @@ static void mark_all(void)
 	}
 }
 
-static uint8_t blank_color(void)
+static uint16_t blank_color(void)
 {
-	return cur->bg << 4 | FG_DEFAULT;
+	return COLOR(FG_DEFAULT, cur->bg);
 }
 
-static uint8_t pen_color(void)
+static uint16_t pen_color(void)
 {
 	uint8_t fg = cur->fg;
 
 	if (cur->bold && fg < 8)
 		fg += 8;
+	else if (cur->bold && fg == FG_DEFAULT)
+		fg = VT_BOLD;
 	else if (cur->dim && fg == FG_DEFAULT)
-		fg = FG_DIM;
-	return cur->inverse ? fg << 4 | cur->bg : cur->bg << 4 | fg;
+		fg = VT_DIM;
+	return cur->inverse ? COLOR(cur->bg, fg) : COLOR(fg, cur->bg);
 }
 
-static void set_cell(int x, int y, uint8_t glyph, uint8_t color)
+static void set_cell(int x, int y, uint8_t glyph, uint16_t color)
 {
 	struct cell *c = &cur->cells[y * cols + x];
 
@@ -170,6 +180,29 @@ static void clear_rows(int from, int to)
 		clear_span(y, 0, cols);
 }
 
+/*
+ * The top `n` rows, about to scroll off, into the history. Someone looking
+ * back keeps looking at the same lines while more arrive underneath.
+ */
+static void keep_lines(int n)
+{
+	if (!cur->hist) {
+		cur->hist = heap_caps_malloc((size_t)HIST_LINES * cols * sizeof(*cur->hist),
+					     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+		if (!cur->hist)
+			return;
+	}
+	for (int y = 0; y < n && y < rows; y++) {
+		memcpy(&cur->hist[(size_t)cur->hist_head * cols], &cur->cells[y * cols],
+		       cols * sizeof(*cur->hist));
+		cur->hist_head = (cur->hist_head + 1) % HIST_LINES;
+		if (cur->hist_count < HIST_LINES)
+			cur->hist_count++;
+		if (cur->view && cur->view < cur->hist_count)
+			cur->view++;
+	}
+}
+
 /* Move rows [top, rows) by `n`: positive scrolls up, negative down. */
 static void shift_rows(int top, int n)
 {
@@ -182,6 +215,8 @@ static void shift_rows(int top, int n)
 		return;
 	}
 	if (n > 0) {
+		if (!top)
+			keep_lines(n);
 		memmove(&cur->cells[top * cols], &cur->cells[(top + n) * cols], (count - n) * cols * sizeof(*cur->cells));
 		for (int i = (rows - n) * cols; i < rows * cols; i++)
 			cur->cells[i] = (struct cell) { ' ' - FONT_FIRST, blank_color() };
@@ -257,6 +292,23 @@ static int param(int i, int def)
 	return i < cur->nparams && cur->params[i] > 0 ? cur->params[i] : def;
 }
 
+/*
+ * 38;5;N and 48;5;N (of 256 colours) and 38;2;R;G;B (any colour): the
+ * sixteen are taken for themselves, the rest are left alone, and either
+ * way the numbers after are not read as attributes of their own.
+ */
+static int extended_color(int i, uint8_t *which)
+{
+	if (i + 1 < cur->nparams && cur->params[i + 1] == 5) {
+		if (i + 2 < cur->nparams && cur->params[i + 2] < 16)
+			*which = cur->params[i + 2];
+		return i + 2;
+	}
+	if (i + 1 < cur->nparams && cur->params[i + 1] == 2)
+		return i + 4;
+	return i;
+}
+
 static void sgr(void)
 {
 	if (!cur->nparams)
@@ -264,7 +316,11 @@ static void sgr(void)
 	for (int i = 0; i < cur->nparams; i++) {
 		int p = cur->params[i];
 
-		if (p == 0)
+		if (p == 38)
+			i = extended_color(i, &cur->fg);
+		else if (p == 48)
+			i = extended_color(i, &cur->bg);
+		else if (p == 0)
 			reset_pen();
 		else if (p == 1)
 			cur->bold = true;
@@ -494,13 +550,25 @@ bool vt_has_display(void)
 
 /* ------------------------------------------------------------ renderer */
 
-static void draw_cell(uint8_t *px, int span_w, int cell_x, uint8_t glyph, uint8_t color)
+/*
+ * One cell into a row of pixels. With the cursor on it, a block is the
+ * cell in the cursor's colour with the glyph cut out of it; an underline
+ * or a bar is a stroke of the cursor's colour over the cell as it is.
+ */
+static void draw_cell(uint8_t *px, int span_w, int cell_x, uint8_t glyph, uint16_t color,
+		      bool cursor)
 {
-	const uint8_t *fg = palette[color & 0x0f];
-	const uint8_t *bg = palette[color >> 4];
+	const uint8_t *fg = palette[FG_OF(color) < VT_COLORS ? FG_OF(color) : FG_DEFAULT];
+	const uint8_t *bg = palette[BG_OF(color) < VT_COLORS ? BG_OF(color) : BG_DEFAULT];
+	const uint8_t *mark = palette[VT_CURSOR];
 	const uint8_t *bits = font5x8[glyph < FONT_GLYPHS ? glyph : FONT_UNKNOWN];
 	const bool block = glyph == FONT_BLOCK;
+	const int thick = SCALE * 2;
 
+	if (cursor && cursor_shape == VT_CURSOR_BLOCK) {
+		fg = palette[BG_OF(color) < VT_COLORS ? BG_OF(color) : BG_DEFAULT];
+		bg = mark;
+	}
 	for (int py = 0; py < CELL_H; py++) {
 		int gy = py / SCALE - 1;
 		uint8_t rowbits = block ? 0x1f : gy >= 0 && gy < FONT_H ? bits[gy] : 0;
@@ -510,6 +578,10 @@ static void draw_cell(uint8_t *px, int span_w, int cell_x, uint8_t glyph, uint8_
 			int gx = x / SCALE;
 			bool on = block || (gx < FONT_W && ((rowbits >> (FONT_W - 1 - gx)) & 1));
 			const uint8_t *c = on ? fg : bg;
+
+			if (cursor && ((cursor_shape == VT_CURSOR_UNDERLINE && py >= CELL_H - thick) ||
+				       (cursor_shape == VT_CURSOR_BAR && x < thick / 2 + 1)))
+				c = mark;
 			*o++ = c[0];
 			*o++ = c[1];
 		}
@@ -558,6 +630,10 @@ static int to_glyphs(const char *s, uint8_t *out, int max)
  * to the panel, and is not part of any terminal's text -- nothing a
  * program writes can disturb it.
  */
+/* A word on the status line for a moment: a level just changed, say. */
+static char note_text[32];
+static volatile int64_t note_until;
+
 static void draw_status(uint8_t *pixels)
 {
 	uint8_t bar[128], right[48];
@@ -568,7 +644,7 @@ static void draw_status(uint8_t *pixels)
 	time_t now = time(NULL), next;
 	struct tm tm;
 	int n, mid_at, right_at;
-	uint8_t color = (uint8_t)(FG_DEFAULT << 4 | BG_DEFAULT);	/* inverted */
+	uint16_t color = COLOR(VT_BAR_FG, VT_BAR_BG);
 
 	memset(bar, ' ' - FONT_FIRST, sizeof(bar));
 	if (alarm_ringing(&ring)) {
@@ -583,11 +659,16 @@ static void draw_status(uint8_t *pixels)
 		to_glyphs(text, bar + 3, right_at - 4);
 		memcpy(bar + right_at, right, cols - right_at);
 		if (now & 1)
-			color = (uint8_t)(BG_DEFAULT << 4 | FG_DEFAULT);	/* flashing */
+			color = COLOR(VT_BAR_BG, VT_BAR_FG);	/* flashing */
 	} else {
 		localtime_r(&now, &tm);
 		snprintf(text, sizeof(text), " %d/%d", vt_active() + 1, CONFIG_PT_VT_COUNT);
-		if (!wifi_state(&net) && net.up)
+		if (esp_timer_get_time() < note_until)
+			snprintf(text + strlen(text), sizeof(text) - strlen(text), "  %s", note_text);
+		else if (screens[active].view)	/* looking back: how far */
+			snprintf(text + strlen(text), sizeof(text) - strlen(text), "  \u2191%d",
+				 screens[active].view);
+		else if (!wifi_state(&net) && net.up)
 			snprintf(text + strlen(text), sizeof(text) - strlen(text), "  %s", net.ssid);
 		n = to_glyphs(text, bar, cols / 2 - 3);
 		mid_at = (cols - 5) / 2;
@@ -620,25 +701,86 @@ static void draw_status(uint8_t *pixels)
 	}
 
 	for (int x = 0; x < cols; x++)
-		draw_cell(pixels, cols * CELL_W, x * CELL_W, bar[x], color);
-	lcd_draw(origin_x, origin_y, cols * CELL_W, CELL_H, pixels);
+		draw_cell(pixels, cols * CELL_W, x * CELL_W, bar[x], color, false);
+	lcd_draw(origin_x, bar_y, cols * CELL_W, CELL_H, pixels);
+	/*
+	 * The columns leave a pixel or two at each edge (53 of them are 318
+	 * of the 320): the bar goes right across, in its own colour.
+	 */
+	if (origin_x > 0 || origin_x + cols * CELL_W < lcd_width()) {
+		const uint8_t *edge = palette[BG_OF(color)];
+		uint16_t rgb = edge[0] << 8 | edge[1];
+		int right = origin_x + cols * CELL_W;
+
+		lcd_fill(0, bar_y, origin_x, CELL_H, rgb);
+		lcd_fill(right, bar_y, lcd_width() - right, CELL_H, rgb);
+	}
+}
+
+/*
+ * A line of text in the status line's colours at pixel row `y`, right
+ * across the screen, for a program that holds the screen: the video
+ * player's pause bar. Between vt_screen_begin() and vt_screen_end().
+ */
+void vt_bar_line(int y, const char *text)
+{
+	uint8_t glyphs[128];
+	uint16_t color = COLOR(VT_BAR_FG, VT_BAR_BG);
+	const uint8_t *edge = palette[VT_BAR_BG];
+	size_t bytes = ((size_t)cols * CELL_W * CELL_H * 2 + 63) & ~(size_t)63;
+	uint8_t *px;
+
+	if (!display)
+		return;
+	px = heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+	if (!px)
+		return;
+	memset(glyphs, ' ' - FONT_FIRST, sizeof(glyphs));
+	to_glyphs(text, glyphs, cols);
+	for (int x = 0; x < cols; x++)
+		draw_cell(px, cols * CELL_W, x * CELL_W, glyphs[x], color, false);
+	lcd_draw(origin_x, y, cols * CELL_W, CELL_H, px);
+	lcd_fill(0, y, origin_x, CELL_H, edge[0] << 8 | edge[1]);
+	lcd_fill(origin_x + cols * CELL_W, y, lcd_width() - origin_x - cols * CELL_W, CELL_H,
+		 edge[0] << 8 | edge[1]);
+	heap_caps_free(px);
 }
 
 #else
 static void draw_status(uint8_t *pixels) { }
+void vt_bar_line(int y, const char *text) { }
 #endif
+
+/* The height of a line of text, in pixels. */
+int vt_line_height(void)
+{
+	return CELL_H;
+}
 
 static struct screen *onscreen(void)
 {
 	return &screens[active];
 }
 
+static volatile bool blanked;		/* the panel is asleep: draw nothing */
+static volatile bool status_now;	/* the status line to be drawn again at once */
+
+/* Row `y` as it is to be seen: from the history while looking back. */
+static const struct cell *shown_row(const struct screen *sc, int y)
+{
+	int line = sc->hist_count - sc->view + y;	/* history, then the screen */
+
+	if (line >= sc->hist_count)
+		return &sc->cells[(line - sc->hist_count) * cols];
+	line = (sc->hist_head - sc->hist_count + line + HIST_LINES) % HIST_LINES;
+	return &sc->hist[(size_t)line * cols];
+}
+
 static void render_task(void *arg)
 {
-	const int64_t blink_us = CONFIG_PT_CURSOR_BLINK_MS * 1000LL;
 	uint8_t *pixels = lcd_alloc_buffer((size_t)cols * CELL_W * CELL_H * 2);
 	struct cell *row = malloc(cols * sizeof(*row));
-	int64_t next_blink = esp_timer_get_time() + blink_us;
+	int64_t next_blink = 0;
 	int64_t next_status = 0;
 	bool blink_on = true, cur_shown = false;
 	int cur_x = -1, cur_y = -1;
@@ -648,7 +790,13 @@ static void render_task(void *arg)
 		vTaskDelete(NULL);
 	}
 	for (;;) {
-		ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(blink_us ? CONFIG_PT_CURSOR_BLINK_MS : 1000));
+		int64_t blink_us = blink_ms * 1000LL;
+
+		/* dark: nothing to draw until it is lit again, whatever is written */
+		ulTaskNotifyTake(pdTRUE, blanked ? portMAX_DELAY :
+				 pdMS_TO_TICKS(blink_us ? blink_ms : 1000));
+		if (blanked)
+			continue;
 		vTaskDelay(pdMS_TO_TICKS(8));	/* let a burst of output land in one frame */
 		ulTaskNotifyTake(pdTRUE, 0);
 		if (held_by_program && hold_pid && !proc_alive(hold_pid)) {
@@ -661,7 +809,7 @@ static void render_task(void *arg)
 			repaint_all = true;
 		}
 		xSemaphoreTake(panel, portMAX_DELAY);
-		if (held_by_program && hold_vt == active) {
+		if (blanked || (held_by_program && hold_vt == active)) {
 			xSemaphoreGive(panel);
 			continue;		/* the program in front owns the screen */
 		}
@@ -675,19 +823,21 @@ static void render_task(void *arg)
 		struct screen *sc = onscreen();
 
 		if (repaint_all) {
-			/* a different terminal: clear once, then draw it */
+			/* a different terminal or new colours: clear once, then draw it */
 			repaint_all = false;
 			lcd_fill(0, 0, lcd_width(), lcd_height(),
 				 palette[BG_DEFAULT][0] << 8 | palette[BG_DEFAULT][1]);
 			cur_x = cur_y = -1;
 			next_status = 0;
 		}
-		if (esp_timer_get_time() >= next_status) {
+		if (status_now || esp_timer_get_time() >= next_status) {
+			status_now = false;
 			next_status = esp_timer_get_time() + 1000000;
+			theme_tick();		/* light by day, if it is asked for */
 			draw_status(pixels);
 		}
 		xSemaphoreTake(lock, portMAX_DELAY);
-		bool show = sc->cursor && (blink_on || !blink_us);
+		bool show = sc->cursor && (blink_on || !blink_us) && !sc->view;
 		int cx = sc->x, cy = sc->y;
 		if (cx != cur_x || cy != cur_y || show != cur_shown) {
 			mark_on(sc, cur_x, cur_y);
@@ -703,7 +853,7 @@ static void render_task(void *arg)
 			sc = onscreen();	/* it may have been switched */
 			int lo = sc->dirty_lo[y], hi = sc->dirty_hi[y];
 			if (lo <= hi) {
-				memcpy(row, &sc->cells[y * cols + lo], (hi - lo + 1) * sizeof(*row));
+				memcpy(row, shown_row(sc, y) + lo, (hi - lo + 1) * sizeof(*row));
 				sc->dirty_lo[y] = CLEAN_LO;
 				sc->dirty_hi[y] = 0;
 			}
@@ -712,16 +862,100 @@ static void render_task(void *arg)
 				continue;
 
 			int n = hi - lo + 1;
-			for (int i = 0; i < n; i++) {
-				uint8_t color = row[i].color;
-				if (cur_shown && y == cur_y && lo + i == cur_x)
-					color = (uint8_t)(color << 4 | color >> 4);
-				draw_cell(pixels, n * CELL_W, i * CELL_W, row[i].glyph, color);
-			}
+			for (int i = 0; i < n; i++)
+				draw_cell(pixels, n * CELL_W, i * CELL_W, row[i].glyph, row[i].color,
+					  cur_shown && y == cur_y && lo + i == cur_x);
 			lcd_draw(origin_x + lo * CELL_W, text_y + y * CELL_H, n * CELL_W, CELL_H, pixels);
 		}
 		xSemaphoreGive(panel);
 	}
+}
+
+/* ------------------------------------------------------------ looks */
+
+static void place_bar(void)
+{
+	int screen_rows = display ? lcd_height() / CELL_H : rows;
+
+#if CONFIG_PT_STATUS_LINE
+	bar_y = bar_top ? origin_y : origin_y + rows * CELL_H;
+	text_y = bar_top ? origin_y + (screen_rows - rows) * CELL_H : origin_y;
+#else
+	(void)screen_rows;
+	bar_y = origin_y;
+	text_y = origin_y;
+#endif
+}
+
+/* Everything again, in the new colours or places. */
+static void repaint_everything(void)
+{
+	if (!display || !lock)
+		return;
+	xSemaphoreTake(lock, portMAX_DELAY);
+	for (int i = 0; i < CONFIG_PT_VT_COUNT; i++) {
+		struct screen *sc = &screens[i];
+
+		if (!sc->cells)
+			continue;
+		for (int y = 0; y < rows; y++) {
+			sc->dirty_lo[y] = 0;
+			sc->dirty_hi[y] = cols - 1;
+		}
+	}
+	repaint_all = true;
+	if (held_by_program)
+		hold_gen++;		/* whoever holds it paints its own again */
+	xSemaphoreGive(lock);
+	if (renderer)
+		xTaskNotifyGive(renderer);
+}
+
+void vt_set_palette(const uint32_t rgb[VT_COLORS])
+{
+	for (int i = 0; i < VT_COLORS; i++) {
+		uint16_t v = ((rgb[i] >> 16) & 0xf8) << 8 | ((rgb[i] >> 8) & 0xfc) << 3 |
+			     (rgb[i] & 0xff) >> 3;
+
+		palette[i][0] = v >> 8;
+		palette[i][1] = v;
+	}
+	repaint_everything();
+}
+
+void vt_set_cursor(enum vt_cursor shape, int blink)
+{
+	cursor_shape = shape;
+	blink_ms = blink;
+	repaint_everything();
+}
+
+void vt_set_bar(bool top)
+{
+	if (top == bar_top)
+		return;
+	bar_top = top;
+	place_bar();
+	repaint_everything();
+}
+
+/*
+ * The screen going dark, or lit again: the idle dimmer's doing. Taken
+ * with the panel held, so the renderer is not halfway through a frame
+ * when the panel goes to sleep, and a program holding the screen draws
+ * nothing more until it is back -- then paints itself again.
+ */
+void vt_blank(bool dark)
+{
+	if (!display)
+		return;
+	xSemaphoreTake(panel, portMAX_DELAY);
+	blanked = dark;
+	xSemaphoreGive(panel);
+	if (!dark)
+		repaint_everything();
+	else if (renderer)
+		xTaskNotifyGive(renderer);
 }
 
 /* ------------------------------------------------------------ setup */
@@ -740,14 +974,9 @@ void vt_init(void)
 #endif
 		origin_x = (lcd_width() - cols * CELL_W) / 2;
 		origin_y = (lcd_height() - screen_rows * CELL_H) / 2;
-		text_y = origin_y + (screen_rows - rows) * CELL_H;
+		place_bar();
 	}
-	for (int i = 0; i < 16; i++) {
-		uint32_t rgb = theme[i];
-		uint16_t v = ((rgb >> 16) & 0xf8) << 8 | ((rgb >> 8) & 0xfc) << 3 | (rgb & 0xff) >> 3;
-		palette[i][0] = v >> 8;
-		palette[i][1] = v;
-	}
+	theme_default();		/* until /etc/theme is read */
 
 	lock = xSemaphoreCreateMutex();
 	panel = xSemaphoreCreateMutex();
@@ -796,7 +1025,7 @@ static bool screen_alloc(void)
 		if (!sc->cells || !sc->dirty_lo || !sc->dirty_hi)
 			return false;
 		for (int k = 0; k < cols * rows; k++)
-			sc->cells[k] = (struct cell) { ' ' - FONT_FIRST, 0 };
+			sc->cells[k] = (struct cell) { ' ' - FONT_FIRST, COLOR(FG_DEFAULT, BG_DEFAULT) };
 		for (int y = 0; y < rows; y++) {
 			sc->dirty_lo[y] = CLEAN_LO;
 			sc->dirty_hi[y] = 0;
@@ -826,6 +1055,50 @@ void vt_write_on(int which, const char *s, size_t n)
 	cur = was;
 	xSemaphoreGive(lock);
 	if (which == active && renderer)
+		xTaskNotifyGive(renderer);
+}
+
+/*
+ * Looking back through what scrolled off the terminal in front: `lines`
+ * further back, or forward when negative, as far as there is. Returns how
+ * far back it is now; 0 is the screen as it is.
+ */
+int vt_scroll(int lines)
+{
+	struct screen *sc;
+	int view;
+
+	if (!lock)
+		return 0;
+	xSemaphoreTake(lock, portMAX_DELAY);
+	sc = onscreen();
+	view = sc->view + lines;
+	view = view < 0 ? 0 : view > sc->hist_count ? sc->hist_count : view;
+	if (view != sc->view) {
+		sc->view = view;
+		for (int y = 0; y < rows && sc->cells; y++) {
+			sc->dirty_lo[y] = 0;
+			sc->dirty_hi[y] = cols - 1;
+		}
+		status_now = true;
+	}
+	xSemaphoreGive(lock);
+	if (renderer)
+		xTaskNotifyGive(renderer);
+	return view;
+}
+
+void vt_scroll_end(void)
+{
+	vt_scroll(-HIST_LINES);
+}
+
+void vt_note(const char *text)
+{
+	strlcpy(note_text, text, sizeof(note_text));
+	note_until = esp_timer_get_time() + 2000000;
+	status_now = true;
+	if (renderer)
 		xTaskNotifyGive(renderer);
 }
 
@@ -880,6 +1153,8 @@ void vt_hold_screen(bool held)
 
 	if (!display)
 		return;
+	if (held)
+		power_activity();		/* a program about to show something */
 	xSemaphoreTake(panel, portMAX_DELAY);	/* not halfway through a repaint */
 	hold_vt = vt >= 0 ? vt : active;
 	hold_pid = held && p ? p->pid : 0;
@@ -891,7 +1166,7 @@ void vt_hold_screen(bool held)
 
 bool vt_screen_front(void)
 {
-	return held_by_program && hold_vt == active;
+	return held_by_program && hold_vt == active && !blanked;
 }
 
 /*
@@ -922,6 +1197,10 @@ void vt_redraw(void)
 {
 	if (!display || !cur->cells)
 		return;
+	if (blanked) {
+		repaint_everything();		/* when it is lit again */
+		return;
+	}
 	lcd_fill(0, 0, lcd_width(), lcd_height(), palette[BG_DEFAULT][0] << 8 | palette[BG_DEFAULT][1]);
 	xSemaphoreTake(lock, portMAX_DELAY);
 	mark_all();

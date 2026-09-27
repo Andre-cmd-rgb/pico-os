@@ -1,7 +1,7 @@
-# a — the PocketType language
+# pico — the PocketType language
 
-`a` is a small statically typed language with C-like syntax. You write
-`.al` files, `ac` compiles them to a compact bytecode executable, and a
+pico is a small statically typed language with C-like syntax. You write
+`.pico` files, `picoc` compiles them to a compact bytecode executable, and a
 virtual machine in the kernel runs it. The same compiler and VM build as PC
 tools, so you can write and test on the laptop and run the result unchanged
 on the board.
@@ -11,15 +11,15 @@ accesses are bounds-checked, null is checked, and a mistake stops the
 program with the source line, not the board.
 
 ```
-$ ac hello.al          # writes ./hello
+$ picoc hello.pico          # writes ./hello
 $ ./hello world        # the kernel finds the loader by the file's first bytes
-$ a hello.al world     # compile in memory and run in one step
+$ pico hello.pico world     # compile in memory and run in one step
 ```
 
 ## Your first program
 
 ```c
-// hello.al
+// hello.pico
 int main(str[] args) {
     str name = len(args) > 1 ? args[1] : "world";
     println("hello, ", name);
@@ -33,7 +33,7 @@ int main(str[] args) {
 On the board:
 
 ```
-$ a hello.al andre
+$ pico hello.pico andre
 hello, andre
 1 squared is 1
 ...
@@ -42,9 +42,9 @@ hello, andre
 On the PC, build the tools once:
 
 ```
-$ make -C lang            # builds lang/build-host/ac and lang/build-host/a
-$ lang/build-host/a hello.al andre
-$ lang/build-host/ac -o hello hello.al      # the same executable the board runs
+$ make -C lang            # builds lang/build-host/picoc and lang/build-host/pico
+$ lang/build-host/pico hello.pico andre
+$ lang/build-host/picoc -o hello hello.pico      # the same executable the board runs
 ```
 
 `make -C lang test` runs the test suite, `make -C lang bench` the timings.
@@ -52,6 +52,8 @@ $ lang/build-host/ac -o hello hello.al      # the same executable the board runs
 `args[0]` is the program name, so `len(args) - 1` is the argument count. The
 value `main` returns is the exit status; `void main()` and `int main()`
 without arguments work too.
+
+New to it? [PICO-TUTORIAL.md](PICO-TUTORIAL.md) teaches it from the start.
 
 ## Types
 
@@ -63,6 +65,7 @@ without arguments work too.
 | `str` | immutable UTF-8 text, any length |
 | `T[]` | growable array of `T`: `int[]`, `str[]`, `Point[]`, `int[][]` |
 | `struct` | named fields, declared at the top level |
+| `enum` | named `int` values, declared at the top level |
 | `File` | an open file (see the file built-ins) |
 | `void` | the return type of a function that returns nothing |
 
@@ -120,6 +123,7 @@ to_float("2.5")
 const int WIDTH = 40;          // global constant
 str greeting = "hi";           // global variable, set up before main runs
 struct Point { int x; int y; } // struct, usable before its declaration
+enum Dir { UP, DOWN, LEFT = 10, RIGHT }   // UP 0, DOWN 1, LEFT 10, RIGHT 11
 
 int dist2(Point p) { return p.x * p.x + p.y * p.y; }
 
@@ -133,6 +137,10 @@ int main() {
 }
 ```
 
+An enum's values are `int` constants, each one more than the one before
+unless it says (`= 10`); its name, `Dir` here, is a type that means `int`
+(`Dir d = LEFT;`). The name can be left out: `enum { A, B }`.
+
 Functions can be called before they are declared. A function that returns a
 value must return on every path; the compiler says so if it can fall off the
 end.
@@ -143,11 +151,26 @@ end.
 if (cond) { ... } else if (other) { ... } else { ... }
 while (cond) { ... }
 for (int i = 0; i < n; i++) { ... }     // any part may be empty: for (;;)
+for (str s in names) { ... }            // each item of an array, in order
+switch (x) { case 1, 2: ... case 3: ... default: ... }
 break; continue; return; return value;
 { ... }                                  // a block has its own scope
 x = 1;  x += 2;  x++;  ++x;  a[i] *= 3;  p.x -= 1;   // assignments
 f(x);                                    // a call on its own
 ```
+
+`for (T x in a)` runs once for each item of the array `a`, `x` a new
+variable each time; the length is looked at every time round, so an array
+that grows in the loop is gone through to its end. For a string's
+characters, `for (str ch in chars(s))`.
+
+`switch` compares its value with each case's values in order and runs the
+first case that matches, then goes on after the switch: there is no
+falling through. A case can list several values (`case 'q', KEY_ESC:`),
+and they can be any expressions of the switch's type: `int`, `str`,
+`float`, `bool` or an enum. `default`, if there is one, goes last. Each
+case is a scope of its own, so it can declare variables; `break` leaves
+the switch, and `continue` goes on with the loop around it.
 
 Conditions must be `bool`: `if (n)` is an error, write `if (n != 0)`.
 Assignments are statements, not expressions, so `if (x = 1)` cannot happen.
@@ -208,6 +231,7 @@ them: `[1, 2, 3]`, `Point{x: 3, y: 4}`, with strings inside quoted.
 | `starts_with(str s, str p)`, `ends_with(str s, str p) -> bool` | |
 | `contains(str s, str part) -> bool` | |
 | `repeat(str s, int times) -> str` | `repeat("-", 20)` for a rule |
+| `chars(str s) -> str[]` | the characters, each a whole UTF-8 sequence |
 | `chr(int code) -> str` | a code point as UTF-8 |
 | `ord(str s) -> int` | the first code point |
 | `to_int(str s[, int fallback]) -> int` | accepts `-12`, `0x1f`, surrounding spaces |
@@ -274,6 +298,7 @@ assert(len(rows) > 0, "the file had no rows");
 | --- | --- |
 | `run(str cmd, ...) -> int` | run a command, wait, return its status (-1 if it cannot start) |
 | `run(str[] argv) -> int` | the same with the arguments in an array |
+| `output(str cmd, ...) -> str` | run a command and return what it printed (at most 1 MB); `""` if it cannot start. Also `output(str[] argv)` |
 | `exit(int status)` | stop now |
 | `getenv(str name) -> str` | `""` when unset |
 | `sleep_ms(int ms)` | |
@@ -283,6 +308,28 @@ assert(len(rows) > 0, "the file had no rows");
 | `raw_mode(bool on)` | no echo, keys arrive immediately |
 | `readkey([int timeout_ms]) -> int` | a byte, a `KEY_*` value, or `KEY_NONE` after the timeout |
 | `term_cols()`, `term_rows() -> int` | 80x24 when the output is not a terminal |
+
+### The internet
+
+| | |
+| --- | --- |
+| `http_get(str url) -> str` | what a web address answers (`curl -sL`, so https and redirects work); `""` if it fails |
+| `json_get(str json, str path) -> str` | the value at `path` in a JSON text |
+
+A `json_get` path is names and array indexes joined by dots:
+`"main.temp"`, `"list.0.name"`. The value comes back as text: a string
+without its quotes and escapes (`\u00e9` becomes `é`), a number or `true`,
+`false`, `null` as written, an object or array as its JSON, to look into
+again. `#` as the last step is how many items or members there are. A path
+that leads nowhere gives `""`.
+
+```c
+str j = http_get("https://api.open-meteo.com/v1/forecast?latitude=45.46" +
+                 "&longitude=9.19&current=temperature_2m");
+println(json_get(j, "current.temperature_2m"), " C");
+```
+
+### Keys
 
 Key constants: `KEY_UP KEY_DOWN KEY_LEFT KEY_RIGHT KEY_HOME KEY_END KEY_PGUP
 KEY_PGDN KEY_INSERT KEY_DELETE KEY_ESC KEY_F1..KEY_F4 KEY_NONE KEY_EOF`.
@@ -303,7 +350,7 @@ Every string, array, struct and `File` is freed as soon as the last
 reference to it goes away — no pause, no garbage collector. Reference
 *cycles* (a struct that points to itself, directly or through others) are
 never freed; the memory comes back when the program exits. The host tools
-report cycles when you run them with `AL_LEAKCHECK=1`, which the test suite
+report cycles when you run them with `PICO_LEAKCHECK=1`, which the test suite
 does.
 
 ## Errors
@@ -312,7 +359,7 @@ Compile errors name the file, line and column, show the line and stop after
 five:
 
 ```
-hello.al:4:13: error: expected int, got str; parse it with to_int(s)
+hello.pico:4:13: error: expected int, got str; parse it with to_int(s)
     int n = "12";
             ^
 ```
@@ -321,9 +368,9 @@ Runtime errors name the line and the call chain, and the program exits with
 status 1:
 
 ```
-hello.al:6: runtime error: index 9 out of range (length 3)
-    in at (hello.al:2)
-    in main (hello.al:6)
+hello.pico:6: runtime error: index 9 out of range (length 3)
+    in at (hello.pico:2)
+    in main (hello.pico:6)
 ```
 
 What is checked at runtime: array and string indexes, null arrays, structs
@@ -351,7 +398,7 @@ stack, so it fits on the device with room to spare.
 
 ## The executable format
 
-`ac` writes a file that starts with the bytes `7f 41 4c` (`\x7fAL`) and a
+`picoc` writes a file that starts with the bytes `7f 41 4c` (`\x7fAL`) and a
 format version, which is how the kernel picks the loader. Everything is
 little-endian:
 
@@ -379,10 +426,10 @@ the *types* the instructions expect: an executable edited by hand, with its
 CRC fixed up, can still confuse the VM. Compile from source if you are not
 sure where a file came from.
 
-Format version 2 added the CRC. A program compiled by an older `ac` is
-refused with "compile it again with ac".
+Format version 2 added the CRC. A program compiled by an older `picoc` is
+refused with "compile it again with picoc".
 
-`ac -d file.al` prints the instructions, which is the quickest way to see
+`picoc -d file.pico` prints the instructions, which is the quickest way to see
 what the compiler did with a piece of code.
 
 ## How it is built
@@ -399,7 +446,7 @@ project:
 | `vm.c` | the interpreter loop |
 | `runtime.c` | memory pool, objects, strings, formatting, errors |
 | `builtins.c` | the built-in functions |
-| `driver.c` | the `ac` and `a` commands |
+| `driver.c` | the `picoc` and `pico` commands |
 | `port_pt.c`, `port_host.c` | the only files that know about the platform |
 
 ### Speed
@@ -410,7 +457,7 @@ verified `quicken.c` rewrites the first opcode of common sequences into
 fused instructions that do the whole sequence at once: a for loop's step and
 test, a compare and branch on locals, `a = b + c` on locals. Only that one
 byte changes, so everything else, jumps included, stays valid. A counted loop
-runs about twice as fast for it; set `AL_NOQUICKEN=1` to run without, which
+runs about twice as fast for it; set `PICO_NOQUICKEN=1` to run without, which
 the tests do to check that both behave the same.
 
 Rough costs on the board at 240 MHz, per loop iteration: an empty loop
@@ -423,10 +470,11 @@ The core never calls a `pt_` function directly and keeps no mutable global
 state, because on PocketType two programs can run at once in one address
 space.
 
-Examples are in `lang/examples/`: `hello.al`, `wc.al`, `guess.al`,
-`todo.al`, `life.al` (the terminal, raw keys, colors), `mandel.al` (an
-animated Mandelbrot zoom), and `bench.al` and `benchmark.al` (timings,
-with `--help`). Tests are `lang/tests/*.al` with their expected output next
+Examples are in `lang/examples/`: `hello.pico`, `wc.pico`, `guess.pico`,
+`todo.pico`, `life.pico` (the terminal, raw keys, colors), `mandel.pico` (an
+animated Mandelbrot zoom), `matrix.pico` (digital rain), `snake.pico` (the
+game: enum, switch, for-in), `weather.pico` (http_get and json_get), and
+`bench.pico` and `benchmark.pico` (timings, with `--help`). Tests are `lang/tests/*.pico` with their expected output next
 to them; `make -C lang test` runs them twice, once compiled in memory and
 once through a compiled file, `make -C lang asan` does the same under
 AddressSanitizer, and `make -C lang bench` times the benchmarks on the PC.

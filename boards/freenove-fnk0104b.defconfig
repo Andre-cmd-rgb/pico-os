@@ -20,6 +20,9 @@ CONFIG_PT_LCD_MOSI=11
 CONFIG_PT_LCD_SCLK=12
 CONFIG_PT_LCD_SPI_CS=10
 CONFIG_PT_LCD_SPI_DC=46
+# The panel's SDO is wired to GPIO13 (the schematic's LCD_MISO): the
+# video player reads the refresh line off it to send frames without tearing
+CONFIG_PT_LCD_MISO=13
 CONFIG_PT_LCD_SPI_RST=-1
 CONFIG_PT_LCD_SPI_HZ=80000000
 CONFIG_PT_LCD_BACKLIGHT=45
@@ -27,7 +30,10 @@ CONFIG_PT_LCD_BRIGHTNESS=80
 CONFIG_PT_LCD_INVERT=y
 CONFIG_PT_LCD_INIT_ALT=y
 CONFIG_PT_LCD_BGR=y
-CONFIG_PT_LCD_ROTATION=1
+# Landscape, the way up the board is held in its case: 3 rather than 1
+# (which `rotate 180` used to fix after boot), so the boot log is the
+# right way up from its first line. `rotate 180` still turns it over.
+CONFIG_PT_LCD_ROTATION=3
 
 # microSD on the four-wire SDMMC bus
 CONFIG_PT_SD_MMC=y
@@ -68,12 +74,27 @@ CONFIG_PT_BATTERY_SCALE=200
 # of fall put the rest of the board at about as much again.
 CONFIG_PT_BATTERY_IDLE_MA=55
 CONFIG_PT_BATTERY_BACKLIGHT_MA=45
-# The TP4054's PROG resistor (3.3k) sets 300 mA, but on the charger the
-# 200 mAh cell rose 2 mV a minute where it had fallen 5 at 60 mA: what
-# reached it was a few tens of mA. Not yet measured on the 2500 mAh cell
-# (TODOS.md says how). On USB the backlight made no step in the cell's
-# voltage, so the board seems to run from USB while it charges.
-CONFIG_PT_BATTERY_CHARGE_MA=50
+# The schematic (Freenove's 2.8inch_ESP32-S3_Display_Schematic.pdf):
+# a TP4054 with 3.3k on PROG, which is 1000 V / 3.3k = 300 mA; its CHRG
+# pin goes to nothing but a resistor, so there is no charge LED and no
+# charging signal. A P-MOSFET (Q3) cuts the cell off from the load
+# whenever USB is there, and the board runs from USB through a diode:
+# on USB the cell sees only the charger (the backlight makes no step in
+# its voltage then, which agrees). The divider is 200k/200k with 100 nF
+# at the pin.
+#
+# But on this board it does not charge the 2500 mAh cell, as far as the
+# cell can tell: 90 minutes on a PC (2026-09-26, the cell straight on the
+# board) and it stood at 3.94 V the whole time, where 300 mA would have
+# lifted it 100 mV an hour. So it is not counted (0): on USB the board
+# runs from the PC and the cell rests, and the 1 A module charges it.
+# (The 50 mA once set here came from a 200 mAh cell that was already in
+# the charger's constant-voltage end, where the current falls away.)
+CONFIG_PT_BATTERY_CHARGE_MA=0
+# And a 1 A TP4056 module on the cell's wires since 2026-09-26 (cell on
+# its B+/B-, the board's socket on OUT+/OUT-): charging from its own USB
+# port, with or without the board's.
+CONFIG_PT_BATTERY_MODULE_MA=1000
 
 CONFIG_PT_LED=y
 CONFIG_PT_LED_GPIO=42

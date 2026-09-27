@@ -289,5 +289,19 @@ void lcd_probe_fill(uint16_t rgb565)
 	gpio_set_level(CONFIG_PT_LCD_CS, 1);
 }
 
+int lcd_io_read(uint8_t cmd, uint8_t *out, int n)
+{
+	return -ENOTSUP;
+}
+
+int lcd_io_set_clock(esp_lcd_panel_io_handle_t *io, int hz)
+{
+	return -ENOTSUP;
+}
+
+int lcd_io_clock(void)
+{
+	return CONFIG_PT_LCD_PCLK_HZ;
+}
 
 #endif /* CONFIG_PT_LCD_ILI9341_I80 */

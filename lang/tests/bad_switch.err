@@ -1,0 +1,16 @@
+bad_switch.pico:3:5: error: 'case' outside a switch
+    case 1: return 0;
+    ^
+bad_switch.pico:4:39: error: default goes last in a switch
+    switch (1) { default: println(1); case 2: println(2); }
+                                      ^
+bad_switch.pico:5:26: error: continue outside a loop
+    switch (1) { case 1: continue; }
+                         ^
+bad_switch.pico:6:18: error: expected 'case' or 'default' in the switch, found name
+    switch (1) { println(1); }
+                 ^
+bad_switch.pico:7:19: error: for goes through an array; for a str's characters, write for (str ch in chars(s))
+    for (int s in "text") println(s);
+                  ^
+bad_switch.pico: too many errors, stopping

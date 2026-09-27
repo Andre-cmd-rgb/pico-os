@@ -645,7 +645,8 @@ int pt_sleep_ms(uint32_t ms)
 {
 	proc_check_signals();
 	while (ms) {
-		uint32_t step = ms < 50 ? ms : 50;
+		uint32_t poll = proc_poll_ms(50);
+		uint32_t step = ms < poll ? ms : poll;
 		vTaskDelay(pdMS_TO_TICKS(step));
 		ms -= step;
 		proc_stop_point();		/* a stopped sleep stops counting */

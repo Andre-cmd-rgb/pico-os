@@ -6,7 +6,7 @@
  * else has gone wrong -- which is exactly when they are wanted.
  *
  * `help <command>` still explains a single command; this is for the
- * longer things: the language, the wiring, how the system is put
+ * longer things: the pico language, the wiring, how the system is put
  * together.
  */
 #include <string.h>
@@ -20,7 +20,7 @@
 
 PAGE(intro);
 PAGE(commands);
-PAGE(language);
+PAGE(pico);
 PAGE(hardware);
 
 static const struct {
@@ -30,15 +30,24 @@ static const struct {
 } pages[] = {
 	{ "intro", "what this is and how it fits together", intro_start, intro_end },
 	{ "commands", "every command, by what it is for", commands_start, commands_end },
-	{ "language", "the `a` language", language_start, language_end },
+	{ "pico", "the pico language", pico_start, pico_end },
 	{ "hardware", "the board, its pins and what is attached", hardware_start, hardware_end },
 };
 
 #define NPAGES (sizeof(pages) / sizeof(pages[0]))
 
+/* For Tab: the pages there are. */
+static void man_more(const char *after, pt_complete_add add, void *ctx)
+{
+	for (size_t i = 0; i < NPAGES; i++)
+		add(ctx, pages[i].name);
+}
+
+PT_COMPLETE_MORE(man, ": <more>\n", man_more)
+
 PT_PROGRAM(man, "read the manual\n"
 	   "usage: man [page]\n"
-	   "Without a page, lists them. `man language | more` reads a long\n"
+	   "Without a page, lists them. `man pico | more` reads a long\n"
 	   "one a screen at a time, and `help <command>` explains one command.")
 {
 	if (argc > 2) {

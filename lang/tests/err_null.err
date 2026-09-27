@@ -1,1 +1,1 @@
-err_null.al:6: runtime error: null struct (reading a field)
+err_null.pico:6: runtime error: null struct (reading a field)

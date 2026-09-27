@@ -144,6 +144,76 @@ void canvas_blit_fit(const struct canvas *c)
 }
 
 /*
+ * The picture on the canvas turned into the panel's own order -- rows of
+ * 240, as the glass is built -- and sent behind its refresh, which is what
+ * keeps a moving picture from tearing (drivers/video/ili9341.c says why).
+ * Only the picture: the black round it was painted once. With the row
+ * order bit left as landscape has it, panel row p is landscape column p
+ * either way up; panel columns run down the landscape picture at rotation
+ * 1 and up it at rotation 3 (read back from the panel itself). It goes in
+ * 16-pixel squares, so both pictures stay in the cache while it does.
+ */
+#define TILE	16
+
+/* Where the picture is on the panel, in its order; false if it cannot go that way. */
+static bool native_rect(const struct canvas *c, int *c0, int *cw, int *p0, int *ph)
+{
+	/* the picture: landscape columns x0.. are panel rows, its rows columns */
+	*p0 = c->x0;
+	*ph = c->dw;
+	*cw = c->dh;
+	*c0 = lcd_rotation() == 3 ? c->h - c->y0 - c->dh : c->y0;
+	return c->w == 320 && c->h == 240 && (lcd_rotation() & 1) && *ph >= 1 && *cw >= 1;
+}
+
+int canvas_turn(const struct canvas *c, uint8_t *native)
+{
+	const uint16_t *src = (const uint16_t *)c->px;
+	uint16_t *dst = (uint16_t *)native;
+	const int w = c->w, h = c->h;		/* landscape: 320 x 240 */
+	bool flip = lcd_rotation() == 3;
+	int c0, cw, p0, ph;
+
+	if (!native_rect(c, &c0, &cw, &p0, &ph))
+		return -ENOTSUP;
+	for (int t0 = 0; t0 < ph; t0 += TILE) {
+		int t1 = t0 + TILE < ph ? t0 + TILE : ph;
+
+		for (int k0 = 0; k0 < cw; k0 += TILE) {
+			int k1 = k0 + TILE < cw ? k0 + TILE : cw;
+
+			for (int t = t0; t < t1; t++) {
+				const uint16_t *col = src + p0 + t;
+				uint16_t *row = dst + t * cw;
+
+				for (int k = k0; k < k1; k++) {
+					int cc = c0 + k;
+
+					row[k] = col[(flip ? h - 1 - cc : cc) * w];
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+int canvas_send_native(const struct canvas *c, const uint8_t *native)
+{
+	int c0, cw, p0, ph;
+
+	if (!native_rect(c, &c0, &cw, &p0, &ph))
+		return -ENOTSUP;
+	return lcd_draw_native(native, c0, cw, p0, ph);
+}
+
+int canvas_blit_native(const struct canvas *c, uint8_t *native)
+{
+	int ret = canvas_turn(c, native);
+
+	return ret ? ret : canvas_send_native(c, native);
+}
+
+/*
  * Keeping a copy of what is on the screen. `screenshot` cannot be used
  * from a program that owns the panel -- taking one makes the terminal
  * paint itself over the picture -- so such a program arms the capture

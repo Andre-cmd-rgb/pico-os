@@ -128,7 +128,29 @@ a full decoder (bit reader with both check sums, fixed and LPC
 predictors, Rice residuals, the three stereo decorrelations, any bit
 depth) and its output is checked against ffmpeg bit for bit. MP3 is
 minimp3 in `third_party/`, wrapped by `codec/mp3.c`; it keeps a 17 KB
-scratch buffer on the stack, which is why `play` asks for a 32 KB one.
+scratch buffer on the stack, which is why `play` asks for a 24 KB one
+(it was seen to use 18). `play` is the one program allowed on either
+core (`PT_PROGRAM_ANYCORE`): decoding is a sixth of a core, and on the
+programs' core it slowed a game on another terminal from 60 frames a
+second to 57.
+
+## The speaker is shared
+
+`drivers/audio/audio.c` is a mixer. Every task that writes gets a stream,
+a ring of its samples in PSRAM at its own rate; a kernel task on core 0
+takes a block from each, brings it to the rate on the wire (the highest
+any stream with samples wants) by linear interpolation, adds them up and
+hands them to I2S, whose DMA paces everything. A writer blocks while its
+ring is full, so a program timed by its sound still runs at its rate.
+`audio_set_latency()` sizes the ring: a second for `play` (a card busy
+writing a screenshot never runs it dry), 50 ms for the NES and a clip,
+whose sound has to keep up with the picture. `audio_stop()` plays the
+caller's queue out, `audio_discard()` drops it (a pause), and a stream
+whose process has gone is freed by the mixer. The alarm still takes the
+speaker over (`audio_claim`), and the others go on at their pace,
+unheard. After 5 s of silence the codec goes into standby, and before
+deep sleep `audio_sleep()` puts it there and holds the amplifier's
+shutdown pin.
 
 `play -n` decodes without playing and prints the rate, the speed and a
 CRC-32 of the samples: that is how a decoder is checked on a board with
@@ -152,7 +174,33 @@ and the joypad state each frame. Two traps, both paid for once:
 The 256x240 picture sits in the middle of the 320x240 panel. Drawing
 every frame needs 7.4 MB/s and the bus does 8.2 at 80 MHz, so the
 default draws every other frame: the emulation stays at 60 Hz and the
-screen gets 30. `nes -f 0` draws them all and runs at about 38.
+screen gets 30. `nes -f 0` draws them all and runs at about 38. Its row
+buffer is in PSRAM, aligned for the DMA: in internal RAM it took 12 KB
+that music on another terminal left no room for.
+
+## Clips without tearing
+
+The ILI9341 refreshes from its memory a row at a time along its own
+portrait rows, whatever orientation is sent; a landscape frame takes
+16 ms to send and a refresh 12, so every refresh during a send showed
+parts of two frames along slanting seams. The TE pin is not wired on the
+Freenove board, but the panel's SDO is (GPIO13), so `io_spi.c` adds a
+second, 4 MHz SPI device for reads -- chip select taken by hand for the
+moment -- and `lcd_draw_native()` asks the panel which line it is
+refreshing (0x45, Get Scanline; a dummy bit first, so the count arrives
+shifted by one). The clip player turns each frame into the panel's own
+order (`canvas_blit_native`, 16-pixel tiles) and sends it in bands of
+rows, each only once the refresh has passed it, so no refresh meets a
+half-sent band. Two things only the panel could show: its row order bit
+(MY) turns the refresh round too, so it is never changed between frames;
+and with MY set the refresh runs from the last row to the first.
+`lcdtest tear up|down|land` flashes red and blue frames sent each way:
+all at once is right, a seam is tearing.
+
+The panel also sat on the wrong SPI controller until 1.0: the board file
+says `SPI_HOST=2` for SPI2, and ESP-IDF numbers from SPI1, so 2 was SPI3,
+which has no pins of its own and went through the GPIO matrix at twice
+its rated 40 MHz. `io_spi.c` maps the name to the number now.
 
 ## Screenshots
 
@@ -332,26 +380,26 @@ claims a file by its first bytes, and an `exec` that runs inside the new
 process. Two are registered:
 
 - **scripts** (`shell/sh.c`): files starting with `#!` or ending in `.sh`.
-- **`a` programs** (`lang/port_pt.c`): files starting with `\x7fAL`, the
-  bytecode `ac` writes. The loader checks the file's CRC-32 and verifies
+- **pico programs** (`lang/port_pt.c`): files starting with `\x7fAL` (from
+  when the language was called a), the bytecode `picoc` writes. The loader checks the file's CRC-32 and verifies
   every function before the VM runs it, and the VM makes the same system
   calls a C program does, so signals, Ctrl-C and `ps` work unchanged.
 
 The language itself is described in [LANGUAGE.md](LANGUAGE.md). Its core
-(`lang/`) builds into the firmware and, with `make -C lang`, into `ac` and `a`
-for the PC; `lang/port.h` is the only platform interface. Another format,
+(`lang/`) builds into the firmware and, with `make -C lang`, into `picoc` and
+`pico` for the PC; `lang/port.h` is the only platform interface. Another format,
 WebAssembly for instance, would be one more loader registered the same way.
 
 ## Testing
 
 ```sh
-make hosttest                      # the a compiler and VM, JPEG, the text programs
+make hosttest                      # the pico compiler and VM, JPEG, the text programs
 make -C lang asan                  # the a tests under AddressSanitizer and UBSan
 make test                          # hosttest, then QEMU: no board needed
 make hwtest PORT=/dev/ttyACM0      # the shell suite on a board
 make progtest PORT=/dev/ttyACM0    # the text programs on a board, against GNU's
 make scripttest PORT=/dev/ttyACM0  # if/for/while/case, functions, scripts
-make langtest PORT=/dev/ttyACM0    # the a language on the board
+make langtest PORT=/dev/ttyACM0    # the pico language on the board
 make stress PORT=/dev/ttyACM0      # 10 minutes of process, file and signal churn
 ```
 

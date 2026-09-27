@@ -1,8 +1,8 @@
 /*
- * Port layer for a PC (Linux, macOS): POSIX calls. Builds build-host/ac and
- * build-host/a, which pick their behaviour from the name they run under.
+ * Port layer for a PC (Linux, macOS): POSIX calls. Builds build-host/picoc and
+ * build-host/pico, which pick their behaviour from the name they run under.
  *
- * AL_STATS=1 runs the command on a painted 1 MB thread stack and reports
+ * PICO_STATS=1 runs the command on a painted 1 MB thread stack and reports
  * the peak heap and stack it used, to check what fits on the device.
  */
 #define _GNU_SOURCE
@@ -22,7 +22,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "al.h"
+#include "pico.h"
 #include "driver.h"
 #include "port.h"
 
@@ -180,6 +180,69 @@ int port_run(int argc, const char **argv)
 	return -1;
 }
 
+int port_run_output(int argc, const char **argv, char **out, size_t *len)
+{
+	posix_spawn_file_actions_t acts;
+	size_t cap = 4096, n = 0;
+	int fds[2], status, err;
+	char *buf, scrap[256];
+	pid_t pid;
+
+	*out = NULL;
+	*len = 0;
+	if (pipe(fds))
+		return -errno;
+	posix_spawn_file_actions_init(&acts);
+	posix_spawn_file_actions_adddup2(&acts, fds[1], 1);
+	posix_spawn_file_actions_addclose(&acts, fds[0]);
+	err = posix_spawnp(&pid, argv[0], &acts, NULL, (char *const *)argv, environ);
+	posix_spawn_file_actions_destroy(&acts);
+	close(fds[1]);
+	if (err) {
+		close(fds[0]);
+		return -err;
+	}
+	buf = port_alloc(cap);
+	for (;;) {
+		ssize_t got;
+
+		if (buf && n + 1 >= cap && cap < PORT_OUTPUT_MAX + 1) {
+			size_t more = cap * 2 > PORT_OUTPUT_MAX + 1 ? PORT_OUTPUT_MAX + 1 : cap * 2;
+			char *p = port_realloc(buf, more);
+
+			if (p) {
+				buf = p;
+				cap = more;
+			}
+		}
+		if (buf && n + 1 < cap)
+			got = read(fds[0], buf + n, cap - n - 1);
+		else
+			got = read(fds[0], scrap, sizeof(scrap));
+		if (got < 0 && errno == EINTR)
+			continue;
+		if (got <= 0)
+			break;
+		if (buf && n + 1 < cap)
+			n += got;
+	}
+	close(fds[0]);
+	while (waitpid(pid, &status, 0) < 0) {
+		if (errno != EINTR) {
+			port_free(buf);
+			return -errno;
+		}
+	}
+	if (!buf)
+		return -ENOMEM;
+	buf[n] = '\0';
+	*out = buf;
+	*len = n;
+	if (WIFEXITED(status))
+		return WEXITSTATUS(status);
+	return WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
+}
+
 const char *port_getenv(const char *name)
 {
 	return getenv(name);
@@ -256,14 +319,14 @@ int port_readbyte(int timeout_ms)
 	if (timeout_ms >= 0) {
 		int r = poll(&p, 1, timeout_ms);
 		if (r == 0)
-			return AL_KEY_NONE;
+			return PICO_KEY_NONE;
 		if (r < 0)
-			return errno == EINTR ? AL_KEY_INTR : AL_KEY_ERROR;
+			return errno == EINTR ? PICO_KEY_INTR : PICO_KEY_ERROR;
 	}
 	long n = port_read(0, &c, 1);
 	if (n == 1)
 		return c;
-	return n == 0 ? AL_KEY_EOF : AL_KEY_ERROR;
+	return n == 0 ? PICO_KEY_EOF : PICO_KEY_ERROR;
 }
 
 void port_tty_size(int *cols, int *rows)
@@ -297,12 +360,12 @@ static void *job_main(void *arg)
 int main(int argc, char **argv)
 {
 	const char *base = strrchr(argv[0], '/');
-	struct job job = { al_main_a, argc, argv, 1 };
+	struct job job = { pico_main_run, argc, argv, 1 };
 
 	base = base ? base + 1 : argv[0];
-	if (!strcmp(base, "ac"))
-		job.fn = al_main_ac;
-	if (!getenv("AL_STATS"))
+	if (!strcmp(base, "picoc"))
+		job.fn = pico_main_compile;
+	if (!getenv("PICO_STATS"))
 		return job.fn(argc, argv);
 
 	size_t size = 1 << 20;

@@ -18,6 +18,8 @@
 
 #if CONFIG_PT_NES
 
+PT_COMPLETE(nes, ": -q -f <file:.nes>\n*: <file:.nes>\n")
+
 PT_PROGRAM_STACK(nes, 16, "play a NES game\n"
 		 "usage: nes [-q] [-f skip] [rom.nes]\n"
 		 "With no file, the games in ~/roms are offered as a list.\n"
@@ -92,6 +94,8 @@ PT_PROGRAM_STACK(nes, 16, "play a NES game\n"
 static const char *const pad_button_names[] = {
 	"up", "down", "left", "right", "a", "b", "start", "select",
 };
+
+PT_COMPLETE(pad, ": on scan connect watch\nscan: all\n")
 
 PT_PROGRAM(pad, "a Bluetooth gamepad for the games\n"
 	   "usage: pad [on | scan [all] | connect N | watch]\n"

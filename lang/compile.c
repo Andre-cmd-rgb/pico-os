@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "al.h"
+#include "pico.h"
 #include "lex.h"
 #include "port.h"
 
@@ -110,12 +110,25 @@ struct cstring {
 	uint32_t	len;
 };
 
+/* An enum's name, which is a type meaning int, and its named values. */
+struct cenum {
+	uint32_t	name;
+	uint32_t	len;
+};
+
+struct cconst {
+	uint32_t	name;
+	uint32_t	len;
+	int32_t		value;
+};
+
 struct loop {
 	struct loop	*outer;
 	uint16_t	 depth;
 	uint32_t	 breaks;	/* first entry in c->breaks */
 	uint32_t	 conts;
 	bool		 has_break;
+	bool		 is_switch;	/* break leaves it; continue goes past it */
 };
 
 /* Code cut out of the stream to be emitted later (loop conditions, steps). */
@@ -152,6 +165,10 @@ struct comp {
 	uint32_t	 nparams, cap_params;
 	struct cglobal	*globals;
 	uint32_t	 nglobals, cap_globals;
+	struct cenum	*enums;
+	uint32_t	 nenums, cap_enums;
+	struct cconst	*consts;
+	uint32_t	 nconsts, cap_consts;
 	struct cstring	*strings;
 	uint32_t	 nstrings, cap_strings;
 	struct buf	 strbuf;
@@ -237,11 +254,11 @@ static void verror_at(struct comp *c, const struct token *t, const char *fmt, va
 		return;
 	c->panic = true;
 	vsnprintf(msg, sizeof(msg), fmt, ap);
-	al_eprintf("%s:%u:%u: error: %s\n", c->file, (unsigned)t->line, (unsigned)t->col, msg);
+	pico_eprintf("%s:%u:%u: error: %s\n", c->file, (unsigned)t->line, (unsigned)t->col, msg);
 	if (t->kind != TK_EOF)
 		print_source_line(c, t);
 	if (++c->errors >= MAX_ERRORS) {
-		al_eprintf("%s: too many errors, stopping\n", c->file);
+		pico_eprintf("%s: too many errors, stopping\n", c->file);
 		c->stop = true;
 		c->tok.kind = TK_EOF;
 		c->peek.kind = TK_EOF;
@@ -465,6 +482,22 @@ static const char *type_name(struct comp *c, struct type t)
 
 static bool type_start(struct comp *c, const struct token *t);
 
+static int find_enum(struct comp *c, const struct token *t)
+{
+	for (uint32_t i = 0; i < c->nenums; i++)
+		if (same_name(c, c->enums[i].name, c->enums[i].len, t))
+			return i;
+	return -1;
+}
+
+static int find_const(struct comp *c, const struct token *t)
+{
+	for (uint32_t i = 0; i < c->nconsts; i++)
+		if (same_name(c, c->consts[i].name, c->consts[i].len, t))
+			return i;
+	return -1;
+}
+
 static int find_struct(struct comp *c, const struct token *t)
 {
 	for (uint32_t i = 0; i < c->nstructs; i++)
@@ -486,6 +519,10 @@ static bool parse_type(struct comp *c, struct type *t)
 	case TK_FILE: *t = T_FILE; break;
 	case TK_IDENT: {
 		int sid = find_struct(c, &c->tok);
+		if (sid < 0 && find_enum(c, &c->tok) >= 0) {
+			*t = T_INT;		/* an enum's values are ints */
+			break;
+		}
 		if (sid < 0) {
 			error_at(c, &c->tok, "unknown type '%.*s'", (int)c->tok.len, c->src + c->tok.pos);
 			return false;
@@ -526,7 +563,7 @@ static bool type_start(struct comp *c, const struct token *t)
 	case TK_FILE:
 		return true;
 	case TK_IDENT:
-		return find_struct(c, t) >= 0;
+		return find_struct(c, t) >= 0 || find_enum(c, t) >= 0;
 	}
 	return false;
 }
@@ -618,8 +655,8 @@ static void emit_op(struct comp *c, int op)
 	mark_line(c);
 	c->last_op = pc(c);
 	buf_add(c, &c->code, &b, 1);
-	if (al_opinfo[op].pop >= 0)
-		stack(c, al_opinfo[op].push - al_opinfo[op].pop);
+	if (pico_opinfo[op].pop >= 0)
+		stack(c, pico_opinfo[op].push - pico_opinfo[op].pop);
 }
 
 static void emit_u8(struct comp *c, uint8_t v)
@@ -802,7 +839,7 @@ static void capture_end(struct comp *c, struct capture *cap)
 		memcpy(cap->lines, c->lines.p + lmark, cap->nlines * 4);
 		for (uint32_t i = 0; i < cap->nlines; i++) {
 			uint8_t *e = cap->lines + i * 4;
-			uint32_t rel = al_u16(e) - (mark - c->fn_start);
+			uint32_t rel = pico_u16(e) - (mark - c->fn_start);
 			e[0] = rel;
 			e[1] = rel >> 8;
 		}
@@ -822,7 +859,7 @@ static void capture_emit(struct comp *c, struct capture *cap)
 		buf_add(c, &c->code, cap->code, cap->len);
 		for (uint32_t i = 0; i < cap->nlines; i++) {
 			uint8_t *e = cap->lines + i * 4;
-			uint32_t rel = al_u16(e) + (base - c->fn_start);
+			uint32_t rel = pico_u16(e) + (base - c->fn_start);
 			uint8_t n[4] = { rel, rel >> 8, e[2], e[3] };
 			buf_add(c, &c->lines, n, 4);
 		}
@@ -870,7 +907,7 @@ static int find_func(struct comp *c, const struct token *t)
 static int find_builtin(struct comp *c, const struct token *t)
 {
 	for (int i = 0; i < B_COUNT; i++) {
-		const char *n = al_builtins[i].name;
+		const char *n = pico_builtins[i].name;
 		if (n[0] != '@' && strlen(n) == t->len && !memcmp(n, c->src + t->pos, t->len))
 			return i;
 	}
@@ -879,13 +916,14 @@ static int find_builtin(struct comp *c, const struct token *t)
 
 static int add_local(struct comp *c, const struct token *name, struct type t, bool is_const)
 {
-	for (uint32_t i = c->nlocals; i-- > 0 && c->locals[i].depth == c->depth;) {
+	/* the compiler's own (a for-in's array and index): no name to clash */
+	for (uint32_t i = c->nlocals; name->len && i-- > 0 && c->locals[i].depth == c->depth;) {
 		if (same_name(c, c->locals[i].name, c->locals[i].len, name)) {
 			error_at(c, name, "'%.*s' is already declared here", (int)name->len, c->src + name->pos);
 			break;
 		}
 	}
-	if (find_struct(c, name) >= 0)
+	if (name->len && find_struct(c, name) >= 0)
 		error_at(c, name, "'%.*s' is a struct name", (int)name->len, c->src + name->pos);
 	if (c->nlocals >= MAX_LOCALS) {
 		error_at(c, name, "too many local variables (the limit is %d)", MAX_LOCALS);
@@ -1292,14 +1330,14 @@ static const struct {
 	int32_t		 value;
 } int_consts[] = {
 	{ "INT_MAX", INT32_MAX }, { "INT_MIN", INT32_MIN },
-	{ "KEY_NONE", AL_KEY_NONE }, { "KEY_EOF", AL_KEY_EOF },
-	{ "KEY_UP", AL_KEY_UP }, { "KEY_DOWN", AL_KEY_DOWN },
-	{ "KEY_LEFT", AL_KEY_LEFT }, { "KEY_RIGHT", AL_KEY_RIGHT },
-	{ "KEY_HOME", AL_KEY_HOME }, { "KEY_END", AL_KEY_END },
-	{ "KEY_PGUP", AL_KEY_PGUP }, { "KEY_PGDN", AL_KEY_PGDN },
-	{ "KEY_INSERT", AL_KEY_INSERT }, { "KEY_DELETE", AL_KEY_DELETE },
-	{ "KEY_ESC", AL_KEY_ESC }, { "KEY_F1", AL_KEY_F1 }, { "KEY_F2", AL_KEY_F2 },
-	{ "KEY_F3", AL_KEY_F3 }, { "KEY_F4", AL_KEY_F4 },
+	{ "KEY_NONE", PICO_KEY_NONE }, { "KEY_EOF", PICO_KEY_EOF },
+	{ "KEY_UP", PICO_KEY_UP }, { "KEY_DOWN", PICO_KEY_DOWN },
+	{ "KEY_LEFT", PICO_KEY_LEFT }, { "KEY_RIGHT", PICO_KEY_RIGHT },
+	{ "KEY_HOME", PICO_KEY_HOME }, { "KEY_END", PICO_KEY_END },
+	{ "KEY_PGUP", PICO_KEY_PGUP }, { "KEY_PGDN", PICO_KEY_PGDN },
+	{ "KEY_INSERT", PICO_KEY_INSERT }, { "KEY_DELETE", PICO_KEY_DELETE },
+	{ "KEY_ESC", PICO_KEY_ESC }, { "KEY_F1", PICO_KEY_F1 }, { "KEY_F2", PICO_KEY_F2 },
+	{ "KEY_F3", PICO_KEY_F3 }, { "KEY_F4", PICO_KEY_F4 },
 };
 
 /* Built-in constants: KEY_*, INT_MAX, PI, stdin... */
@@ -1566,6 +1604,21 @@ static struct type operand(struct comp *c, struct type want, bool stmt)
 			t = c->globals[gi].type;
 			break;
 		}
+		int ci = find_const(c, &start);
+		if (ci >= 0) {
+			if (assign_here(c, stmt)) {
+				error_at(c, &start, "cannot assign to '%.*s', a value of an enum",
+					 (int)start.len, c->src + start.pos);
+				return T_ERROR;
+			}
+			emit_int(c, c->consts[ci].value);
+			t = T_INT;
+			break;
+		}
+		if (find_enum(c, &start) >= 0) {
+			error_at(c, &start, "'%.*s' is a type, not a value", (int)start.len, c->src + start.pos);
+			return T_ERROR;
+		}
 		if (builtin_constant(c, &start, &t))
 			break;
 		if (find_func(c, &start) >= 0 || find_builtin(c, &start) >= 0)
@@ -1712,7 +1765,7 @@ static struct type unary(struct comp *c, struct type want)
 				c->code.p[c->last_op + 1] = (uint8_t)-(int8_t)c->code.p[c->last_op + 1];
 			} else if (!c->oom && c->last_op != NO_POS && c->label != pc(c) &&
 				   c->code.p[c->last_op] == OP_CONST32 && c->last_op + 5 == pc(c)) {
-				uint32_t v = -al_u32(c->code.p + c->last_op + 1);
+				uint32_t v = -pico_u32(c->code.p + c->last_op + 1);
 				for (int k = 0; k < 4; k++)
 					c->code.p[c->last_op + 1 + k] = v >> (8 * k);
 			} else {
@@ -1885,7 +1938,7 @@ static void end_args(struct comp *c, const struct token *name)
 
 static struct type builtin_sig(struct comp *c, int id, const struct token *name)
 {
-	const char *p = al_builtins[id].sig;
+	const char *p = pico_builtins[id].sig;
 	int argc = 0;
 
 	expect(c, TK_LPAREN, "'('");
@@ -1896,7 +1949,7 @@ static struct type builtin_sig(struct comp *c, int id, const struct token *name)
 			p++;
 		if (check(c, TK_RPAREN)) {
 			if (!optional)
-				error_at(c, &c->tok, "too few arguments to %s()", al_builtins[id].name);
+				error_at(c, &c->tok, "too few arguments to %s()", pico_builtins[id].name);
 			while (*p && *p != ':')
 				p++;
 			break;
@@ -1920,7 +1973,7 @@ static int format_check(struct comp *c, const struct token *fmt_tok, const char 
 			struct type arg, const struct token *at, int argn)
 {
 	const char *spec;
-	int conv = al_fmt_next(f, end, &spec);
+	int conv = pico_fmt_next(f, end, &spec);
 
 	if (conv < 0) {
 		error_at(c, fmt_tok, "bad conversion in format string");
@@ -1962,7 +2015,7 @@ static struct type builtin_print(struct comp *c, int id, const struct token *nam
 			fend = fmt + lex_decode(c->src, &fmt_tok, fmt);
 		}
 		if (check(c, TK_RPAREN))
-			error_at(c, &c->tok, "%s() needs a format string", al_builtins[id].name);
+			error_at(c, &c->tok, "%s() needs a format string", pico_builtins[id].name);
 		else
 			assign_value(c, T_STR);
 		argc = 1;
@@ -1981,7 +2034,7 @@ static struct type builtin_print(struct comp *c, int id, const struct token *nam
 	}
 	if (f) {
 		const char *spec;
-		int conv = al_fmt_next(&f, fend, &spec);
+		int conv = pico_fmt_next(&f, fend, &spec);
 		if (conv < 0)
 			error_at(c, &fmt_tok, "bad conversion in format string");
 		else if (conv > 0)
@@ -2131,11 +2184,11 @@ static struct type builtin_special(struct comp *c, int id, const struct token *n
 		if (t.base == TY_ERROR || u.base == TY_ERROR)
 			return T_ERROR;
 		if (!is_scalar(t, TY_INT) && !is_scalar(t, TY_FLOAT)) {
-			error_at(c, &at, "%s() needs numbers, got %s", al_builtins[id].name, type_name(c, t));
+			error_at(c, &at, "%s() needs numbers, got %s", pico_builtins[id].name, type_name(c, t));
 			return T_ERROR;
 		}
 		if (!is_scalar(u, TY_INT) && !is_scalar(u, TY_FLOAT)) {
-			error_at(c, &at2, "%s() needs numbers, got %s", al_builtins[id].name, type_name(c, u));
+			error_at(c, &at2, "%s() needs numbers, got %s", pico_builtins[id].name, type_name(c, u));
 			return T_ERROR;
 		}
 		if (is_scalar(t, TY_INT) && is_scalar(u, TY_INT)) {
@@ -2149,28 +2202,33 @@ static struct type builtin_special(struct comp *c, int id, const struct token *n
 		emit_callb(c, id == B_min ? B_minf : B_maxf, 2, true);
 		return T_FLOAT;
 
-	case B_run: {
+	case B_run:
+	case B_output: {
+		/* a command and its words, or one str[] of them */
+		bool out = id == B_output;
+
 		at = c->tok;
 		if (!next_arg(c, 0, name))
 			break;
 		t = expr(c, T_NONE);
 		if (same_type(t, T_STRS)) {
 			end_args(c, name);
-			emit_callb(c, B_runa, 1, true);
-			return T_INT;
+			emit_callb(c, out ? B_outputa : B_runa, 1, true);
+			return out ? T_STR : T_INT;
 		}
 		coerce(c, t, T_STR, &at);
 		int argc = 1;
 		while (match(c, TK_COMMA)) {
 			assign_value(c, T_STR);
 			if (++argc > 64) {
-				error_at(c, &c->prev, "too many arguments to run(); pass a str[]");
+				error_at(c, &c->prev, "too many arguments to %s(); pass a str[]",
+					 out ? "output" : "run");
 				break;
 			}
 		}
 		end_args(c, name);
-		emit_callb(c, B_run, argc, true);
-		return T_INT;
+		emit_callb(c, out ? B_output : B_run, argc, true);
+		return out ? T_STR : T_INT;
 	}
 	}
 	/* an error was reported: skip to the closing parenthesis */
@@ -2236,7 +2294,7 @@ static struct type builtin_call(struct comp *c, int id, const struct token *name
 	case B_println:
 		return builtin_print(c, id, name);
 	}
-	if (al_builtins[id].sig[0] != '*')
+	if (pico_builtins[id].sig[0] != '*')
 		return builtin_sig(c, id, name);
 	return builtin_special(c, id, name);
 }
@@ -2297,7 +2355,9 @@ static bool at_declaration(struct comp *c)
 	case TK_VOID:
 		return true;
 	case TK_IDENT:
-		return find_struct(c, &c->tok) >= 0 && c->peek.kind != TK_LBRACE;
+		return (find_struct(c, &c->tok) >= 0 && c->peek.kind != TK_LBRACE) ||
+		       (find_enum(c, &c->tok) >= 0 &&
+			(c->peek.kind == TK_IDENT || c->peek.kind == TK_LBRACKET));
 	}
 	return false;
 }
@@ -2372,6 +2432,9 @@ static void synchronize(struct comp *c)
 		case TK_IF:
 		case TK_WHILE:
 		case TK_FOR:
+		case TK_SWITCH:
+		case TK_CASE:
+		case TK_DEFAULT:
 		case TK_RETURN:
 		case TK_BREAK:
 		case TK_CONTINUE:
@@ -2424,6 +2487,7 @@ static bool loop_body(struct comp *c, struct loop *lp)
 	lp->breaks = c->nbreaks;
 	lp->conts = c->nconts;
 	lp->has_break = false;
+	lp->is_switch = false;
 	c->loop = lp;
 	bool r = scoped_statement(c);
 	c->loop = lp->outer;
@@ -2463,6 +2527,85 @@ static bool while_statement(struct comp *c)
 	return forever && !lp.has_break;
 }
 
+/* A local of the compiler's own: a for-in's array and index, a switch's value. */
+static const struct token hidden_name = { 0 };
+
+/* Whether a for's parentheses begin "TYPE NAME in": a for over an array. */
+static bool at_for_in(struct comp *c)
+{
+	struct lexer save = c->lx;
+	struct token prev = c->prev, tok = c->tok, peek = c->peek;
+	bool yes = false;
+	struct type t;
+
+	if (type_start(c, &c->tok) && c->peek.kind != TK_LPAREN && parse_type(c, &t))
+		yes = check(c, TK_IDENT) && c->peek.kind == TK_IDENT && tok_is(c, &c->peek, "in");
+	c->lx = save;
+	c->prev = prev;
+	c->tok = tok;
+	c->peek = peek;
+	return yes;
+}
+
+/*
+ * for (T x in array): the body once for each item, x a new variable each
+ * time. Made into the counted loop it stands for, with the array and the
+ * index in locals of the compiler's own; the length is looked at every
+ * time round, so an array that grows or shrinks in the loop is safe.
+ */
+static bool for_in(struct comp *c)
+{
+	struct type elem;
+	struct loop lp;
+
+	parse_type(c, &elem);
+	struct token name = c->tok;
+	advance(c);			/* the name */
+	advance(c);			/* 'in' */
+	struct token at = c->tok;
+	struct type want = array_of(elem), got = expr(c, want);
+
+	if (is_scalar(got, TY_STR))
+		error_at(c, &at, "for goes through an array; for a str's characters, "
+			 "write for (str ch in chars(s))");
+	else if (got.base != TY_ERROR && !got.dims)
+		error_at(c, &at, "for goes through an array, and this is %s", type_name(c, got));
+	else if (got.base != TY_ERROR && !same_type(got, want))
+		error_at(c, &at, "this holds %s, not %s", type_name(c, elem_type(got)),
+			 type_name(c, elem));
+	expect(c, TK_RPAREN, "')'");
+	int arr = add_local(c, &hidden_name, want, false);
+	emit_op_b(c, OP_STORE, arr);
+	emit_int(c, 0);
+	int idx = add_local(c, &hidden_name, T_INT, false);
+	emit_op_b(c, OP_STORE, idx);
+
+	uint32_t jtest = emit_jump(c, OP_JMP);
+	uint32_t body = pc(c);
+	c->label = body;
+	lp = (struct loop) { .outer = c->loop, .depth = c->depth, .breaks = c->nbreaks,
+			     .conts = c->nconts };
+	c->loop = &lp;
+	begin_scope(c);			/* the item's variable, one each time */
+	emit_op_b(c, OP_LOAD, idx);
+	emit_op_b(c, is_ref(elem) ? OP_IDXLR : OP_IDXL, arr);
+	emit_op_b(c, OP_STORE, add_local(c, &name, elem, false));
+	scoped_statement(c);
+	patch_list(c, c->conts, lp.conts, c->nconts);
+	c->nconts = lp.conts;
+	end_scope(c);
+	c->loop = lp.outer;
+	emit_op_b(c, OP_INCL, idx);
+	emit_u8(c, 1);
+	patch_jump(c, jtest);
+	emit_op_b(c, OP_LOAD, idx);
+	emit_op_b(c, OP_LENL, arr);
+	emit_loop(c, OP_LOOPLT, body);
+	patch_list(c, c->breaks, lp.breaks, c->nbreaks);
+	c->nbreaks = lp.breaks;
+	return false;			/* it ends when the array does */
+}
+
 static bool for_statement(struct comp *c)
 {
 	struct capture cond = { 0 }, step = { 0 };
@@ -2471,6 +2614,12 @@ static bool for_statement(struct comp *c)
 	advance(c);
 	expect(c, TK_LPAREN, "'('");
 	begin_scope(c);
+	if (at_for_in(c)) {
+		bool r = for_in(c);
+
+		end_scope(c);
+		return r;
+	}
 	if (match(c, TK_SEMI)) {
 		/* no initialiser */
 	} else if (at_declaration(c)) {
@@ -2548,6 +2697,105 @@ static bool if_statement(struct comp *c)
 	return returns && has_else;
 }
 
+/*
+ * switch (x) { case 1, 2: ... case 3: ... default: ... }. A case's
+ * statements run and the switch ends: no falling into the next one. Each
+ * case is its own scope, so it can declare what it needs; break leaves
+ * the switch, and continue goes on with the loop it is in. The values can
+ * be any expressions of x's type, tried in order -- a chain of ifs,
+ * written as a table. default, if there is one, goes last.
+ */
+static bool switch_statement(struct comp *c)
+{
+	uint32_t first_end = c->nends;
+	bool returns = true, has_default = false, any = false;
+	struct loop lp;
+
+	advance(c);			/* 'switch' */
+	expect(c, TK_LPAREN, "'('");
+	begin_scope(c);
+	struct token at = c->tok;
+	struct type t = expr(c, T_NONE);
+	expect(c, TK_RPAREN, "')'");
+	if (t.base == TY_VOID || t.base == TY_NULL || t.base == TY_ASSIGNED) {
+		error_at(c, &at, "a switch needs a value to look at");
+		t = T_ERROR;
+	}
+	int slot = add_local(c, &hidden_name, t, false);
+	emit_op_b(c, OP_STORE, slot);
+	expect(c, TK_LBRACE, "'{'");
+	lp = (struct loop) { .outer = c->loop, .depth = c->depth, .breaks = c->nbreaks,
+			     .conts = c->nconts, .is_switch = true };
+	c->loop = &lp;
+
+	while (!check(c, TK_RBRACE) && !check(c, TK_EOF) && !c->stop) {
+		uint32_t skip = NO_POS;
+		struct token kw = c->tok;
+
+		if (has_default)
+			error_at(c, &kw, "default goes last in a switch");
+		if (match(c, TK_CASE)) {
+			uint32_t first_match = c->nends;
+
+			do {
+				struct token vat = c->tok;
+
+				emit_op_b(c, is_ref(t) ? OP_LOADR : OP_LOAD, slot);
+				coerce(c, expr(c, t), t, &vat);
+				int jump = OP_JEQ;
+				if (is_scalar(t, TY_STR))
+					emit_op(c, OP_EQS);
+				else if (is_scalar(t, TY_FLOAT))
+					emit_op(c, OP_EQF);
+				else if (is_ref(t))
+					emit_op(c, OP_EQR);
+				if (is_ref(t) || is_scalar(t, TY_FLOAT))
+					jump = OP_JT;
+				if (GROW(c, c->ends, c->cap_ends, c->nends + 1))
+					c->ends[c->nends++] = emit_jump(c, jump);
+			} while (match(c, TK_COMMA));
+			expect(c, TK_COLON, "':' after the case's values");
+			skip = emit_jump(c, OP_JMP);	/* none of them: on to the next case */
+			patch_list(c, c->ends, first_match, c->nends);
+			c->nends = first_match;
+		} else if (match(c, TK_DEFAULT)) {
+			expect(c, TK_COLON, "':' after default");
+			has_default = true;
+		} else {
+			error_at(c, &kw, "expected 'case' or 'default' in the switch, found %s",
+				 tok_name(kw.kind));
+			while (!check(c, TK_CASE) && !check(c, TK_DEFAULT) && !check(c, TK_RBRACE) &&
+			       !check(c, TK_EOF))
+				advance(c);
+			c->panic = false;
+			continue;
+		}
+		any = true;
+		bool r = false;
+		begin_scope(c);
+		while (!check(c, TK_CASE) && !check(c, TK_DEFAULT) && !check(c, TK_RBRACE) &&
+		       !check(c, TK_EOF) && !c->stop) {
+			r = statement(c) || r;
+			if (c->panic)
+				synchronize(c);
+		}
+		end_scope(c);
+		returns = returns && r;
+		if (!check(c, TK_RBRACE) && GROW(c, c->ends, c->cap_ends, c->nends + 1))
+			c->ends[c->nends++] = emit_jump(c, OP_JMP);	/* done: out */
+		if (skip != NO_POS)
+			patch_jump(c, skip);
+	}
+	expect(c, TK_RBRACE, "'}'");
+	patch_list(c, c->ends, first_end, c->nends);
+	c->nends = first_end;
+	patch_list(c, c->breaks, lp.breaks, c->nbreaks);
+	c->nbreaks = lp.breaks;
+	c->loop = lp.outer;
+	end_scope(c);
+	return any && has_default && returns && !lp.has_break;
+}
+
 static bool return_statement(struct comp *c)
 {
 	struct token kw = c->tok;
@@ -2572,21 +2820,29 @@ static bool return_statement(struct comp *c)
 	return true;
 }
 
+/*
+ * break leaves the innermost loop or switch; continue goes on with the
+ * innermost loop, past any switch it is in. Their jumps are patched when
+ * that loop or switch ends.
+ */
 static void jump_statement(struct comp *c)
 {
 	struct token kw = c->tok;
 	bool brk = kw.kind == TK_BREAK;
+	struct loop *to = c->loop;
 
 	advance(c);
-	if (!c->loop) {
-		error_at(c, &kw, "%s outside a loop", brk ? "break" : "continue");
+	while (!brk && to && to->is_switch)
+		to = to->outer;
+	if (!to) {
+		error_at(c, &kw, brk ? "break outside a loop or switch" : "continue outside a loop");
 	} else {
-		emit_clears(c, c->loop->depth);
+		emit_clears(c, to->depth);
 		uint32_t at = emit_jump(c, OP_JMP);
 		if (brk) {
 			if (GROW(c, c->breaks, c->cap_breaks, c->nbreaks + 1))
 				c->breaks[c->nbreaks++] = at;
-			c->loop->has_break = true;
+			to->has_break = true;
 		} else if (GROW(c, c->conts, c->cap_conts, c->nconts + 1)) {
 			c->conts[c->nconts++] = at;
 		}
@@ -2615,6 +2871,14 @@ static bool statement(struct comp *c)
 		break;
 	case TK_FOR:
 		returns = for_statement(c);
+		break;
+	case TK_SWITCH:
+		returns = switch_statement(c);
+		break;
+	case TK_CASE:
+	case TK_DEFAULT:
+		error_at(c, &c->tok, "%s outside a switch", tok_name(c->tok.kind));
+		advance(c);
 		break;
 	case TK_RETURN:
 		returns = return_statement(c);
@@ -2671,6 +2935,69 @@ static void skip_item(struct comp *c)
 	c->panic = false;
 }
 
+static bool reserved_name(struct comp *c, const struct token *name);
+
+/*
+ * enum Name { A, B = 5, C }: Name is a type that means int, and A, B and C
+ * are its values, 0, 5 and 6 -- each one more than the one before unless
+ * it says. The name may be left out. Read in the first pass, so that the
+ * values and the type are known everywhere.
+ */
+static void enum_decl(struct comp *c)
+{
+	int32_t next = 0;
+
+	advance(c);			/* 'enum' */
+	if (check(c, TK_IDENT)) {
+		if (find_struct(c, &c->tok) >= 0 || find_enum(c, &c->tok) >= 0)
+			error_at(c, &c->tok, "'%.*s' is already declared", (int)c->tok.len,
+				 c->src + c->tok.pos);
+		else if (GROW(c, c->enums, c->cap_enums, c->nenums + 1))
+			c->enums[c->nenums++] = (struct cenum) { c->tok.pos, c->tok.len };
+		advance(c);
+	}
+	if (!expect(c, TK_LBRACE, "'{' and the enum's values")) {
+		skip_item(c);
+		return;
+	}
+	while (!check(c, TK_RBRACE) && !check(c, TK_EOF)) {
+		struct token name = c->tok;
+
+		if (!expect(c, TK_IDENT, "a name for the value")) {
+			skip_item(c);
+			return;
+		}
+		if (match(c, TK_ASSIGN)) {
+			bool neg = match(c, TK_MINUS);
+
+			if (check(c, TK_INTLIT) || check(c, TK_CHARLIT)) {
+				next = neg ? (int32_t)(0u - (uint32_t)c->tok.v.i) : c->tok.v.i;
+				advance(c);
+			} else {
+				error_at(c, &c->tok, "an enum's value is a whole number");
+			}
+		}
+		if (find_const(c, &name) >= 0)
+			error_at(c, &name, "'%.*s' is already declared", (int)name.len, c->src + name.pos);
+		else if (!reserved_name(c, &name) &&
+			 GROW(c, c->consts, c->cap_consts, c->nconsts + 1))
+			c->consts[c->nconsts++] = (struct cconst) { name.pos, name.len, next };
+		next++;
+		if (!match(c, TK_COMMA))
+			break;
+	}
+	expect(c, TK_RBRACE, "'}'");
+	match(c, TK_SEMI);
+	c->panic = false;
+}
+
+/* Past an enum in the passes after the first, which has read it. */
+static void skip_enum(struct comp *c)
+{
+	skip_item(c);
+	match(c, TK_SEMI);
+}
+
 static void pass_structs(struct comp *c)
 {
 	int depth = 0;
@@ -2684,9 +3011,12 @@ static void pass_structs(struct comp *c)
 			depth++;
 		} else if (check(c, TK_RBRACE)) {
 			depth--;
+		} else if (depth == 0 && check(c, TK_ENUM)) {
+			enum_decl(c);
+			continue;
 		} else if (depth == 0 && check(c, TK_STRUCT) && c->peek.kind == TK_IDENT) {
 			advance(c);
-			if (find_struct(c, &c->tok) >= 0) {
+			if (find_struct(c, &c->tok) >= 0 || find_enum(c, &c->tok) >= 0) {
 				error_at(c, &c->tok, "struct '%.*s' is already declared", (int)c->tok.len, c->src + c->tok.pos);
 				c->panic = false;
 			} else if (c->nstructs >= 0xffff) {
@@ -2826,6 +3156,8 @@ static void pass_decls(struct comp *c)
 	while (!check(c, TK_EOF)) {
 		if (match(c, TK_STRUCT)) {
 			struct_fields(c);
+		} else if (match(c, TK_ENUM)) {
+			skip_enum(c);
 		} else if (check(c, TK_CONST) || type_start(c, &c->tok)) {
 			bool is_const = match(c, TK_CONST);
 			struct type t;
@@ -2839,7 +3171,8 @@ static void pass_decls(struct comp *c)
 				continue;
 			}
 			if (reserved_name(c, &name) || find_func(c, &name) >= 0 || find_global(c, &name) >= 0 ||
-			    find_struct(c, &name) >= 0) {
+			    find_struct(c, &name) >= 0 || find_enum(c, &name) >= 0 ||
+			    find_const(c, &name) >= 0) {
 				if (!c->panic)
 					error_at(c, &name, "'%.*s' is already declared", (int)name.len, c->src + name.pos);
 				skip_item(c);
@@ -2915,7 +3248,7 @@ static void pass_decls(struct comp *c)
 			}
 			skip_item(c);
 		} else {
-			error_at(c, &c->tok, "expected a function, struct or global declaration, found %s",
+			error_at(c, &c->tok, "expected a function, struct, enum or global declaration, found %s",
 				 tok_name(c->tok.kind));
 			skip_item(c);
 		}
@@ -2998,6 +3331,10 @@ static void pass_bodies(struct comp *c)
 			skip_item(c);
 			continue;
 		}
+		if (match(c, TK_ENUM)) {
+			skip_enum(c);
+			continue;
+		}
 		bool is_const = match(c, TK_CONST);
 		struct type t;
 		if (!parse_type(c, &t)) {
@@ -3027,6 +3364,10 @@ static void pass_globals(struct comp *c)
 			skip_item(c);
 			continue;
 		}
+		if (match(c, TK_ENUM)) {
+			skip_enum(c);
+			continue;
+		}
 		match(c, TK_CONST);
 		struct type t;
 		if (!parse_type(c, &t)) {
@@ -3050,7 +3391,7 @@ static void pass_globals(struct comp *c)
 		}
 		skip_item(c);
 	}
-	c->init = AL_NO_FUNC;
+	c->init = PICO_NO_FUNC;
 	if (pc(c) != c->fn_start) {
 		emit_op(c, OP_RET);
 		end_function(c, &init, &c->tok);
@@ -3108,10 +3449,10 @@ static void put32(uint8_t **p, uint32_t v)
 	*p += 4;
 }
 
-static int write_image(struct comp *c, struct al_image *out)
+static int write_image(struct comp *c, struct pico_image *out)
 {
 	int source = intern(c, c->file, strlen(c->file));
-	size_t size = AL_HEADER_SIZE;
+	size_t size = PICO_HEADER_SIZE;
 
 	if (c->oom)
 		return -1;
@@ -3120,18 +3461,18 @@ static int write_image(struct comp *c, struct al_image *out)
 	size += c->nglobals;
 	size += c->nfuncs * 24;
 	size += c->lines.len + c->code.len;
-	size += AL_TRAILER_SIZE;
-	if (size > AL_MAX_IMAGE) {
-		al_eprintf("%s: program too large\n", c->file);
+	size += PICO_TRAILER_SIZE;
+	if (size > PICO_MAX_IMAGE) {
+		pico_eprintf("%s: program too large\n", c->file);
 		return -1;
 	}
 	uint8_t *img = port_alloc(size), *p = img;
 	if (!img) {
-		al_eprintf("%s: out of memory\n", c->file);
+		pico_eprintf("%s: out of memory\n", c->file);
 		return -1;
 	}
-	memcpy(p, AL_MAGIC, 3);
-	p[3] = AL_VERSION;
+	memcpy(p, PICO_MAGIC, 3);
+	p[3] = PICO_VERSION;
 	p += 4;
 	put16(&p, c->nstrings);
 	put16(&p, c->nstructs);
@@ -3179,13 +3520,13 @@ static int write_image(struct comp *c, struct al_image *out)
 	if (c->code.len)
 		memcpy(p, c->code.p, c->code.len);
 	p += c->code.len;
-	put32(&p, al_crc32(img, p - img));
+	put32(&p, pico_crc32(img, p - img));
 	out->data = img;
 	out->len = p - img;
 	return 0;
 }
 
-int al_compile(const char *filename, const char *src, size_t len, struct al_image *out)
+int pico_compile(const char *filename, const char *src, size_t len, struct pico_image *out)
 {
 	struct comp *c = port_alloc(sizeof(*c));
 	int status = -1;
@@ -3193,15 +3534,15 @@ int al_compile(const char *filename, const char *src, size_t len, struct al_imag
 	out->data = NULL;
 	out->len = 0;
 	if (!c) {
-		al_eprintf("%s: out of memory\n", filename);
+		pico_eprintf("%s: out of memory\n", filename);
 		return -1;
 	}
 	memset(c, 0, sizeof(*c));
 	c->file = filename;
 	c->src = src;
 	c->srclen = len;
-	if (len > AL_MAX_SOURCE) {
-		al_eprintf("%s: source file too large\n", filename);
+	if (len > PICO_MAX_SOURCE) {
+		pico_eprintf("%s: source file too large\n", filename);
 		goto done;
 	}
 	c->empty_str = intern(c, "", 0);
@@ -3224,6 +3565,8 @@ int al_compile(const char *filename, const char *src, size_t len, struct al_imag
 	status = write_image(c, out);
 done:
 	port_free(c->structs);
+	port_free(c->enums);
+	port_free(c->consts);
 	port_free(c->fields);
 	port_free(c->funcs);
 	port_free(c->params);

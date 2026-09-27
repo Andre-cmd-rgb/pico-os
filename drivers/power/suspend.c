@@ -37,6 +37,12 @@
 #define EMPTY_MARK	0x454d5054	/* "EMPT" */
 
 static RTC_NOINIT_ATTR uint32_t empty_mark;
+static const char *started_by = "power-on";	/* for the power log */
+
+const char *power_start_reason(void)
+{
+	return started_by;
+}
 
 #if KEY_WAKE
 
@@ -148,10 +154,11 @@ static int watch_button(void)
  */
 void power_quiesce(void)
 {
+	battery_note("going to sleep");
 	clock_save();		/* the reset button, after this, starts it at 1970 */
 	clock_sleeping();
 	battery_save();		/* what the cell has been through */
-	audio_stop();
+	audio_sleep();
 	vfs_sync_all();
 	sd_unmount();
 	led_set_mode(LED_OFF);
@@ -225,7 +232,8 @@ static void say_reset(esp_reset_reason_t why)
 	};
 	const char *name = why < sizeof(names) / sizeof(names[0]) ? names[why] : NULL;
 
-	klog("power: started by %s", name ? name : "something unknown");
+	started_by = name ? name : "something unknown";
+	klog("power: started by %s", started_by);
 }
 
 void power_boot_reason(void)
@@ -261,6 +269,7 @@ void power_boot_reason(void)
 		stop_watching();
 #if KEY_WAKE
 	if (causes & BIT(ESP_SLEEP_WAKEUP_ULP)) {
+		started_by = "woke on a key";
 		klog("power: woke on the keyboard, key 0x%02lx", (unsigned long)ulp_key);
 		return;
 	}
@@ -270,10 +279,13 @@ void power_boot_reason(void)
 	if (slept)
 		rtc_gpio_deinit(CONFIG_PT_BUTTON_GPIO);
 	if (causes & BIT(ESP_SLEEP_WAKEUP_EXT1)) {
+		started_by = "woke on the button";
 		klog("power: woke on the side button");
 		return;
 	}
 #endif
-	if (causes & BIT(ESP_SLEEP_WAKEUP_TIMER))
+	if (causes & BIT(ESP_SLEEP_WAKEUP_TIMER)) {
+		started_by = "woke on the timer (-t or an alarm)";
 		klog("power: woke on the timer");
+	}
 }

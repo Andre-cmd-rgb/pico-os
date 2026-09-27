@@ -713,6 +713,10 @@ static HOT void idct(const int16_t *in, int last, uint8_t *out, int stride)
 
 /* ------------------------------------------------------------ colour */
 
+#define NEUTRAL_BELOW	32	/* of 255: green steps with red and blue: build_rgb() */
+#define DARK		48	/* luma from which faint colour is left alone: put_420() */
+#define FAINT		10	/* and the chroma that is noise, at black */
+
 /* The chroma terms of ITU-R BT.601, full range, as JFIF has it. */
 #define CHROMA(cb, cr, rv, gv, bv)						\
 	do {									\
@@ -733,8 +737,18 @@ static void build_rgb(struct jpeg *j)
 	for (int i = 0; i < 768; i++) {
 		unsigned c = clamp8(i - 256);
 
+		/*
+		 * Green's step is half red's and blue's, and a grey whose
+		 * green is a step up from theirs is green: on black, a speck.
+		 * In the darkest shades it steps with them, so a grey stays
+		 * grey. Above, it has its finer steps; its value is taken two
+		 * down there because it is dithered by the same pattern as
+		 * red and blue, twice its own step (see put_420()).
+		 */
+		unsigned g = c < NEUTRAL_BELOW ? (c >> 3) << 1 : (c - 2) >> 2;
+
 		j->rgb[0][i] = (uint16_t)(c & 0xf8);
-		j->rgb[1][i] = (uint16_t)(c >> 5 | (c & 0x1c) << 11);
+		j->rgb[1][i] = (uint16_t)(g >> 3 | (g & 7) << 13);
 		j->rgb[2][i] = (uint16_t)((c & 0xf8) << 5);
 	}
 	for (int i = 0; i < 256; i++) {
@@ -755,7 +769,49 @@ static void build_rgb(struct jpeg *j)
  * The common case, and the one video is: 4:2:0 at full size. Each chroma
  * sample sets where in the tables its four pixels look, and each pixel is
  * then its luma and three loads; two pixels go out as one word.
+ *
+ * The four are also the cells of a 2x2 ordered dither. RGB565 keeps five
+ * bits of red and blue and six of green, and cutting the rest off makes
+ * a sky or a dark room into bands of flat colour -- blocky, and the wrong
+ * colour at the edges of the bands. Adding an eighth, three, five, seven
+ * eighths of a step in a fixed pattern before the cut leaves each
+ * pixel's colour as it was on average, and the eye does the averaging.
+ * The offsets are in the tables' units, a step of red and blue being 8,
+ * and all three colours take the same one: dithered by patterns of their
+ * own, each pixel rounded its colours different ways, and a dark grey
+ * came out as specks of green and purple. The tables reach far enough
+ * past 255 to take the offsets.
+ *
+ * Near black, colour as faint as a compressed picture's noise is taken
+ * off, smoothly: chroma up to FAINT goes at black, rising back to itself
+ * by twice that, and less and less of it up to a luma of DARK, so nothing
+ * changes in steps and a dark colour that is really there -- a deep
+ * blue -- is left as it is. (Blacking out whole dark greyish blocks
+ * instead made dark scenes blotchy.)
  */
+#define DITHER(y, o)	(r[(y) + (o)] | g[(y) + (o)] | b[(y) + (o)])
+
+/*
+ * Both chroma samples of a 2x2 group, taken off near black when they are
+ * as faint as noise. Together, by the larger, so that a colour keeps its
+ * hue: a dark red's small blue part is part of it, not noise.
+ */
+static inline void fade_faint(int *u, int *v, int k)
+{
+	int cu = *u - 128, cv = *v - 128;
+	int a = cu < 0 ? -cu : cu, av = cv < 0 ? -cv : cv;
+
+	a = av > a ? av : a;
+	if (a >= 2 * k)
+		return;				/* a colour: as it is */
+	if (a <= k) {
+		*u = *v = 128;			/* noise: none */
+		return;
+	}
+	*u = 128 + cu * 2 * (a - k) / a;	/* rising back to itself by 2k */
+	*v = 128 + cv * 2 * (a - k) / a;
+}
+
 static void put_420(const struct jpeg *j, uint8_t *dst, size_t stride)
 {
 	for (int cy = 0; cy < 8; cy++) {
@@ -765,13 +821,19 @@ static void put_420(const struct jpeg *j, uint8_t *dst, size_t stride)
 		uint32_t *d1 = (uint32_t *)(dst + (2 * cy + 1) * stride);
 
 		for (int cx = 0; cx < 8; cx++, y0 += 2, y1 += 2) {
-			const uint16_t *r = j->red[cr[cx]], *b = j->blue[cb[cx]];
-			const uint16_t *g = j->rgb[1] + 256 + j->gcb[cb[cx]] + j->gcr[cr[cx]];
+			int u = cb[cx], v = cr[cx];
+			unsigned sum = y0[0] + y0[1] + y1[0] + y1[1];
 
-			d0[cx] = (uint32_t)(r[y0[0]] | g[y0[0]] | b[y0[0]]) |
-				 (uint32_t)(r[y0[1]] | g[y0[1]] | b[y0[1]]) << 16;
-			d1[cx] = (uint32_t)(r[y1[0]] | g[y1[0]] | b[y1[0]]) |
-				 (uint32_t)(r[y1[1]] | g[y1[1]] | b[y1[1]]) << 16;
+			if (sum < 4 * DARK) {
+				int k = FAINT - (int)sum * FAINT / (4 * DARK);
+
+				fade_faint(&u, &v, k);
+			}
+			const uint16_t *r = j->red[v], *b = j->blue[u];
+			const uint16_t *g = j->rgb[1] + 256 + j->gcb[u] + j->gcr[v];
+
+			d0[cx] = (uint32_t)DITHER(y0[0], 1) | (uint32_t)DITHER(y0[1], 5) << 16;
+			d1[cx] = (uint32_t)DITHER(y1[0], 7) | (uint32_t)DITHER(y1[1], 3) << 16;
 		}
 	}
 }

@@ -127,6 +127,8 @@ static void print_blocks(struct block *b, int n, int gap, bool color)
 	}
 }
 
+PT_COMPLETE(cal, ": -m -s -3 -y\n")
+
 PT_PROGRAM(cal, "print a calendar\n"
 	   "usage: cal [-ms3y] [[month] year]\n"
 	   "  -m  weeks from Monday: the default here, where\n"
@@ -828,6 +830,8 @@ usage:
 		   "  DAY: today, tomorrow, fri, 30/9, 2026-09-30   DAYS: mo, mo,we, mo-fr\n");
 	return -EINVAL;
 }
+
+PT_COMPLETE(calendar, ": agenda add rm -f -d\nadd: every yearly tomorrow\n-f: <file:.txt>\n")
 
 PT_PROGRAM(calendar, "the diary: events in ~/calendar.txt\n"
 	   "usage: calendar            the month, to browse\n"

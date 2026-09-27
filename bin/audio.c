@@ -43,9 +43,12 @@ static int no_codec(const char *prog)
 /*
  * minimp3, inside the MP3 decoder, keeps a 17 KB scratch buffer on the
  * stack, so `play` asks for a bigger stack than a program gets by default.
+ * It was seen to use 18 KB of it; every kilobyte more is internal RAM
+ * that a game started on another terminal then has to do without.
  */
-#define PLAY_STACK_KB	32
+#define PLAY_STACK_KB	24
 #define PASS_FRAMES	1024
+#define MUSIC_LATENCY_MS 1000
 
 /*
  * Everything that plays goes through here as 16-bit frames. A stereo file
@@ -89,7 +92,10 @@ static int sink_format(struct sink *s, const char *name, int rate, int channels)
 	}
 	s->rate = rate;
 	s->channels = channels;
-	return s->dry ? 0 : audio_set_rate(rate);
+	if (s->dry)
+		return 0;
+	/* a second queued: a busy card or a screenshot never runs it dry */
+	return audio_set_rate(rate) ? -EIO : audio_set_latency(MUSIC_LATENCY_MS);
 }
 
 static int sink_play(struct sink *s, const int16_t *pcm, size_t frames, int channels)
@@ -106,6 +112,8 @@ static int sink_play(struct sink *s, const int16_t *pcm, size_t frames, int chan
 		}
 		s->crc = crc32_of(s->crc, mono, n * sizeof(*mono));
 		s->frames += n;
+		if (s->dry && s->frames / PASS_FRAMES % 8 == 0)
+			pt_sleep_ms(1);		/* the idle task's turn */
 		if (!s->dry && (wrote = audio_write(mono, n * sizeof(*mono), 1)) < 0)
 			return wrote;
 		pcm += n * channels;
@@ -164,7 +172,16 @@ static int play_file(const char *name, int fd, struct sink *s)
 	return ret;
 }
 
-PT_PROGRAM_STACK(play, PLAY_STACK_KB, "play a sound file\n"
+/*
+ * Either core: decoding MP3 is a sixth of a core, and on the programs'
+ * core that sixth came out of a game on another terminal (57 frames a
+ * second instead of 60). It waits on the speaker nearly all the time,
+ * and without one (-n) it yields every few passes, so the kernel's core
+ * still gets to idle.
+ */
+PT_COMPLETE(play, ": -n <file:.wav.flac.mp3.raw>\n*: <file:.wav.flac.mp3.raw>\n")
+
+PT_PROGRAM_ANYCORE(play, PLAY_STACK_KB, "play a sound file\n"
 	   "usage: play [-n] file...\n"
 	   "WAV, FLAC, MP3, or raw 16-bit mono at the codec's rate.\n"
 	   "  -n  decode without playing, and report the speed and a checksum\n"
@@ -205,6 +222,8 @@ PT_PROGRAM_STACK(play, PLAY_STACK_KB, "play a sound file\n"
 }
 
 /* ------------------------------------------------------------ rec */
+
+PT_COMPLETE(rec, ": -t -r -g <file:.wav>\n*: <file:.wav>\n")
 
 PT_PROGRAM(rec, "record from the microphone into a WAV file\n"
 	   "usage: rec [-t seconds] [-r rate] [-g gain_db] file\n"
@@ -339,8 +358,10 @@ PT_PROGRAM(volume, "show or set the speaker volume\n"
 	}
 	if (!audio_present())
 		return no_codec("volume");
-	if (argc > 1)
+	if (argc > 1) {
 		audio_set_volume(percent);
+		power_levels_changed();		/* kept in /etc/power */
+	}
 	pt_printf("volume %d%%\n", audio_volume());
 	return 0;
 }

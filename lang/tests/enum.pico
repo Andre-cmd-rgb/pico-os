@@ -1,0 +1,22 @@
+// enum: names for ints, and a type name for them
+enum Color { RED, GREEN = 5, BLUE }
+enum { LOW = -2, MID, HIGH }
+enum Key { K_A = 'a', K_B }
+
+struct Pixel { Color c; int x; }
+
+Color favourite = BLUE;
+
+int main() {
+    println(RED, " ", GREEN, " ", BLUE);
+    println(LOW, " ", MID, " ", HIGH);
+    println(K_A, " ", K_B);
+    Color c = GREEN;
+    c += 1;
+    println(c == BLUE, " ", favourite);
+    Pixel p = Pixel{c: RED, x: 3};
+    println(p);
+    Color[] all = [RED, GREEN, BLUE];
+    println(all);
+    return 0;
+}

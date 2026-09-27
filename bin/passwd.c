@@ -42,6 +42,8 @@ static int read_secret(const char *prompt, char *buf, size_t size)
 	return ret;
 }
 
+PT_COMPLETE(passwd, ": -d\n")
+
 PT_PROGRAM(passwd, "set the password the network shell asks for\n"
 	   "usage: passwd [-d]\n"
 	   "  -d  remove it, which closes the network shell again\n"

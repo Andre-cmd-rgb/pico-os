@@ -33,6 +33,10 @@ enum tok {
 	TK_TRUE,
 	TK_VOID,
 	TK_WHILE,
+	TK_CASE,
+	TK_DEFAULT,
+	TK_ENUM,
+	TK_SWITCH,
 
 	/* punctuation */
 	TK_LPAREN,

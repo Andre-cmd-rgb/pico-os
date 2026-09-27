@@ -8,6 +8,7 @@
 
 int	es8311_init(int sda, int scl, int rate);
 int	es8311_set_rate(int rate);
+int	es8311_power(bool on);		/* standby, and back */
 int	es8311_set_volume(int percent);
 int	es8311_set_mic_gain(int db);
 int	es8311_set_alc(bool on, int max_db);

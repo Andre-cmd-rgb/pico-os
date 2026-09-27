@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Check the a language on the device (QEMU, or a board over serial).
+"""Check the pico language on the device (QEMU, or a board over serial).
 
     python3 lang/tests/device_test.py [build-qemu/flash.bin | /dev/ttyACM0]
 
 It types a small program into the shell, compiles and runs it both ways
-(`a program.al` and `ac` then `./program`), and checks a runtime error and
+(`pico program.pico` and `picoc` then `./program`), and checks a runtime error and
 the built-in help. Everything happens under $HOME and is cleaned up.
 """
 import os
@@ -65,44 +65,44 @@ def main():
             b.send(b"\x15\r")
         print(clean(b.read_until(rb"\$ (\x1b\[K)?(\r\x1b\[\d+C)?$", 60)))
 
-        step("cd; rm -f hello.al hello bad.al lang.txt; echo ready", "ready")
+        step("cd; rm -f hello.pico hello bad.pico lang.txt; echo ready", "ready")
         for i, line in enumerate(PROGRAM):
-            b.run(f"echo '{line}' {'>' if i == 0 else '>>'} hello.al")
+            b.run(f"echo '{line}' {'>' if i == 0 else '>>'} hello.pico")
         for i, line in enumerate(BAD):
-            b.run(f"echo '{line}' {'>' if i == 0 else '>>'} bad.al")
+            b.run(f"echo '{line}' {'>' if i == 0 else '>>'} bad.pico")
 
-        step("wc -l hello.al", "hello.al")
-        step("help a", "run an a program")
-        step("help ac", "compile an a program")
+        step("wc -l hello.pico", "hello.pico")
+        step("help pico", "run a pico program")
+        step("help picoc", "compile a pico program")
         # compile in memory and run
-        step("a hello.al andre", ["hello andre, dist2 = 25", "squares: [1, 4, 9, 16, 25]",
+        step("pico hello.pico andre", ["hello andre, dist2 = 25", "squares: [1, 4, 9, 16, 25]",
                                   "read back: written by a"])
         # compile to a file, then run it through the loader
-        step("ac hello.al && ls -l hello", "hello")
+        step("picoc hello.pico && ls -l hello", "hello")
         step("./hello board", ["hello board, dist2 = 25", "squares: [1, 4, 9, 16, 25]"])
         step("./hello; echo status=$?", "status=0")
         # runtime errors name the line and stop with a non-zero status
-        step("a bad.al; echo status=$?", ["before", "bad.al:4: runtime error: index 9 out of range (length 3)",
+        step("pico bad.pico; echo status=$?", ["before", "bad.pico:4: runtime error: index 9 out of range (length 3)",
                                           "status=1"])
         # compile errors
-        step("echo 'int main() { return \"x\"; }' > bad2.al; a bad2.al; echo status=$?",
-             ["bad2.al:1:21: error: expected int, got str", "status=1"])
+        step("echo 'int main() { return \"x\"; }' > bad2.pico; pico bad2.pico; echo status=$?",
+             ["bad2.pico:1:21: error: expected int, got str", "status=1"])
         # spawn a command from a program and read its status back
-        step("echo 'int main() { println(\"status \", run(\"echo\", \"from a\")); return 0; }' > spawn.al",
+        step("echo 'int main() { println(\"status \", run(\"echo\", \"from pico\")); return 0; }' > spawn.pico",
              reject="error")
-        step("a spawn.al", ["from a", "status 0"])
+        step("pico spawn.pico", ["from pico", "status 0"])
 
         # Ctrl-C stops a running program
-        b.send(b"echo 'int main() { int i = 0; while (true) { i++; } return 0; }' > loop.al\r")
+        b.send(b"echo 'int main() { int i = 0; while (true) { i++; } return 0; }' > loop.pico\r")
         b.read_until(rb"\$ (\x1b\[K)?(\r\x1b\[\d+C)?$", 20)
-        b.send(b"a loop.al\r")
-        b.read_until(rb"a loop.al", 10)
+        b.send(b"pico loop.pico\r")
+        b.read_until(rb"pico loop.pico", 10)
         time.sleep(2)
         b.send(b"\x03")
         print("=== ctrl-c:", clean(b.read_until(rb"\$ (\x1b\[K)?(\r\x1b\[\d+C)?$", 20)))
         step("echo status=$?", "status=130")   # 128 + SIGINT: the loop stopped
 
-        step("rm -f hello.al hello bad.al bad2.al lang.txt spawn.al loop.al; ls hello.al", "No such file")
+        step("rm -f hello.pico hello bad.pico bad2.pico lang.txt spawn.pico loop.pico; ls hello.pico", "No such file")
     finally:
         b.close()
 

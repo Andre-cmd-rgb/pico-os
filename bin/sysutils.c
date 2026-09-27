@@ -60,6 +60,8 @@ static void print_wrapped(const char *line, size_t len, int cols)
 		pt_puts("\n");
 }
 
+PT_COMPLETE(help, ": <command>\n")
+
 PT_PROGRAM(help, "list commands, or explain one\nusage: help [command]")
 {
 	if (argc > 1) {
@@ -195,6 +197,8 @@ static const struct {
 	{ "INT", PT_SIGINT }, { "KILL", PT_SIGKILL }, { "TERM", PT_SIGTERM },
 	{ "CONT", PT_SIGCONT }, { "STOP", PT_SIGSTOP }, { "TSTP", PT_SIGTSTP },
 };
+
+PT_COMPLETE(kill, ": -l -s -INT -TERM -KILL -STOP -CONT -9\n")
 
 PT_PROGRAM(kill, "send a signal to a process\n"
 	   "usage: kill [-SIG | -N | -s SIG] pid...   kill -l\n"
@@ -533,6 +537,8 @@ PT_PROGRAM(hostname, "print the machine's name\n"
 	return 0;
 }
 
+PT_COMPLETE(which, ": <command>\n*: <command>\n")
+
 PT_PROGRAM(which, "show where a command comes from\nusage: which command...")
 {
 	int status = 0;
@@ -621,25 +627,93 @@ static void print_pm_stats(char *text)
 	}
 }
 
-PT_PROGRAM(power, "show power state, or switch idle sleep\n"
-	   "usage: power [sleep on | sleep off]\n"
-	   "Idle sleep lets the chip light-sleep between events, keeping RAM.\n"
-	   "It never happens while a PC uses the native USB console or a USB\n"
-	   "keyboard is plugged in. The table shows time spent in each mode.")
+/* "30", "30s", "2m", "1h"; "never", "off" and "0" are no time at all. */
+static int parse_wait(const char *s)
 {
+	char *end;
+	long n;
+
+	if (!strcmp(s, "never") || !strcmp(s, "off"))
+		return 0;
+	n = strtol(s, &end, 10);
+	if (end == s || n < 0 || n > 24 * 3600)
+		return -1;
+	if (!*end || !strcmp(end, "s"))
+		return (int)n;
+	if (!strcmp(end, "m"))
+		return n > 24 * 60 ? -1 : (int)n * 60;
+	if (!strcmp(end, "h"))
+		return n > 24 ? -1 : (int)n * 3600;
+	return -1;
+}
+
+/* A wait in words: "30 s", "2 min", "1 h 30 min", "never". */
+static const char *wait_text(int s, char *buf, size_t size)
+{
+	if (!s)
+		snprintf(buf, size, "never");
+	else if (s < 60)
+		snprintf(buf, size, "%d s", s);
+	else if (s < 3600 || s % 3600)
+		snprintf(buf, size, s % 60 ? "%d min %d s" : "%d min", s / 60, s % 60);
+	else
+		snprintf(buf, size, "%d h", s / 3600);
+	return buf;
+}
+
+PT_COMPLETE(power, ": sleep dim blank suspend\nsleep: on off\ndim: never\nblank: never\nsuspend: never\n")
+
+PT_PROGRAM(power, "show power state, or change how it saves power\n"
+	   "usage: power [sleep on|off] [dim T] [blank T] [suspend T]\n"
+	   "  sleep    light sleep between events, keeping RAM\n"
+	   "           (never while a PC uses the USB console)\n"
+	   "  dim      no key for T: the screen dims\n"
+	   "  blank    no key for T: the screen goes dark, and\n"
+	   "           the key that lights it again does nothing\n"
+	   "  suspend  no key for T and nothing running (only\n"
+	   "           shells at their prompts, no sound, no PC\n"
+	   "           on USB): deep sleep until a key\n"
+	   "T is seconds, or 30s, 5m, 1h; never or 0 turns it off.\n"
+	   "Settings are kept in /etc/power. Ctrl-A z suspends\n"
+	   "at once. The table shows time spent in each mode.")
+{
+	struct idle_times t;
+	char w1[24], w2[24];
 	int min, max;
 
-	if (argc == 3 && !strcmp(argv[1], "sleep") && (!strcmp(argv[2], "on") || !strcmp(argv[2], "off"))) {
-		int err = cpufreq_set_idle_sleep(!strcmp(argv[2], "on"));
-		if (err)
-			return fail("power", "sleep", err);
-	} else if (argc != 1) {
-		pt_dprintf(PT_STDERR, "usage: power [sleep on | sleep off]\n");
-		return 2;
+	idle_get(&t);
+	for (int i = 1; i < argc; i++) {
+		int *what = !strcmp(argv[i], "dim") ? &t.dim_s : !strcmp(argv[i], "blank") ? &t.blank_s :
+			    !strcmp(argv[i], "suspend") ? &t.suspend_s : NULL;
+		int err;
+
+		if (i + 1 >= argc) {
+			pt_dprintf(PT_STDERR, "usage: power [sleep on|off] [dim T] [blank T] [suspend T]\n");
+			return 2;
+		}
+		if (!strcmp(argv[i], "sleep") && (!strcmp(argv[i + 1], "on") || !strcmp(argv[i + 1], "off"))) {
+			if ((err = cpufreq_set_idle_sleep(!strcmp(argv[++i], "on"))))
+				return fail("power", "sleep", err);
+			t.sleep = cpufreq_idle_sleep();
+		} else if (!what || (*what = parse_wait(argv[++i])) < 0) {
+			pt_dprintf(PT_STDERR, "power: %s: not a time (30, 30s, 5m, 1h, never)\n",
+				   argv[i]);
+			return 2;
+		}
 	}
+	if (argc > 1 && idle_set(&t))
+		pt_dprintf(PT_STDERR, "power: could not save /etc/power\n");
 	cpufreq_get(&min, &max);
 	pt_printf("cpufreq %s (%d-%d MHz), idle sleep %s\n", cpufreq_policy_name(min, max), min, max,
 		  cpufreq_idle_sleep() ? "on" : "off");
+	if (vt_has_display())
+		pt_printf("screen dims after %s, goes dark after %s\n",
+			  wait_text(t.dim_s, w1, sizeof(w1)), wait_text(t.blank_s, w2, sizeof(w2)));
+	if (t.suspend_s)
+		pt_printf("suspends after %s with nothing running\n",
+			  wait_text(t.suspend_s, w1, sizeof(w1)));
+	else
+		pt_printf("never suspends by itself\n");
 	struct battery_status b;
 	if (!battery_status(&b) && b.state != BATTERY_NONE && b.state != BATTERY_USB) {
 		pt_printf("battery %d.%02d V (%d.%d%%), %s, %d mA, %+d mV/h\n", b.mv / 1000,
@@ -679,12 +753,41 @@ static void battery_details(const struct battery_status *b)
 	battery_time(b, time, sizeof(time));
 	pt_printf("level    %d.%d%%, %s%s\n", b->permille / 10, b->permille % 10,
 		  battery_state_name(b->state), time);
+	if (b->state == BATTERY_IDLE && !CONFIG_PT_BATTERY_CHARGE_MA)
+		pt_printf("         the board runs from USB; the charger\n"
+			  "         module on the cell's wires charges it\n");
+	else if (b->state == BATTERY_IDLE)
+		pt_printf("         the board's charger only starts on a cell\n"
+			  "         below about 4.05 V: it will not top this up\n");
 	pt_printf("voltage  %d.%02d V, %d.%02d V at rest, %+d mV an hour\n", b->mv / 1000,
 		  b->mv % 1000 / 10, b->rest / 1000, b->rest % 1000 / 10, b->trend);
 	pt_printf("reading  %d mV, the last one as it came\n", b->raw);
-	pt_printf("current  %d mA %s (estimated)\n", abs(b->ma), b->ma < 0 ? "into it" : "out");
-	pt_printf("charger  %s\n", b->usb ? "yes: a PC is on USB" :
-		  b->charger ? "yes, by the voltage" : "no");
+	if (b->ma)
+		pt_printf("current  %d mA %s (estimated)\n", abs(b->ma), b->ma < 0 ? "into it" : "out");
+	else if (b->state == BATTERY_CHARGING)
+		pt_printf("current  none counted until the voltage is seen\n"
+			  "         to rise: the charger may not have started\n");
+	else
+		pt_printf("current  none\n");
+	if (b->charge_ma)
+		pt_printf("charger  %s, pushing about %d mA\n",
+			  b->usb && CONFIG_PT_BATTERY_CHARGE_MA ? "a PC on USB" : "found by the voltage",
+			  b->charge_ma);
+	else if (b->usb && !CONFIG_PT_BATTERY_CHARGE_MA)
+		pt_printf("charger  none: on USB the cell rests\n");
+	else
+		pt_printf("charger  %s\n", b->usb ? "a PC on USB, not charging now" :
+			  b->charger ? "yes, by the voltage" : "no");
+	if (b->cal_meter)
+		pt_printf("readings %+d.%02d%%, set from a meter\n", (b->cal - 10000) / 100,
+			  abs(b->cal - 10000) % 100);
+	else if (b->cal != 10000)
+		pt_printf("readings %+d.%02d%%, set from the charger's 4.20 V;\n"
+			  "         `battery -m VOLTS` with a meter is better\n",
+			  (b->cal - 10000) / 100, abs(b->cal - 10000) % 100);
+	else
+		pt_printf("readings as the pin gives them: measure the cell\n"
+			  "         with a meter, then `battery -m VOLTS`\n");
 	pt_printf("cell     %d mAh, %d mohm%s\n", b->capacity_mah, b->mohm,
 		  b->mohm_guessed ? " (a guess so far)" : "");
 	pt_printf("cycles   %d.%d (%d mAh used since it was fitted)\n", b->cycles10 / 10,
@@ -698,13 +801,43 @@ static void battery_details(const struct battery_status *b)
 			  "         use it until it is down to 20%%\n");
 }
 
+/* The end of the power log: the last `n` lines of /etc/power.log. */
+static int battery_log(int n)
+{
+	int fd = pt_open("/etc/power.log", O_RDONLY), len = 0, got, lines = 0, from;
+	char *buf = pt_malloc(32768);
+
+	if (fd < 0 || !buf) {
+		pt_free(buf);
+		if (fd >= 0)
+			pt_close(fd);
+		pt_printf("the power log is empty so far\n");
+		return 0;
+	}
+	while (len < 32767 && (got = pt_read(fd, buf + len, 32767 - len)) > 0)
+		len += got;
+	pt_close(fd);
+	for (from = len; from > 0; from--)
+		if (buf[from - 1] == '\n' && from != len && ++lines == n)
+			break;
+	pt_write(PT_STDOUT, buf + from, len - from);
+	pt_free(buf);
+	return 0;
+}
+
+PT_COMPLETE(battery, ": -v -w -l -c -m\n*: -v -w -l -c -m\n")
+
 PT_PROGRAM(battery, "show the battery level\n"
-	   "usage: battery [-v] [-w] [-c mAh]\n"
+	   "usage: battery [-v] [-w] [-l] [-c mAh] [-m VOLTS]\n"
 	   "  -v  everything known: voltage, current, cycles,\n"
 	   "      health\n"
+	   "  -l  the power log: every start and sleep, and each\n"
+	   "      half hour awake, with the level\n"
 	   "  -w  keep watching, once a second, until Ctrl-C\n"
 	   "  -c  a new cell of that capacity is fitted: its\n"
 	   "      cycles, health and resistance start again\n"
+	   "  -m  what a meter on the cell's wires reads now,\n"
+	   "      e.g. -m 4.12: the readings are scaled to it\n"
 	   "The current is estimated from the backlight, CPU and\n"
 	   "radio: the board cannot measure it. So are cycles\n"
 	   "(what was used, over the capacity) and health (what\n"
@@ -712,21 +845,32 @@ PT_PROGRAM(battery, "show the battery level\n"
 	   "first ones, when it was new).")
 {
 	bool watch = false, verbose = false;
-	int mah = 0, ret;
+	int mah = 0, meter = 0, ret;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-w")) {
 			watch = true;
 		} else if (!strcmp(argv[i], "-v")) {
 			verbose = true;
+		} else if (!strcmp(argv[i], "-l")) {
+			return battery_log(20);
 		} else if (!strcmp(argv[i], "-c") && i + 1 < argc) {
 			mah = atoi(argv[++i]);
 			if (!mah) {
 				pt_dprintf(PT_STDERR, "battery: the capacity is 50 to 20000 mAh\n");
 				return 2;
 			}
+		} else if (!strcmp(argv[i], "-m") && i + 1 < argc) {
+			/* volts as a meter shows them, "4.12", or millivolts */
+			double v = strtod(argv[++i], NULL);
+
+			meter = v < 10 ? (int)(v * 1000 + 0.5) : (int)v;
+			if (meter < 2500 || meter > 4400) {
+				pt_dprintf(PT_STDERR, "battery: a cell reads 2.5 to 4.4 V\n");
+				return 2;
+			}
 		} else {
-			pt_dprintf(PT_STDERR, "usage: battery [-v] [-w] [-c mAh]\n");
+			pt_dprintf(PT_STDERR, "usage: battery [-v] [-w] [-l] [-c mAh] [-m VOLTS]\n");
 			return 2;
 		}
 	}
@@ -740,6 +884,14 @@ PT_PROGRAM(battery, "show the battery level\n"
 	}
 	if (mah)
 		pt_printf("a new %d mAh cell: 0 cycles, health to be measured\n", mah);
+	if (meter && (ret = battery_calibrate(meter))) {
+		if (ret == -ERANGE)
+			pt_dprintf(PT_STDERR, "battery: that is more than 10%% from what the pin\n"
+				   "reads: is the meter on the cell's wires?\n");
+		return ret == -ERANGE ? 1 : fail("battery", NULL, ret);
+	}
+	if (meter)
+		pt_printf("calibrated: the readings now agree with the meter\n");
 	do {
 		struct battery_status b;
 		char time[40];
@@ -752,10 +904,19 @@ PT_PROGRAM(battery, "show the battery level\n"
 				  b.raw % 1000 / 10, watch ? "   \r" : "\n");
 		else if (verbose && !watch)
 			battery_details(&b);
-		else
-			pt_printf("%d.%02d V  %d.%d%%  %s%s%s", b.mv / 1000, b.mv % 1000 / 10,
-				  b.permille / 10, b.permille % 10, battery_state_name(b.state), time,
-				  watch ? "      \r" : "\n");
+		else if (watch)
+			pt_printf("%d.%02d V  %d.%d%%  %s%s      \r", b.mv / 1000, b.mv % 1000 / 10,
+				  b.permille / 10, b.permille % 10, battery_state_name(b.state), time);
+		else {
+			pt_printf("%d.%02d V  %d.%d%%  %s%s\n", b.mv / 1000, b.mv % 1000 / 10,
+				  b.permille / 10, b.permille % 10, battery_state_name(b.state), time);
+			if (b.health >= 0)
+				pt_printf("%d.%d cycles, health %d%%\n", b.cycles10 / 10,
+					  b.cycles10 % 10, b.health);
+			else
+				pt_printf("%d.%d cycles, health not measured yet\n", b.cycles10 / 10,
+					  b.cycles10 % 10);
+		}
 		if (watch)
 			pt_sleep_ms(1000);
 	} while (watch && !pt_interrupted());
@@ -763,6 +924,8 @@ PT_PROGRAM(battery, "show the battery level\n"
 		pt_puts("\n");
 	return 0;
 }
+
+PT_COMPLETE(suspend, ": -t\n")
 
 PT_PROGRAM(suspend, "deep sleep until a key is pressed\n"
 	   "usage: suspend [-t seconds]\n"
@@ -796,6 +959,8 @@ PT_PROGRAM(poweroff, "put the system into deep sleep\n"
 }
 
 /* ------------------------------------------------------------ CPU */
+
+PT_COMPLETE(cpufreq, ": performance ondemand powersave\n")
 
 PT_PROGRAM(cpufreq, "show or set the CPU frequency policy\n"
 	   "usage: cpufreq [performance | ondemand | powersave | MIN-MAX]\n"
@@ -842,11 +1007,15 @@ PT_PROGRAM(cpufreq, "show or set the CPU frequency policy\n"
 
 /* ------------------------------------------------------------ status LED */
 
+PT_COMPLETE(led, ": on off heartbeat charge\n")
+
 PT_PROGRAM(led, "control the status LED\n"
-	   "usage: led [on | off | heartbeat | RRGGBB]\n"
+	   "usage: led [on | off | heartbeat | charge | RRGGBB]\n"
+	   "charge (the default) lights it while the battery\n"
+	   "charges, green once it is full.\n"
 	   "With no argument, shows the current setting.")
 {
-	static const char *const names[] = { "off", "on", "heartbeat" };
+	static const char *const names[] = { "off", "on", "heartbeat", "charge" };
 	uint8_t r, g, b;
 
 	if (argc == 1) {
@@ -864,7 +1033,7 @@ PT_PROGRAM(led, "control the status LED\n"
 	char *end;
 	unsigned long rgb = strtoul(hex, &end, 16);
 	if (strlen(hex) != 6 || *end) {
-		pt_dprintf(PT_STDERR, "usage: led [on | off | heartbeat | RRGGBB]\n");
+		pt_dprintf(PT_STDERR, "usage: led [on | off | heartbeat | charge | RRGGBB]\n");
 		return 2;
 	}
 	led_set_color(rgb >> 16, rgb >> 8, rgb);
@@ -873,10 +1042,98 @@ PT_PROGRAM(led, "control the status LED\n"
 
 /* ------------------------------------------------------------ hardware checks */
 
+PT_COMPLETE(lcdtest, ": clock tear read scan dir\ntear: up down land\ndir: up down\n")
+
 PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
-	   "Shows 8 color bars, then a border. Wrong colors or garbage mean a\n"
-	   "data line is swapped or loose; see docs/WIRING.md.")
+	   "usage: lcdtest [clock [MHZ] | tear up|down|land |\n"
+	   "               read HEX | scan | dir up|down]\n"
+	   "Shows 8 color bars, then a border. Wrong colors or garbage\n"
+	   "mean a data line is swapped or loose; see docs/WIRING.md.\n"
+	   "  clock  the panel's bus clock, until the next boot\n"
+	   "  tear   3 s of red/blue frames sent as video sends them:\n"
+	   "         all at once is good, a seam is tearing\n"
+	   "  read   a register of the panel (its SDO is wired)\n"
+	   "  scan   where its refresh is, sampled over 25 ms\n"
+	   "  dir    which way video assumes the refresh runs")
 {
+	if (argc == 3 && !strcmp(argv[1], "tear")) {
+		/*
+		 * Three seconds of the screen changing colour as fast as it can,
+		 * sent the way `video` sends frames: in the panel's order with
+		 * the refresh read "up" or "down", or plain landscape ("land").
+		 * In step with the refresh, it changes all at once; out of step,
+		 * it splits into two colours along a seam.
+		 */
+		static const uint16_t colors[2] = { 0x001f, 0xf800 };	/* blue, red */
+		size_t bytes = (size_t)lcd_width() * lcd_height() * 2;
+		uint8_t *mem = pt_malloc(bytes + 63);
+		uint8_t *px = mem ? (uint8_t *)(((uintptr_t)mem + 63) & ~(uintptr_t)63) : NULL;
+		bool land = !strcmp(argv[2], "land");
+		int64_t end = pt_uptime_us() + 3000000;
+
+		if (!px)
+			return fail("lcdtest", "tear", -ENOMEM);
+		power_screen_wake();
+		vt_hold_screen(true);
+		if (!land)
+			lcd_native_order(!strcmp(argv[2], "up"));
+		for (int n = 0; pt_uptime_us() < end; n++) {
+			uint16_t c = colors[n & 1];
+
+			for (size_t i = 0; i < bytes / 2; i++) {
+				px[2 * i] = c >> 8;
+				px[2 * i + 1] = c & 0xff;
+			}
+			if (land)
+				lcd_draw(0, 0, lcd_width(), lcd_height(), px);
+			else
+				lcd_draw_native(px, 0, lcd_height(), 0, lcd_width());
+		}
+		lcd_native_order(true);
+		vt_hold_screen(false);
+		pt_free(mem);
+		return 0;
+	}
+	if (argc == 3 && !strcmp(argv[1], "dir")) {
+		/* which way the panel's refresh runs, for sending video in step */
+		lcd_native_order(!strcmp(argv[2], "up"));
+		return 0;
+	}
+	if (argc == 2 && !strcmp(argv[1], "scan")) {
+		/* where the panel's refresh is, sampled as fast as it can be */
+		static uint8_t b[400][4];
+		static int64_t at[400];
+
+		for (int k = 0; k < 400; k++) {
+			lcd_read_reg(0x45, b[k], 4);
+			at[k] = pt_uptime_us();
+		}
+		for (int k = 0; k < 400; k++)
+			pt_printf("%lld %02x %02x %02x\n", (long long)(at[k] - at[0]), b[k][0], b[k][1],
+				  b[k][2]);
+		return 0;
+	}
+	if (argc == 3 && !strcmp(argv[1], "read")) {
+		/* a register of the panel, in hex: lcdtest read 45 */
+		uint8_t b[4] = { 0 };
+		int err;
+
+		for (int k = 0; k < 8; k++) {
+			if ((err = lcd_read_reg((uint8_t)strtoul(argv[2], NULL, 16), b, 4)))
+				return fail("lcdtest", "read", err);
+			pt_printf("%02x %02x %02x %02x\n", b[0], b[1], b[2], b[3]);
+			pt_sleep_ms(3);
+		}
+		return 0;
+	}
+	if (argc >= 2 && !strcmp(argv[1], "clock")) {
+		int err;
+
+		if (argc == 3 && (err = lcd_set_clock(atoi(argv[2]) * 1000000)))
+			return fail("lcdtest", "clock", err);
+		pt_printf("panel bus clock %d MHz\n", lcd_clock() / 1000000);
+		return 0;
+	}
 	static const uint16_t bars[8] = {
 		0xf800, 0x07e0, 0x001f, 0xffe0, 0xf81f, 0x07ff, 0xffff, 0x0000,
 	};
@@ -886,6 +1143,7 @@ PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 		pt_dprintf(PT_STDERR, "lcdtest: display disabled in menuconfig\n");
 		return 1;
 	}
+	power_screen_wake();
 	int w = lcd_width(), h = lcd_height();
 	for (int i = 0; i < 8; i++)
 		lcd_fill(i * w / 8, 0, w / 8 + (i == 7 ? w % 8 : 0), h, bars[i]);
@@ -1120,8 +1378,10 @@ PT_PROGRAM(backlight, "show or set the screen brightness\n"
 		pt_dprintf(PT_STDERR, "usage: backlight [0-100]\n");
 		return 2;
 	}
-	if (argc > 1)
+	if (argc > 1) {
 		lcd_backlight_set(percent);
+		power_levels_changed();		/* kept in /etc/power, unless 0 */
+	}
 	pt_printf("backlight %d%%\n", lcd_backlight_get());
 	return 0;
 }
@@ -1132,6 +1392,8 @@ PT_PROGRAM(backlight, "show or set the screen brightness\n"
  * The two ways up a landscape screen has. The choice is kept in
  * /etc/rotate, "0" or "180", and init applies it at boot.
  */
+PT_COMPLETE(rotate, ": 0 180\n")
+
 PT_PROGRAM(rotate, "turn the screen upside down\n"
 	   "usage: rotate [0 | 180]\n"
 	   "Alone it turns the screen round; 0 is the usual way up and 180\n"
@@ -1193,6 +1455,8 @@ PT_PROGRAM(mkfs, "make a new filesystem on the SD card\n"
  * network is a machine you cannot reach to tell it anything -- everything
  * else on both filesystems goes.
  */
+PT_COMPLETE_NAMED(factory_reset, "factory-reset", ": -y\n", NULL)
+
 PT_PROGRAM_NAMED(factory_reset, "factory-reset", 0,
 	   "erase both filesystems and start again\n"
 	   "usage: factory-reset -y\n"
@@ -1286,6 +1550,7 @@ PT_PROGRAM(screenshot, "save a picture of the screen\n"
 		} while (n < 1000 && !pt_stat(path, &st));
 	}
 
+	power_screen_wake();		/* a dark screen draws nothing to capture */
 	if ((ret = lcd_capture_begin()))
 		return fail("screenshot", NULL, ret);
 	vt_redraw();			/* paint the console into the capture */
@@ -1357,6 +1622,8 @@ PT_PROGRAM(i2cdetect, "list the devices on an I2C bus\n"
 		pt_printf("that many is usually a bus with no pull-up resistors\n");
 	return 0;
 }
+
+PT_COMPLETE(chvt, ": 1 2 3 4\n")
 
 PT_PROGRAM(chvt, "switch to another terminal\n"
 	   "usage: chvt [number]\n"

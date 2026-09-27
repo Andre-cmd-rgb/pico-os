@@ -1,5 +1,5 @@
 int main() {
-    str dir = getenv("AL_TMP") + "/filetest";
+    str dir = getenv("PICO_TMP") + "/filetest";
     println(mkdir(dir), " ", is_dir(dir), " ", exists(dir + "/none"));
     File f = open(dir + "/notes.txt", "w");
     println(f == null);

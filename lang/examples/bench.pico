@@ -1,6 +1,6 @@
-// Timings for the a virtual machine. Run it on the PC and on the board:
-//   a bench.al         the default sizes
-//   a bench.al 2       twice the work
+// Timings for the pico virtual machine. Run it on the PC and on the board:
+//   pico bench.pico         the default sizes
+//   pico bench.pico 2       twice the work
 int scale = 1;
 
 int fib(int n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }

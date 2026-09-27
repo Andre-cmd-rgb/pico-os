@@ -1,0 +1,42 @@
+// switch: no falling through, lists of values, strings, break and continue
+enum Dir { NORTH, EAST, SOUTH, WEST }
+
+str name(Dir d) {
+    switch (d) {
+    case NORTH: return "north";
+    case EAST: return "east";
+    case SOUTH, WEST: return "down or left";
+    default: return "?";
+    }
+}
+
+int main() {
+    for (int i = 0; i < 6; i++) {
+        switch (i) {
+        case 1:
+            continue;           // the loop's
+        case 3:
+            str s = "three";    // a case is a scope of its own
+            println(s);
+            break;              // the switch's
+        case 4, 5:
+            println(i, " is four or five");
+        default:
+            println("i=", i);
+        }
+    }
+    for (str cmd in ["go", "stop", "wait"]) {
+        switch (cmd) {
+        case "go": println("going");
+        case "stop", "halt": println("stopping");
+        default: println("unknown: ", cmd);
+        }
+    }
+    float f = 2.5;
+    switch (f) { case 1: println("one"); case 2.5: println("two and a half"); }
+    switch (7) { case 1: println("no default, no match: nothing"); }
+    println(name(NORTH), " ", name(WEST), " ", name(9));
+    int n = 2;
+    switch (n + 1) { case n * 1: println("computed"); case n + 1: println("three, computed"); }
+    return 0;
+}

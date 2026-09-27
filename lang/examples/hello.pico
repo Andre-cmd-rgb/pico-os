@@ -1,4 +1,4 @@
-// The first program: run it with `a hello.al yourname`.
+// The first program: run it with `pico hello.pico yourname`.
 struct Point {
     int x;
     int y;

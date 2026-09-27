@@ -1,12 +1,12 @@
-The `a` language
-================
+The pico language
+=================
 
 C-like, statically typed, with automatic memory and
 no pointers. A mistake stops with the line it
 happened on rather than corrupting something.
 
-  a hello.al        compile and run
-  ac hello.al       compile to ./hello
+  pico hello.pico     compile and run
+  picoc hello.pico    compile to ./hello
 
 A PROGRAM
 
@@ -27,17 +27,28 @@ TYPES
   Point p = Point{x: 3, y: 4};
   int[] xs = [1, 2, 3];
   int[][] grid = [[1, 2], [3]];
+  enum Dir { UP, DOWN, LEFT = 10, RIGHT }
+  Dir d = LEFT;           an enum's values are ints
 
 CONTROL
 
   if / else, while, for (int i = 0; i < n; i++),
   break, continue, return, and ? :
 
+  for (str s in names) println(s);   each item
+  for (str ch in chars(text)) ...    each character
+
+  switch (key) {
+  case 'q', KEY_ESC: quit();         no falling
+  case KEY_UP: y--;                  through; break
+  default: beep();                   leaves it
+  }
+
 STRINGS
 
   len substr find split join trim upper lower replace
   starts_with ends_with contains repeat chr ord
-  to_int to_float str
+  chars to_int to_float str
   s[i] is the byte at i. "n=" + n builds text.
 
 ARRAYS
@@ -58,6 +69,16 @@ FILES AND THE SYSTEM
   stdin stdout stderr are File constants.
   run getenv exit sleep_ms uptime_ms time date
   raw_mode readkey term_cols term_rows
+  output("date")      what a command prints, as a str
+
+THE INTERNET
+
+  http_get(url)          a page or an API's answer
+  json_get(j, "a.b.0")   one value out of JSON; the
+                         path's "#" counts the items
+
+  str j = http_get("https://...");
+  println(json_get(j, "current.temperature_2m"));
 
 CHECKING THINGS
 
@@ -72,5 +93,7 @@ PRINTING
 
 EXAMPLES ON THE BOARD
 
-  ~/benchmark.al and the examples in lang/examples on
-  the PC: hello, guess, life, mandel, todo, wc.
+  In ~/pico: matrix (digital rain), snake (the game),
+  weather (pico weather.pico Tokyo), life, mandel,
+  todo, guess, wc, hello. The PC's
+  docs/PICO-TUTORIAL.md teaches it from the start.

@@ -1,5 +1,5 @@
 /*
- * a: a small statically typed language.
+ * pico: a small statically typed language.
  *
  * Declarations shared by the compiler, the executable loader and the virtual
  * machine. Nothing here knows about the platform; that lives behind port.h,
@@ -16,32 +16,32 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define AL_VERSION		2	/* executable format version */
-#define AL_HEADER_SIZE		32
-#define AL_TRAILER_SIZE		4	/* CRC-32 of everything before it */
-#define AL_MAX_CALL_DEPTH	10000
-#define AL_MAX_STACK		(1u << 20)	/* values */
-#define AL_MAX_SOURCE		(1u << 20)	/* bytes */
-#define AL_MAX_IMAGE		(4u << 20)
+#define PICO_VERSION		2	/* executable format version */
+#define PICO_HEADER_SIZE		32
+#define PICO_TRAILER_SIZE		4	/* CRC-32 of everything before it */
+#define PICO_MAX_CALL_DEPTH	10000
+#define PICO_MAX_STACK		(1u << 20)	/* values */
+#define PICO_MAX_SOURCE		(1u << 20)	/* bytes */
+#define PICO_MAX_IMAGE		(4u << 20)
 
 /* The first bytes of every executable: DEL 'A' 'L', then the version. */
-#define AL_MAGIC		"\x7f" "AL"
+#define PICO_MAGIC		"\x7f" "AL"	/* from when the language was called a */
 
 /* ------------------------------------------------------------ values */
 
-struct al_obj;
+struct pico_obj;
 
 /*
  * Values carry no type tag: the compiler knows every type, so the bytecode
  * uses typed instructions instead. 4 bytes on the ESP32-S3.
  */
-union al_val {
+union pico_val {
 	int32_t		 i;
 	float		 f;
-	struct al_obj	*o;
+	struct pico_obj	*o;
 };
 
-enum al_otype {
+enum pico_otype {
 	OT_STR,
 	OT_ARRAY,
 	OT_STRUCT,
@@ -49,7 +49,7 @@ enum al_otype {
 };
 
 /* What an array element or a struct field holds, for defaults and freeing. */
-enum al_kind {
+enum pico_kind {
 	K_INT,
 	K_FLOAT,
 	K_BOOL,
@@ -59,36 +59,36 @@ enum al_kind {
 
 #define KIND_IS_REF(k)	((k) >= K_STR)
 
-struct al_obj {
+struct pico_obj {
 	uint32_t	refs;
-	uint8_t		type;		/* enum al_otype */
+	uint8_t		type;		/* enum pico_otype */
 	uint8_t		kind;		/* arrays: element kind */
 	uint16_t	sid;		/* structs: index into the struct table */
 };
 
-struct al_str {
-	struct al_obj	h;
+struct pico_str {
+	struct pico_obj	h;
 	uint32_t	len;
 	uint32_t	cap;		/* bytes available in data, excluding the NUL */
 	char		data[];		/* always NUL-terminated */
 };
 
-struct al_array {
-	struct al_obj	 h;
+struct pico_array {
+	struct pico_obj	 h;
 	uint32_t	 len;
 	uint32_t	 cap;
-	union al_val	*items;
-	struct al_obj	*dead;		/* link while being freed */
+	union pico_val	*items;
+	struct pico_obj	*dead;		/* link while being freed */
 };
 
-struct al_struct {
-	struct al_obj	 h;
-	struct al_obj	*dead;
-	union al_val	 fields[];
+struct pico_struct {
+	struct pico_obj	 h;
+	struct pico_obj	*dead;
+	union pico_val	 fields[];
 };
 
-struct al_file {
-	struct al_obj	 h;
+struct pico_file {
+	struct pico_obj	 h;
 	int		 fd;		/* -1 once closed */
 	bool		 std;		/* stdin, stdout, stderr: never really closed */
 	bool		 eof;
@@ -101,26 +101,26 @@ struct al_file {
 
 /* readkey() results besides plain bytes; the same numbers as pt/keys.h. */
 enum {
-	AL_KEY_NONE = -4,	/* timeout */
-	AL_KEY_INTR = -3,
-	AL_KEY_ERROR = -2,
-	AL_KEY_EOF = -1,
-	AL_KEY_UP = 0x100,
-	AL_KEY_DOWN,
-	AL_KEY_LEFT,
-	AL_KEY_RIGHT,
-	AL_KEY_HOME,
-	AL_KEY_END,
-	AL_KEY_PGUP,
-	AL_KEY_PGDN,
-	AL_KEY_INSERT,
-	AL_KEY_DELETE,
-	AL_KEY_ESC,
-	AL_KEY_F1,
-	AL_KEY_F2,
-	AL_KEY_F3,
-	AL_KEY_F4,
-	AL_KEY_UNKNOWN,
+	PICO_KEY_NONE = -4,	/* timeout */
+	PICO_KEY_INTR = -3,
+	PICO_KEY_ERROR = -2,
+	PICO_KEY_EOF = -1,
+	PICO_KEY_UP = 0x100,
+	PICO_KEY_DOWN,
+	PICO_KEY_LEFT,
+	PICO_KEY_RIGHT,
+	PICO_KEY_HOME,
+	PICO_KEY_END,
+	PICO_KEY_PGUP,
+	PICO_KEY_PGDN,
+	PICO_KEY_INSERT,
+	PICO_KEY_DELETE,
+	PICO_KEY_ESC,
+	PICO_KEY_F1,
+	PICO_KEY_F2,
+	PICO_KEY_F3,
+	PICO_KEY_F4,
+	PICO_KEY_UNKNOWN,
 };
 
 /* ------------------------------------------------------------ bytecode */
@@ -131,7 +131,7 @@ enum {
  * operands (calls). Jumps whose name starts with LOOP go backwards and poll
  * for Ctrl-C.
  */
-#define AL_OPS(X)							\
+#define PICO_OPS(X)							\
 	X(NOP, "", 0, 0)						\
 	X(CONST8, "c", 0, 1)						\
 	X(CONST32, "i", 0, 1)						\
@@ -253,14 +253,14 @@ enum {
 	X(SETFL, "bb", 1, 0)						\
 	X(SETFLR, "bb", 1, 0)
 
-enum al_op {
+enum pico_op {
 #define X(name, fmt, pop, push) OP_##name,
-	AL_OPS(X)
+	PICO_OPS(X)
 #undef X
 	OP_COUNT
 };
 
-struct al_opinfo {
+struct pico_opinfo {
 	const char	*name;
 	const char	*fmt;
 	int8_t		 pop;
@@ -268,10 +268,10 @@ struct al_opinfo {
 	uint8_t		 size;		/* opcode plus operands */
 };
 
-extern const struct al_opinfo al_opinfo[OP_COUNT];
+extern const struct pico_opinfo pico_opinfo[OP_COUNT];
 
 /*
- * Fused instructions. After a program is verified, al_quicken() rewrites the
+ * Fused instructions. After a program is verified, pico_quicken() rewrites the
  * first opcode of common sequences into one of these, which does the whole
  * sequence in one dispatch. Only that opcode byte changes: operands are read
  * where the compiler put them, and a jump into the middle of a sequence still
@@ -283,38 +283,38 @@ extern const struct al_opinfo al_opinfo[OP_COUNT];
  *		I  INCL before a LOOPcc: the step and test of a for loop
  *   b		L  LOAD b   K  CONST8   W  CONST32   N  LENL (length of a local)
  */
-#define AL_QCC(X, form, b)						\
+#define PICO_QCC(X, form, b)						\
 	X(form, b, EQ, ==) X(form, b, NE, !=) X(form, b, LT, <)		\
 	X(form, b, LE, <=) X(form, b, GT, >) X(form, b, GE, >=)
-#define AL_QCMPS(X)							\
-	AL_QCC(X, J, L) AL_QCC(X, J, K) AL_QCC(X, J, W) AL_QCC(X, J, N)	\
-	AL_QCC(X, P, L) AL_QCC(X, P, K) AL_QCC(X, P, W) AL_QCC(X, P, N)	\
-	AL_QCC(X, I, L) AL_QCC(X, I, K) AL_QCC(X, I, W) AL_QCC(X, I, N)
+#define PICO_QCMPS(X)							\
+	PICO_QCC(X, J, L) PICO_QCC(X, J, K) PICO_QCC(X, J, W) PICO_QCC(X, J, N)	\
+	PICO_QCC(X, P, L) PICO_QCC(X, P, K) PICO_QCC(X, P, W) PICO_QCC(X, P, N)	\
+	PICO_QCC(X, I, L) PICO_QCC(X, I, K) PICO_QCC(X, I, W) PICO_QCC(X, I, N)
 
 /* Arithmetic on locals: "LOAD a; LOAD b | CONST8 k; op" pushes the result,
  * and with "; STORE c" after it, stores it. "op; STORE c" pops into c. */
-#define AL_QINT(X)	X(ADD) X(SUB) X(MUL)
-#define AL_QFLOAT(X)	X(ADDF) X(SUBF) X(MULF)
+#define PICO_QINT(X)	X(ADD) X(SUB) X(MUL)
+#define PICO_QFLOAT(X)	X(ADDF) X(SUBF) X(MULF)
 
 /* "LOAD a; X" for other common X: push, then run X's own handler. */
-#define AL_QLOAD(X)							\
+#define PICO_QLOAD(X)							\
 	X(LOAD) X(CONST8) X(CONST32) X(CONSTF) X(I2F) X(IDXL) X(LENL)	\
 	X(GETFL) X(CALL) X(STORE) X(ADD) X(SUB) X(MUL) X(ADDF) X(SUBF)	\
 	X(MULF) X(DIV) X(MOD)
 
-enum al_qop {
+enum pico_qop {
 	Q_FIRST = OP_COUNT - 1,
 #define X(form, b, cc, op) Q_##form##b##cc,
-	AL_QCMPS(X)
+	PICO_QCMPS(X)
 #undef X
 #define X(op) Q_LL##op, Q_LK##op, Q_LL##op##_ST, Q_LK##op##_ST, Q_##op##_ST,
-	AL_QINT(X)
+	PICO_QINT(X)
 #undef X
 #define X(op) Q_LL##op, Q_LL##op##_ST, Q_##op##_ST,
-	AL_QFLOAT(X)
+	PICO_QFLOAT(X)
 #undef X
 #define X(op) Q_L_##op,
-	AL_QLOAD(X)
+	PICO_QLOAD(X)
 #undef X
 	OP_TOTAL
 };
@@ -332,7 +332,7 @@ enum { TS_INT, TS_FLOAT, TS_BOOL };
  * "*" means the compiler checks the call itself. Names starting with '@'
  * are variants the compiler picks; programs cannot name them.
  */
-#define AL_BUILTINS(X)							\
+#define PICO_BUILTINS(X)							\
 	X(printf, "printf", "*")					\
 	X(format, "format", "*")					\
 	X(print, "print", "*")						\
@@ -404,25 +404,30 @@ enum { TS_INT, TS_FLOAT, TS_BOOL };
 	X(raw_mode, "raw_mode", "b:v")					\
 	X(readkey, "readkey", "i?:i")					\
 	X(term_cols, "term_cols", ":i")					\
-	X(term_rows, "term_rows", ":i")
+	X(term_rows, "term_rows", ":i")					\
+	X(chars, "chars", "s:S")					\
+	X(output, "output", "*")					\
+	X(outputa, "@outputa", "S:s")					\
+	X(http_get, "http_get", "s:s")					\
+	X(json_get, "json_get", "ss:s")
 
-enum al_builtin {
+enum pico_builtin {
 #define X(cname, name, sig) B_##cname,
-	AL_BUILTINS(X)
+	PICO_BUILTINS(X)
 #undef X
 	B_COUNT
 };
 
-struct al_builtin_info {
+struct pico_builtin_info {
 	const char	*name;
 	const char	*sig;
 };
 
-extern const struct al_builtin_info al_builtins[B_COUNT];
+extern const struct pico_builtin_info pico_builtins[B_COUNT];
 
 /* ------------------------------------------------------------ programs */
 
-struct al_func {
+struct pico_func {
 	uint32_t	code;		/* offset into the code section */
 	uint32_t	len;
 	uint32_t	lines;		/* first line table entry */
@@ -434,19 +439,19 @@ struct al_func {
 	uint8_t		returns;	/* 1 when it returns a value */
 };
 
-struct al_field {
+struct pico_field {
 	uint16_t	name;
 	uint16_t	desc;		/* string index of the type descriptor */
 	uint8_t		kind;
 };
 
-struct al_sdef {
+struct pico_sdef {
 	uint16_t	name;
 	uint16_t	nfields;
 	uint32_t	first;		/* index into fields */
 };
 
-struct al_prog {
+struct pico_prog {
 	uint16_t	 nstrings;
 	uint16_t	 nstructs;
 	uint16_t	 nglobals;
@@ -454,11 +459,11 @@ struct al_prog {
 	uint16_t	 main;
 	uint16_t	 init;		/* 0xffff: no global initialisers */
 	uint16_t	 source;	/* string index of the source file name */
-	struct al_str	**strings;
-	struct al_sdef	*structs;
-	struct al_field	*fields;
+	struct pico_str	**strings;
+	struct pico_sdef	*structs;
+	struct pico_field	*fields;
 	uint8_t		*global_kinds;
-	struct al_func	*funcs;
+	struct pico_func	*funcs;
 	const uint8_t	*lines;		/* pairs of u16 pc, u16 line */
 	const uint8_t	*code;
 	uint32_t	 code_len;
@@ -466,14 +471,14 @@ struct al_prog {
 	size_t		 image_len;
 };
 
-#define AL_NO_FUNC	0xffff
+#define PICO_NO_FUNC	0xffff
 
 /* ------------------------------------------------------------ memory */
 
-#define AL_POOL_CLASSES	8
+#define PICO_POOL_CLASSES	8
 
-struct al_heap {
-	void		*free[AL_POOL_CLASSES];
+struct pico_heap {
+	void		*free[PICO_POOL_CLASSES];
 	void		*chunks;	/* linked list of pool chunks */
 	char		*bump;
 	char		*bump_end;
@@ -484,121 +489,121 @@ struct al_heap {
 
 /* ------------------------------------------------------------ vm */
 
-struct al_frame {
+struct pico_frame {
 	const uint8_t	*ip;		/* return address, NULL for the bottom frame */
-	union al_val	*bp;
+	union pico_val	*bp;
 	uint16_t	 fn;
 };
 
-#define AL_OUTBUF	1024
+#define PICO_OUTBUF	1024
 
-struct al_vm {
-	struct al_prog	 prog;
-	struct al_heap	 heap;
-	union al_val	*stack;
+struct pico_vm {
+	struct pico_prog	 prog;
+	struct pico_heap	 heap;
+	union pico_val	*stack;
 	size_t		 stack_cap;
-	struct al_frame	*frames;
+	struct pico_frame	*frames;
 	uint32_t	 nframes;
 	uint32_t	 frames_cap;
-	union al_val	*globals;
-	struct al_str	*empty;
-	struct al_file	*std[3];
+	union pico_val	*globals;
+	struct pico_str	*empty;
+	struct pico_file	*std[3];
 	uint32_t	 rng;
 	bool		 raw;
 	bool		 halted;	/* exit() called */
 	bool		 failed;	/* runtime error reported */
 	bool		 line_buffered;
-	bool		 quickened;	/* al_quicken ran: opcodes may be fused */
+	bool		 quickened;	/* pico_quicken ran: opcodes may be fused */
 	int		 status;
 	const uint8_t	*ip;		/* where an error happened */
 	uint16_t	 fn;
 	uint16_t	 outlen;
-	char		 out[AL_OUTBUF];
+	char		 out[PICO_OUTBUF];
 };
 
 /* ------------------------------------------------------------ compiler */
 
-struct al_image {
+struct pico_image {
 	uint8_t		*data;
 	size_t		 len;
 };
 
 /* Compile source; errors go to stderr. Returns 0 or -1. */
-int	al_compile(const char *filename, const char *src, size_t len, struct al_image *out);
+int	pico_compile(const char *filename, const char *src, size_t len, struct pico_image *out);
 
 /* image.c */
-uint32_t al_crc32(const uint8_t *data, size_t len);
-int	al_load(struct al_vm *vm, const uint8_t *data, size_t len, char *err, size_t errlen);
-void	al_disasm(struct al_vm *vm);	/* before al_quicken */
+uint32_t pico_crc32(const uint8_t *data, size_t len);
+int	pico_load(struct pico_vm *vm, const uint8_t *data, size_t len, char *err, size_t errlen);
+void	pico_disasm(struct pico_vm *vm);	/* before pico_quicken */
 
-/* quicken.c: fuse common sequences, once al_load has verified the program */
-void	al_quicken(struct al_vm *vm);
+/* quicken.c: fuse common sequences, once pico_load has verified the program */
+void	pico_quicken(struct pico_vm *vm);
 
 /* vm.c */
-struct al_vm *al_vm_new(void);
-int	al_vm_run(struct al_vm *vm, int argc, char **argv);
-void	al_vm_free(struct al_vm *vm, bool leak_check);
-int	al_vm_exec(struct al_vm *vm, uint16_t fn, union al_val *result);
+struct pico_vm *pico_vm_new(void);
+int	pico_vm_run(struct pico_vm *vm, int argc, char **argv);
+void	pico_vm_free(struct pico_vm *vm, bool leak_check);
+int	pico_vm_exec(struct pico_vm *vm, uint16_t fn, union pico_val *result);
 
 /* runtime.c */
-void	*al_alloc(struct al_vm *vm, size_t n);
-void	 al_free(struct al_vm *vm, void *p, size_t n);
-void	*al_grow(struct al_vm *vm, void *p, size_t old, size_t n);
-void	 al_heap_release(struct al_vm *vm);
-void	 al_obj_free(struct al_vm *vm, struct al_obj *o);
-struct al_str *al_str_new(struct al_vm *vm, const char *s, size_t len);
-struct al_str *al_str_alloc(struct al_vm *vm, size_t len);
-struct al_str *al_str_concat(struct al_vm *vm, struct al_str *a, struct al_str *b);
-struct al_str *al_str_append(struct al_vm *vm, struct al_str *a, struct al_str *b);
-int	 al_str_cmp(const struct al_str *a, const struct al_str *b);
-struct al_str *al_tostr(struct al_vm *vm, union al_val v, int kind);
-int	 al_fmt_int(char *out, int32_t v);	/* decimal, no NUL; at most 11 bytes */
-int32_t	 al_float_to_int(float f);
-struct al_str *al_tostr_desc(struct al_vm *vm, union al_val v, const struct al_str *desc);
-struct al_array *al_array_new(struct al_vm *vm, int kind, uint32_t cap);
-bool	 al_array_push(struct al_vm *vm, struct al_array *a, union al_val v);
-struct al_struct *al_struct_new(struct al_vm *vm, uint16_t sid);
-struct al_file *al_file_new(struct al_vm *vm, int fd, bool std);
-void	 al_error(struct al_vm *vm, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-void	 al_flush(struct al_vm *vm);
-int	 al_out(struct al_vm *vm, int fd, const char *s, size_t n);
-int	 al_eprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-int	 al_line_of(const struct al_prog *p, uint16_t fn, const uint8_t *ip);
+void	*pico_alloc(struct pico_vm *vm, size_t n);
+void	 pico_free(struct pico_vm *vm, void *p, size_t n);
+void	*pico_grow(struct pico_vm *vm, void *p, size_t old, size_t n);
+void	 pico_heap_release(struct pico_vm *vm);
+void	 pico_obj_free(struct pico_vm *vm, struct pico_obj *o);
+struct pico_str *pico_str_new(struct pico_vm *vm, const char *s, size_t len);
+struct pico_str *pico_str_alloc(struct pico_vm *vm, size_t len);
+struct pico_str *pico_str_concat(struct pico_vm *vm, struct pico_str *a, struct pico_str *b);
+struct pico_str *pico_str_append(struct pico_vm *vm, struct pico_str *a, struct pico_str *b);
+int	 pico_str_cmp(const struct pico_str *a, const struct pico_str *b);
+struct pico_str *pico_tostr(struct pico_vm *vm, union pico_val v, int kind);
+int	 pico_fmt_int(char *out, int32_t v);	/* decimal, no NUL; at most 11 bytes */
+int32_t	 pico_float_to_int(float f);
+struct pico_str *pico_tostr_desc(struct pico_vm *vm, union pico_val v, const struct pico_str *desc);
+struct pico_array *pico_array_new(struct pico_vm *vm, int kind, uint32_t cap);
+bool	 pico_array_push(struct pico_vm *vm, struct pico_array *a, union pico_val v);
+struct pico_struct *pico_struct_new(struct pico_vm *vm, uint16_t sid);
+struct pico_file *pico_file_new(struct pico_vm *vm, int fd, bool std);
+void	 pico_error(struct pico_vm *vm, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void	 pico_flush(struct pico_vm *vm);
+int	 pico_out(struct pico_vm *vm, int fd, const char *s, size_t n);
+int	 pico_eprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+int	 pico_line_of(const struct pico_prog *p, uint16_t fn, const uint8_t *ip);
 
-struct al_fmt {
+struct pico_fmt {
 	char	*buf;
 	size_t	 len;
 	size_t	 cap;
 	bool	 oom;
 };
 
-int	 al_fmt_next(const char **f, const char *end, const char **spec);
-void	 al_fmt_puts(struct al_vm *vm, struct al_fmt *f, const char *s, size_t n);
-void	 al_fmt_value(struct al_vm *vm, struct al_fmt *f, union al_val v, const char **desc, int depth, bool quote);
+int	 pico_fmt_next(const char **f, const char *end, const char **spec);
+void	 pico_fmt_puts(struct pico_vm *vm, struct pico_fmt *f, const char *s, size_t n);
+void	 pico_fmt_value(struct pico_vm *vm, struct pico_fmt *f, union pico_val v, const char **desc, int depth, bool quote);
 
 /* builtins.c */
-typedef int (*al_builtin_fn)(struct al_vm *vm, union al_val *args, int argc);
-extern const al_builtin_fn al_builtin_fns[B_COUNT];
-int	 al_readkey(struct al_vm *vm, int timeout_ms);
+typedef int (*pico_builtin_fn)(struct pico_vm *vm, union pico_val *args, int argc);
+extern const pico_builtin_fn pico_builtin_fns[B_COUNT];
+int	 pico_readkey(struct pico_vm *vm, int timeout_ms);
 
-static inline void al_incref(struct al_obj *o)
+static inline void pico_incref(struct pico_obj *o)
 {
 	if (o)
 		o->refs++;
 }
 
-static inline void al_decref(struct al_vm *vm, struct al_obj *o)
+static inline void pico_decref(struct pico_vm *vm, struct pico_obj *o)
 {
 	if (o && --o->refs == 0)
-		al_obj_free(vm, o);
+		pico_obj_free(vm, o);
 }
 
-static inline uint16_t al_u16(const uint8_t *p)
+static inline uint16_t pico_u16(const uint8_t *p)
 {
 	return p[0] | p[1] << 8;
 }
 
-static inline uint32_t al_u32(const uint8_t *p)
+static inline uint32_t pico_u32(const uint8_t *p)
 {
 	return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24;
 }

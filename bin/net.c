@@ -71,6 +71,11 @@ static int show_status(void)
 		pt_printf("wifi: idle, no network\n");
 		return 0;
 	}
+	if (!w.up && !wifi_radio_on()) {
+		pt_printf("wifi: no saved network in range; the radio rests\n"
+			  "      between tries (`wifi on` tries now)\n");
+		return 0;
+	}
 	if (!w.up) {
 		pt_printf("wifi: connecting to %s\n", w.ssid);
 		return 0;
@@ -141,6 +146,8 @@ static int do_connect(int argc, char **argv)
 		pt_dprintf(PT_STDERR, "wifi: cannot save the network (%s)\n", strerror(-ret));
 	return show_status();		/* the clock sets itself: see dmesg */
 }
+
+PT_COMPLETE(wifi, ": scan connect forget disconnect on off\n")
 
 PT_PROGRAM(wifi, "join a wireless network\n"
 	   "usage: wifi [scan | connect ssid|#n [password] | forget ssid |\n"
@@ -378,6 +385,8 @@ static int modem_status(void)
 	return 0;
 }
 
+PT_COMPLETE(modem, ": data at\ndata: on off\n")
+
 PT_PROGRAM(modem, "talk to the mobile module\n"
 	   "usage: modem [data on | data off | at COMMAND]\n"
 	   "With no arguments, shows the module, the SIM and the network.\n"
@@ -450,6 +459,8 @@ static int sms_list(bool unread_only)
 	pt_free(list);
 	return 0;
 }
+
+PT_COMPLETE(sms, ": new\n")
 
 PT_PROGRAM(sms, "text messages\n"
 	   "usage: sms [new]\n"

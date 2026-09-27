@@ -39,8 +39,9 @@ void	history_add(struct history *h, const char *line);
 
 /* sh.c */
 struct history *sh_history(struct sh *sh);
-int	sh_candidates(struct sh *sh, const char *line, size_t word_start, size_t word_len,
+int	sh_candidates(struct sh *sh, const char *line, size_t word_start, const char *word,
 		      struct candidates *out);
+size_t	word_scan(const char *line, size_t pos, char *word, size_t size, char *quote);
 void	candidates_free(struct candidates *c);
 int	run_file(struct sh *sh, const char *path);
 

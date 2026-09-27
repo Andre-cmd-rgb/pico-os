@@ -1,0 +1,21 @@
+// json_get: the value at a path, as text
+int main() {
+    str j = "{\"name\": \"PocketType\", \"version\": 1.5, \"ok\": true, \"none\": null, " +
+            "\"tags\": [\"os\", \"pocket\", {\"deep\": \"caf\\u00e9\\n\"}], \"empty\": [], " +
+            "\"nested\": {\"a\": {\"b\": [10, 20, 30]}}, \"quote\": \"say \\\"hi\\\" \\\\o/\", " +
+            "\"emoji\": \"\\ud83d\\ude00\"}";
+    println(json_get(j, "name"));
+    println(json_get(j, "version"), " ", json_get(j, "ok"), " ", json_get(j, "none"));
+    println(json_get(j, "tags"));
+    println(json_get(j, "tags.1"));
+    print(json_get(j, "tags.2.deep"));
+    println(json_get(j, "tags.#"), " ", json_get(j, "empty.#"), " ", json_get(j, "nested.a.b.#"));
+    println(json_get(j, "nested.a.b.2"), " ", to_int(json_get(j, "nested.a.b.0")) + 1);
+    println("[", json_get(j, "missing"), "][", json_get(j, "tags.9"), "][", json_get(j, "name.x"), "]");
+    println(json_get(j, "quote"));
+    println(json_get(j, "emoji"));
+    println(json_get("[1, [2, 3]]", "1.0"), " ", json_get("[1, [2, 3]]", "#"));
+    println(json_get(json_get(j, "nested"), "a.b.1"));
+    println("[", json_get("not json", "a"), "][", json_get("", ""), "]");
+    return 0;
+}

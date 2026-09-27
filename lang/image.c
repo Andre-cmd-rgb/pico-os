@@ -25,29 +25,29 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "al.h"
+#include "pico.h"
 #include "port.h"
 
 #define OPND(f, k) ((f "\0\0")[k] == 'w' || (f "\0\0")[k] == 'j' ? 2 :		\
 		    (f "\0\0")[k] == 'i' || (f "\0\0")[k] == 'f' ? 4 :		\
 		    (f "\0\0")[k] ? 1 : 0)
 
-const struct al_opinfo al_opinfo[OP_COUNT] = {
+const struct pico_opinfo pico_opinfo[OP_COUNT] = {
 #define X(name, fmt, pop, push) { #name, fmt, pop, push, 1 + OPND(fmt, 0) + OPND(fmt, 1) },
-	AL_OPS(X)
+	PICO_OPS(X)
 #undef X
 };
 
-const struct al_builtin_info al_builtins[B_COUNT] = {
+const struct pico_builtin_info pico_builtins[B_COUNT] = {
 #define X(cname, name, sig) { name, sig },
-	AL_BUILTINS(X)
+	PICO_BUILTINS(X)
 #undef X
 };
 
 /* Argument count range and whether a value comes back. */
 static void builtin_shape(int id, int *min, int *max, bool *value)
 {
-	const char *sig = al_builtins[id].sig;
+	const char *sig = pico_builtins[id].sig;
 
 	if (sig[0] != '*') {
 		*min = *max = 0;
@@ -97,6 +97,7 @@ static void builtin_shape(int id, int *min, int *max, bool *value)
 		*min = *max = 1;
 		return;
 	case B_run:
+	case B_output:
 		*min = 1;
 		*max = 255;
 		return;
@@ -130,7 +131,7 @@ static uint32_t rd16(struct reader *r)
 {
 	const uint8_t *p = take(r, 2);
 
-	return p ? al_u16(p) : 0;
+	return p ? pico_u16(p) : 0;
 }
 
 static uint32_t rd8(struct reader *r)
@@ -144,11 +145,11 @@ static uint32_t rd32(struct reader *r)
 {
 	const uint8_t *p = take(r, 4);
 
-	return p ? al_u32(p) : 0;
+	return p ? pico_u32(p) : 0;
 }
 
 /* One type descriptor starting at *pos; false if malformed. */
-static bool desc_ok(const struct al_prog *p, const struct al_str *s, uint32_t *pos)
+static bool desc_ok(const struct pico_prog *p, const struct pico_str *s, uint32_t *pos)
 {
 	int dims = 0;
 
@@ -174,7 +175,7 @@ static bool desc_ok(const struct al_prog *p, const struct al_str *s, uint32_t *p
 	return id < p->nstructs;
 }
 
-static int desc_kind(const struct al_str *s)
+static int desc_kind(const struct pico_str *s)
 {
 	switch (s->data[0]) {
 	case 'i': return K_INT;
@@ -186,7 +187,7 @@ static int desc_kind(const struct al_str *s)
 }
 
 /* Reflected CRC-32 (the zlib polynomial), four bits at a time. */
-uint32_t al_crc32(const uint8_t *data, size_t len)
+uint32_t pico_crc32(const uint8_t *data, size_t len)
 {
 	static const uint32_t nibble[16] = {
 		0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac, 0x76dc4190, 0x6b6b51f4,
@@ -219,7 +220,7 @@ static int compare_spans(const void *a, const void *b)
  * file did, rewriting one function's opcodes when fusing them (quicken.c)
  * could change another function's verified operands.
  */
-static bool functions_apart(const struct al_prog *p)
+static bool functions_apart(const struct pico_prog *p)
 {
 	struct span *s = port_alloc(p->nfuncs * sizeof(*s));
 	bool apart = s != NULL;
@@ -245,10 +246,10 @@ static int fail(char *err, size_t errlen, const char *fmt, ...)
 	return -1;
 }
 
-static int verify(struct al_vm *vm, uint16_t index, char *err, size_t errlen)
+static int verify(struct pico_vm *vm, uint16_t index, char *err, size_t errlen)
 {
-	const struct al_prog *p = &vm->prog;
-	const struct al_func *f = &p->funcs[index];
+	const struct pico_prog *p = &vm->prog;
+	const struct pico_func *f = &p->funcs[index];
 	const uint8_t *code = p->code + f->code;
 	uint32_t len = f->len;
 	int32_t *depth = port_alloc(len * sizeof(int32_t));
@@ -268,7 +269,7 @@ static int verify(struct al_vm *vm, uint16_t index, char *err, size_t errlen)
 			fail(err, errlen, "bad instruction %u at %u", code[pc], (unsigned)pc);
 			goto done;
 		}
-		uint32_t size = al_opinfo[code[pc]].size;
+		uint32_t size = pico_opinfo[code[pc]].size;
 		if (pc + size > len) {
 			fail(err, errlen, "instruction runs past the end at %u", (unsigned)pc);
 			goto done;
@@ -284,7 +285,7 @@ static int verify(struct al_vm *vm, uint16_t index, char *err, size_t errlen)
 		int d = depth[pc];
 		const uint8_t *ip = code + pc;
 		int op = ip[0];
-		const struct al_opinfo *info = &al_opinfo[op];
+		const struct pico_opinfo *info = &pico_opinfo[op];
 		int pops = info->pop, pushes = info->push;
 		uint32_t next = pc + info->size;
 		bool falls = true;
@@ -307,20 +308,20 @@ static int verify(struct al_vm *vm, uint16_t index, char *err, size_t errlen)
 				goto bad_operand;
 			break;
 		case OP_CONSTS:
-			if (al_u16(ip + 1) >= p->nstrings)
+			if (pico_u16(ip + 1) >= p->nstrings)
 				goto bad_operand;
 			break;
 		case OP_TOSTRX: {
 			uint32_t pos = 0;
-			if (al_u16(ip + 1) >= p->nstrings)
+			if (pico_u16(ip + 1) >= p->nstrings)
 				goto bad_operand;
-			const struct al_str *s = p->strings[al_u16(ip + 1)];
+			const struct pico_str *s = p->strings[pico_u16(ip + 1)];
 			if (!desc_ok(p, s, &pos) || pos != s->len)
 				goto bad_operand;
 			break;
 		}
 		case OP_GLOAD: case OP_GLOADR: case OP_GSTORE: case OP_GSTORER:
-			if (al_u16(ip + 1) >= p->nglobals)
+			if (pico_u16(ip + 1) >= p->nglobals)
 				goto bad_operand;
 			break;
 		case OP_NEWARR:
@@ -328,11 +329,11 @@ static int verify(struct al_vm *vm, uint16_t index, char *err, size_t errlen)
 				goto bad_operand;
 			break;
 		case OP_NEWST:
-			if (al_u16(ip + 1) >= p->nstructs)
+			if (pico_u16(ip + 1) >= p->nstructs)
 				goto bad_operand;
 			break;
 		case OP_CALL: {
-			uint16_t fn = al_u16(ip + 1);
+			uint16_t fn = pico_u16(ip + 1);
 			if (fn >= p->nfuncs)
 				goto bad_operand;
 			pops = p->funcs[fn].nparams;
@@ -361,7 +362,7 @@ static int verify(struct al_vm *vm, uint16_t index, char *err, size_t errlen)
 			break;
 		}
 		if (info->fmt[0] == 'j') {
-			target = (int64_t)next + (int16_t)al_u16(ip + 1);
+			target = (int64_t)next + (int16_t)pico_u16(ip + 1);
 			if (target < 0 || target >= len || depth[target] == -2) {
 				fail(err, errlen, "bad jump at %u", (unsigned)pc);
 				goto done;
@@ -405,7 +406,7 @@ done:
 	port_free(work);
 	if (status && err[0] && strlen(err) + 32 < errlen) {
 		char name[64];
-		const struct al_str *n = p->strings[f->name];
+		const struct pico_str *n = p->strings[f->name];
 		snprintf(name, sizeof(name), "%.40s", n->data);
 		size_t used = strlen(err);
 		snprintf(err + used, errlen - used, " in %s", name);
@@ -413,23 +414,23 @@ done:
 	return status;
 }
 
-int al_load(struct al_vm *vm, const uint8_t *data, size_t len, char *err, size_t errlen)
+int pico_load(struct pico_vm *vm, const uint8_t *data, size_t len, char *err, size_t errlen)
 {
-	struct al_prog *p = &vm->prog;
+	struct pico_prog *p = &vm->prog;
 	struct reader r = { data, len, false };
 
 	err[0] = '\0';
-	if (len < AL_HEADER_SIZE || memcmp(data, AL_MAGIC, 3))
+	if (len < PICO_HEADER_SIZE || memcmp(data, PICO_MAGIC, 3))
 		return fail(err, errlen, "not an a executable");
-	if (data[3] != AL_VERSION)
+	if (data[3] != PICO_VERSION)
 		return fail(err, errlen, "executable format version %u, this system runs version %u "
-			    "(compile it again with ac)", data[3], AL_VERSION);
-	if (len > AL_MAX_IMAGE)
+			    "(compile it again with picoc)", data[3], PICO_VERSION);
+	if (len > PICO_MAX_IMAGE)
 		return fail(err, errlen, "executable too large");
-	if (len < AL_HEADER_SIZE + AL_TRAILER_SIZE)
+	if (len < PICO_HEADER_SIZE + PICO_TRAILER_SIZE)
 		return fail(err, errlen, "damaged executable (too short)");
-	len -= AL_TRAILER_SIZE;
-	if (al_crc32(data, len) != al_u32(data + len))
+	len -= PICO_TRAILER_SIZE;
+	if (pico_crc32(data, len) != pico_u32(data + len))
 		return fail(err, errlen, "damaged executable (checksum mismatch)");
 	r.left = len;
 	take(&r, 4);
@@ -446,7 +447,7 @@ int al_load(struct al_vm *vm, const uint8_t *data, size_t len, char *err, size_t
 	p->code_len = rd32(&r);
 
 	if (!p->nstrings || p->source >= p->nstrings || p->main >= p->nfuncs ||
-	    (p->init != AL_NO_FUNC && p->init >= p->nfuncs) || nfields > len || nlines > len ||
+	    (p->init != PICO_NO_FUNC && p->init >= p->nfuncs) || nfields > len || nlines > len ||
 	    p->code_len > len)
 		return fail(err, errlen, "damaged executable header");
 
@@ -464,14 +465,14 @@ int al_load(struct al_vm *vm, const uint8_t *data, size_t len, char *err, size_t
 		const uint8_t *s = take(&r, n);
 		if (!s)
 			return fail(err, errlen, "damaged string table");
-		p->strings[i] = al_str_new(vm, (const char *)s, n);
+		p->strings[i] = pico_str_new(vm, (const char *)s, n);
 		if (!p->strings[i])
 			return fail(err, errlen, "out of memory");
 	}
 
 	uint32_t first = 0;
 	for (uint32_t i = 0; i < p->nstructs; i++) {
-		struct al_sdef *s = &p->structs[i];
+		struct pico_sdef *s = &p->structs[i];
 		s->name = rd16(&r);
 		s->nfields = rd16(&r);
 		s->first = first;
@@ -482,7 +483,7 @@ int al_load(struct al_vm *vm, const uint8_t *data, size_t len, char *err, size_t
 	if (first != nfields)
 		return fail(err, errlen, "damaged struct table");
 	for (uint32_t i = 0; i < nfields; i++) {
-		struct al_field *f = &p->fields[i];
+		struct pico_field *f = &p->fields[i];
 		uint32_t pos = 0;
 		f->name = rd16(&r);
 		f->desc = rd16(&r);
@@ -499,7 +500,7 @@ int al_load(struct al_vm *vm, const uint8_t *data, size_t len, char *err, size_t
 	}
 
 	for (uint32_t i = 0; i < p->nfuncs; i++) {
-		struct al_func *f = &p->funcs[i];
+		struct pico_func *f = &p->funcs[i];
 		f->code = rd32(&r);
 		f->len = rd32(&r);
 		f->lines = rd32(&r);
@@ -519,7 +520,7 @@ int al_load(struct al_vm *vm, const uint8_t *data, size_t len, char *err, size_t
 	p->code = take(&r, p->code_len);
 	if (r.bad || r.left)
 		return fail(err, errlen, "damaged executable (size mismatch)");
-	if (p->funcs[p->main].nparams > 1 || (p->init != AL_NO_FUNC && p->funcs[p->init].nparams))
+	if (p->funcs[p->main].nparams > 1 || (p->init != PICO_NO_FUNC && p->funcs[p->init].nparams))
 		return fail(err, errlen, "damaged executable (entry points)");
 	if (!functions_apart(p))
 		return fail(err, errlen, "damaged executable (functions overlap)");
@@ -532,38 +533,38 @@ int al_load(struct al_vm *vm, const uint8_t *data, size_t len, char *err, size_t
 
 /* ------------------------------------------------------------ disassembler */
 
-int al_line_of(const struct al_prog *p, uint16_t fn, const uint8_t *ip)
+int pico_line_of(const struct pico_prog *p, uint16_t fn, const uint8_t *ip)
 {
-	const struct al_func *f = &p->funcs[fn];
+	const struct pico_func *f = &p->funcs[fn];
 	uint32_t pc = ip - (p->code + f->code);
 	int line = 0;
 
 	for (uint32_t i = 0; i < f->nlines; i++) {
 		const uint8_t *e = p->lines + (f->lines + i) * 4;
-		if (al_u16(e) > pc)
+		if (pico_u16(e) > pc)
 			break;
-		line = al_u16(e + 2);
+		line = pico_u16(e + 2);
 	}
 	return line;
 }
 
-void al_disasm(struct al_vm *vm)
+void pico_disasm(struct pico_vm *vm)
 {
-	const struct al_prog *p = &vm->prog;
+	const struct pico_prog *p = &vm->prog;
 	char line[160];
 
 	for (uint16_t fi = 0; fi < p->nfuncs; fi++) {
-		const struct al_func *f = &p->funcs[fi];
+		const struct pico_func *f = &p->funcs[fi];
 		const uint8_t *code = p->code + f->code;
 		int n = snprintf(line, sizeof(line), "\n%s: params %u, locals %u, stack %u, %u bytes\n",
 				 p->strings[f->name]->data, f->nparams, f->nlocals, f->max_stack,
 				 (unsigned)f->len);
 		port_write(1, line, n);
 		int last = -1;
-		for (uint32_t pc = 0; pc < f->len; pc += al_opinfo[code[pc]].size) {
-			const struct al_opinfo *info = &al_opinfo[code[pc]];
+		for (uint32_t pc = 0; pc < f->len; pc += pico_opinfo[code[pc]].size) {
+			const struct pico_opinfo *info = &pico_opinfo[code[pc]];
 			const uint8_t *o = code + pc + 1;
-			int ln = al_line_of(p, fi, code + pc);
+			int ln = pico_line_of(p, fi, code + pc);
 			if (ln != last)
 				n = snprintf(line, sizeof(line), "%5d %5u  %-9s", ln, (unsigned)pc, info->name);
 			else
@@ -580,27 +581,27 @@ void al_disasm(struct al_vm *vm)
 					o += 1;
 					break;
 				case 'w':
-					n += snprintf(line + n, sizeof(line) - n, " %u", al_u16(o));
+					n += snprintf(line + n, sizeof(line) - n, " %u", pico_u16(o));
 					if (code[pc] == OP_CONSTS || code[pc] == OP_TOSTRX)
 						n += snprintf(line + n, sizeof(line) - n, " \"%.40s\"",
-							      p->strings[al_u16(o)]->data);
+							      p->strings[pico_u16(o)]->data);
 					else if (code[pc] == OP_CALL)
 						n += snprintf(line + n, sizeof(line) - n, " %.40s",
-							      p->strings[p->funcs[al_u16(o)].name]->data);
+							      p->strings[p->funcs[pico_u16(o)].name]->data);
 					o += 2;
 					break;
 				case 'j':
 					n += snprintf(line + n, sizeof(line) - n, " -> %d",
-						      (int)(pc + info->size + (int16_t)al_u16(o)));
+						      (int)(pc + info->size + (int16_t)pico_u16(o)));
 					o += 2;
 					break;
 				case 'i':
-					n += snprintf(line + n, sizeof(line) - n, " %d", (int)(int32_t)al_u32(o));
+					n += snprintf(line + n, sizeof(line) - n, " %d", (int)(int32_t)pico_u32(o));
 					o += 4;
 					break;
 				case 'f': {
 					float v;
-					uint32_t u = al_u32(o);
+					uint32_t u = pico_u32(o);
 					memcpy(&v, &u, 4);
 					n += snprintf(line + n, sizeof(line) - n, " %g", v);
 					o += 4;
@@ -609,7 +610,7 @@ void al_disasm(struct al_vm *vm)
 				}
 			}
 			if (code[pc] == OP_CALLB)
-				n += snprintf(line + n, sizeof(line) - n, "  (%s)", al_builtins[code[pc + 1]].name);
+				n += snprintf(line + n, sizeof(line) - n, "  (%s)", pico_builtins[code[pc + 1]].name);
 			line[n++] = '\n';
 			port_write(1, line, n);
 		}

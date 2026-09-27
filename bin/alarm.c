@@ -110,6 +110,8 @@ static int set(const struct alarm *a)
 	return 0;
 }
 
+PT_COMPLETE(alarm, ": off on rm stop snooze test\n")
+
 PT_PROGRAM(alarm, "alarms and timers\n"
 	   "usage: alarm                  what is set\n"
 	   "       alarm TIME [DAYS] [label]\n"

@@ -18,7 +18,7 @@
  * of their handlers looks at its own opcode byte, and the handlers that do
  * (GETFL and GETFLR, RET and RETV, ...) never have theirs rewritten.
  */
-#include "al.h"
+#include "pico.h"
 #include "port.h"
 
 /* The b operand of a compare: its kind and the opcode that supplies it. */
@@ -75,7 +75,7 @@ static int load_then(int op)
 {
 	switch (op) {
 #define X(name) case OP_##name: return Q_L_##name;
-	AL_QLOAD(X)
+	PICO_QLOAD(X)
 #undef X
 	}
 	return -1;
@@ -117,13 +117,13 @@ static int fuse(const uint8_t *op, int i, int n)
 	return o1 >= 0 ? load_then(o1) : -1;
 }
 
-void al_quicken(struct al_vm *vm)
+void pico_quicken(struct pico_vm *vm)
 {
-	const struct al_prog *p = &vm->prog;
+	const struct pico_prog *p = &vm->prog;
 	uint8_t *code = (uint8_t *)p->code;	/* our own copy of the file */
 
 	if (vm->quickened)
-		return;			/* fused opcodes have no al_opinfo entry */
+		return;			/* fused opcodes have no pico_opinfo entry */
 	vm->quickened = true;
 	for (uint16_t f = 0; f < p->nfuncs; f++) {
 		uint8_t *c = code + p->funcs[f].code;
@@ -131,14 +131,14 @@ void al_quicken(struct al_vm *vm)
 
 		/* instruction starts and original opcodes; the verifier has
 		 * checked that the instructions tile the function exactly */
-		for (uint32_t pc = 0; pc < len; pc += al_opinfo[c[pc]].size)
+		for (uint32_t pc = 0; pc < len; pc += pico_opinfo[c[pc]].size)
 			n++;
 		uint32_t *start = port_alloc(n * sizeof(*start) + n);
 		if (!start)
 			return;			/* runs unfused: slower, still right */
 		uint8_t *op = (uint8_t *)(start + n);
 		n = 0;
-		for (uint32_t pc = 0; pc < len; pc += al_opinfo[c[pc]].size) {
+		for (uint32_t pc = 0; pc < len; pc += pico_opinfo[c[pc]].size) {
 			start[n] = pc;
 			op[n++] = c[pc];
 		}

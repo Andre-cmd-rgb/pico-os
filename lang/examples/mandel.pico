@@ -1,6 +1,6 @@
 // Animated Mandelbrot zoom, colored by escape time.
 //
-//   a mandel.al [frames]      q / Esc quits, any other key pauses until the next
+//   pico mandel.pico [frames]      q / Esc quits, any other key pauses until the next
 //
 // Starts already in the "seahorse valley" and zooms in a frame at a time.
 // It is a good FPU workout: every cell iterates z = z^2 + c until it

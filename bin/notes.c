@@ -1517,6 +1517,8 @@ static int view_file(const char *path)
 
 /* ------------------------------------------------------------ the command */
 
+PT_COMPLETE(notes, ": -p <file:.md.txt.markdown>\n*: <file:.md.txt.markdown>\n")
+
 PT_PROGRAM_STACK(notes, 12, "read Markdown or text notes on the screen\n"
 	   "usage: notes [file]   (none: pick one from ~/notes)\n"
 	   "       notes -p [-w cols] file...  print laid out\n"

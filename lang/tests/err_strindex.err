@@ -1,1 +1,1 @@
-err_strindex.al:5: runtime error: string index 2 out of range (length 2)
+err_strindex.pico:5: runtime error: string index 2 out of range (length 2)

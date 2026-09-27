@@ -1,0 +1,9 @@
+bad_enum.pico:2:13: error: 'A' is already declared
+enum E { A, A }
+            ^
+bad_enum.pico:3:6: error: 'E' is already declared
+enum E { B }
+     ^
+bad_enum.pico:4:14: error: an enum's value is a whole number
+enum F { C = x }
+             ^

@@ -415,6 +415,7 @@ static void ring(const struct alarm *a)
 	al.now = *a;
 	al.answer = ANSWER_NONE;
 	al.ringing = true;
+	power_activity();		/* light a dark screen to ring */
 	klog("alarm: %02d:%02d %s", a->hour, a->min, a->label[0] ? a->label : "(no label)");
 	if (buf)
 		audio_claim(true);

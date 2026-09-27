@@ -171,6 +171,41 @@ int es8311_init(int sda, int scl, int rate)
 	return 0;
 }
 
+/*
+ * Standby and back. Off is the sequence Espressif's own driver suspends
+ * the codec with: both volumes to nothing, every analogue block powered
+ * down, the references off. On is the end of es8311_init() again; the
+ * volume, the gain and the ALC are the caller's to set once more.
+ */
+int es8311_power(bool on)
+{
+	int ret = 0;
+
+	if (!dev)
+		return -ENODEV;
+	if (!on) {
+		ret |= wr(REG_DAC_VOL, 0x00);
+		ret |= wr(REG_ADC_VOL, 0x00);
+		ret |= wr(REG_PWR2, 0xff);
+		ret |= wr(REG_DACEN, 0x02);
+		ret |= wr(REG_PGA, 0x00);
+		ret |= wr(REG_PWR, 0xfa);
+		ret |= wr(REG_ADC_RAMP, 0x00);
+		ret |= wr(REG_DAC_RAMP, 0x08);
+		ret |= wr(REG_GP, 0x01);
+		return ret ? -EIO : 0;
+	}
+	ret |= wr(REG_GP, 0x00);
+	ret |= wr(REG_ADC_VOL, 0xbf);
+	ret |= wr(REG_PWR2, 0x02);
+	ret |= wr(REG_DACEN, 0x00);
+	ret |= wr(REG_PGA, 0x1a);
+	ret |= wr(REG_PWR, 0x01);
+	ret |= wr(REG_ADC_RAMP, 0x40);
+	ret |= wr(REG_DAC_RAMP, 0x08);
+	return ret ? -EIO : 0;
+}
+
 int es8311_set_rate(int rate)
 {
 	return dev ? clock_config(rate) : -ENODEV;

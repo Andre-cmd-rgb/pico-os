@@ -1,7 +1,7 @@
 // A todo list in a file. Shows arguments, files and string handling.
-//   a todo.al            list
-//   a todo.al add text   add an item
-//   a todo.al done 2     remove item 2
+//   pico todo.pico            list
+//   pico todo.pico add text   add an item
+//   pico todo.pico done 2     remove item 2
 const str FILE_NAME = "/todo.txt";
 
 str[] load(str path) {
