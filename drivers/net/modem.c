@@ -80,6 +80,7 @@ static struct {
 	char	apn[64], user[32], pass[32];
 	bool	radio_off;
 	bool	no_sleep;		/* sleep mode cost the SIM once: never again */
+	char	plmn[8];		/* the network to try first, "22201"; "" any */
 } conf;
 
 static int text_mode(void);
@@ -766,6 +767,7 @@ static void conf_load(void)
 	strlcpy(conf.pass, CONFIG_PT_MODEM_PASSWORD, sizeof(conf.pass));
 	conf.radio_off = false;
 	conf.no_sleep = false;
+	conf.plmn[0] = '\0';
 	if (!mount_resolve("/etc/modem", path, sizeof(path)) || !(f = fopen(path, "r")))
 		return;
 	while (fgets(line, sizeof(line), f)) {
@@ -780,6 +782,8 @@ static void conf_load(void)
 			conf.radio_off = true;
 		else if (!strcmp(line, "sleep off"))
 			conf.no_sleep = true;
+		else if (!strncmp(line, "network ", 8))
+			strlcpy(conf.plmn, line + 8, sizeof(conf.plmn));
 	}
 	fclose(f);
 }
@@ -803,6 +807,8 @@ static int conf_save(void)
 		fprintf(f, "radio off\n");
 	if (conf.no_sleep)
 		fprintf(f, "sleep off\n");
+	if (*conf.plmn)
+		fprintf(f, "network %s\n", conf.plmn);
 	if (fclose(f))
 		err = -EIO;
 	if (!err && rename(tmp, path))
@@ -826,6 +832,41 @@ int modem_set_apn(const char *apn, const char *user, const char *pass)
 	strlcpy(conf.user, user ? user : "", sizeof(conf.user));
 	strlcpy(conf.pass, pass ? pass : "", sizeof(conf.pass));
 	return conf_save();
+}
+
+/*
+ * The network to try first ("22201"), or any (""), kept in /etc/modem.
+ * A network that refuses a SIM with certain causes gets it put aside
+ * until the module starts again, and a module left to choose tries the
+ * SIM's old home first: an MVNO's SIM that moved to another network
+ * (Lyca, from Vodafone to TIM) is refused before it gets anywhere. So
+ * a SIM put aside is read again first -- the module started over -- and
+ * the network asked for at once, before it tries its own choice.
+ */
+int modem_network(const char *plmn)
+{
+	char cmd[40], reply[64];
+	int err;
+
+	strlcpy(conf.plmn, plmn ? plmn : "", sizeof(conf.plmn));
+	if ((err = conf_save()))
+		return err;
+	if (!present)
+		return 0;
+	if (modem_at("AT+CPIN?", reply, sizeof(reply), 3000) || !strstr(reply, "READY")) {
+		modem_at("AT+CFUN=1,1", NULL, 0, 1000);	/* it restarts before it answers */
+		for (int i = 0; i < 30; i++) {
+			vTaskDelay(pdMS_TO_TICKS(500));
+			if (!modem_at("AT+CPIN?", reply, sizeof(reply), 500) && strstr(reply, "READY"))
+				break;
+		}
+	}
+	if (*conf.plmn)
+		snprintf(cmd, sizeof(cmd), "AT+COPS=4,2,\"%s\"", conf.plmn);
+	else
+		strlcpy(cmd, "AT+COPS=0", sizeof(cmd));
+	/* it answers once it has registered, or given up: up to a minute */
+	return modem_at(cmd, NULL, 0, 90000);
 }
 
 /*
@@ -1120,6 +1161,11 @@ static void setup(void)
 		else if (!conf.radio_off && fun == 0)
 			modem_at("AT+CFUN=1", NULL, 0, 10000);
 	}
+	/* the network to try first, if one is set: that one, then any (4) */
+	if (*conf.plmn && !conf.radio_off) {
+		snprintf(cmd, sizeof(cmd), "AT+COPS=4,2,\"%s\"", conf.plmn);
+		modem_at(cmd, NULL, 0, 60000);
+	}
 	/* sleep mode goes on once it is registered: after_news() */
 }
 
@@ -1306,6 +1352,7 @@ int  modem_ussd(const char *code, char *out, size_t size) { return -ENODEV; }
 int  modem_apn(char *apn, size_t asz, char *user, size_t usz, char *pass, size_t psz) { return 0; }
 int  modem_set_apn(const char *apn, const char *user, const char *pass) { return -ENODEV; }
 int  modem_radio(bool on) { return -ENODEV; }
+int  modem_network(const char *plmn) { return -ENODEV; }
 bool modem_radio_on(void) { return false; }
 void modem_power_off(void) { }
 int  modem_load_ma(void) { return 0; }

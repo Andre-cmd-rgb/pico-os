@@ -248,6 +248,7 @@ int	modem_ussd(const char *code, char *out, size_t size);	/* *123# and the like 
 int	modem_apn(char *apn, size_t asz, char *user, size_t usz, char *pass, size_t psz);
 int	modem_set_apn(const char *apn, const char *user, const char *pass);	/* kept */
 int	modem_radio(bool on);		/* AT+CFUN, kept in /etc/modem */
+int	modem_network(const char *plmn);	/* try it first ("22201"), "" any; kept */
 bool	modem_radio_on(void);
 void	modem_power_off(void);		/* the board is switching off: the radio too */
 int	modem_load_ma(void);		/* its draw from the cell, for the battery */

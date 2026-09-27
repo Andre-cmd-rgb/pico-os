@@ -476,6 +476,41 @@ static int modem_apn_cmd(int argc, char **argv)
 	return 0;
 }
 
+/* modem network tim: the network to try first; `auto` for any. */
+static int modem_network_cmd(const char *name)
+{
+	static const struct { const char *name, *code; } known[] = {
+		{ "tim", "22201" }, { "vodafone", "22210" }, { "windtre", "22288" },
+		{ "wind", "22288" }, { "iliad", "22250" }, { "auto", "" },
+	};
+	const char *code = NULL;
+	struct modem_info m;
+	int ret;
+
+	for (size_t i = 0; i < sizeof(known) / sizeof(known[0]) && !code; i++)
+		if (!strcasecmp(name, known[i].name))
+			code = known[i].code;
+	if (!code && strspn(name, "0123456789") == strlen(name) && strlen(name) >= 5 &&
+	    strlen(name) <= 6)
+		code = name;			/* MCC and MNC, as `modem scan` shows them */
+	if (!code) {
+		pt_dprintf(PT_STDERR, "modem: network tim, vodafone, windtre, iliad, auto,\n"
+			   "  or a code from `modem scan` (22201)\n");
+		return 2;
+	}
+	if (find_modem("modem"))
+		return 1;
+	pt_printf("%s (a minute at most)...\n",
+		  *code ? "asking for that network first" : "letting it choose");
+	ret = modem_network(code);
+	if (!modem_info(&m))
+		pt_printf("network  %s%s%s\n", modem_network_text(m.reg),
+			  *m.operator ? " on " : "", m.operator);
+	else if (ret)
+		pt_dprintf(PT_STDERR, "modem: no answer about it\n");
+	return 0;
+}
+
 /* modem ussd *123#: the network's answer to a code. */
 static int modem_ussd_cmd(const char *code)
 {
@@ -532,7 +567,8 @@ static int modem_scan(void)
 	return 0;
 }
 
-PT_COMPLETE(modem, ": on off restart data at scan apn ussd\ndata: on off\n")
+PT_COMPLETE(modem, ": on off restart data at scan network apn ussd\ndata: on off\n"
+	    "network: auto tim vodafone windtre iliad\n")
 
 PT_PROGRAM(modem, "talk to the mobile module\n"
 	   "usage: modem [on | off | restart | scan | data on|off\n"
@@ -542,6 +578,8 @@ PT_PROGRAM(modem, "talk to the mobile module\n"
 	   "             kept across restarts\n"
 	   "  restart    start it over: it reads its SIM again\n"
 	   "  scan       the networks the module can hear\n"
+	   "  network X  try that one first: tim, vodafone,\n"
+	   "             windtre, iliad, a code; auto for any\n"
 	   "  data on    mobile internet, over PPP\n"
 	   "  apn        the data service's name: data on uses\n"
 	   "             it (kept in /etc/modem)\n"
@@ -596,6 +634,8 @@ PT_PROGRAM(modem, "talk to the mobile module\n"
 	}
 	if (argc == 2 && !strcmp(argv[1], "scan"))
 		return modem_scan();
+	if (argc == 3 && !strcmp(argv[1], "network"))
+		return modem_network_cmd(argv[2]);
 	if (argc == 2 && !strcmp(argv[1], "restart")) {
 		/* it restarts before it answers: a short wait is all there is */
 		modem_at("AT+CFUN=1,1", reply, sizeof(reply), 1000);

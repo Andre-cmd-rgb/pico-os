@@ -150,6 +150,8 @@ NETWORK
                     heard), kept across restarts
   modem restart     start it over (reads its SIM)
   modem scan        the networks it can hear
+  modem network tim try that network first (auto:
+                    any; kept)
   modem apn NAME    the network's data service name
   modem ussd *123#  ask the network: credit, offers
   sms               text messages
