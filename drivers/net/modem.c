@@ -65,6 +65,18 @@ static char		 ussd[256];
 static SemaphoreHandle_t ussd_done;
 static int64_t		 last_call_us;
 static int64_t		 started_at[4];		/* its last restarts, for restarts_lately() */
+static bool		 sleepy;		/* AT+CSCLK=2 taken: it sleeps when let be */
+static int64_t		 setup_at;		/* after a restart: set it up from then */
+static volatile bool	 booted;		/* "SMS Ready": it has finished starting */
+static int64_t		 warned_at;		/* the restart warning, at most every 10 min */
+static char		 sim_state[24];		/* +CPIN's last word, logged when it changes */
+static int64_t		 last_io_us;		/* the port last used, for wake() */
+
+/* /etc/modem, kept by the driver: `modem apn`, `modem off` */
+static struct {
+	char	apn[64], user[32], pass[32];
+	bool	radio_off;
+} conf;
 
 static int text_mode(void);
 static int read_sms(int index, struct sms *out, bool peek);
@@ -86,6 +98,7 @@ static bool read_line(char *out, size_t size, int timeout_ms)
 
 		if (uart_read_bytes(PORT, &c, 1, pdMS_TO_TICKS(LINE_WAIT_MS)) != 1)
 			continue;
+		last_io_us = esp_timer_get_time();
 		if (c == '\r')
 			continue;
 		if (c == '\n') {
@@ -211,11 +224,14 @@ static void news(const char *line)
 		const char *p = strchr(line, ',');
 		int state = atoi(p ? p + 1 : line + 6);
 
-		if (state != reg)
+		/* a module restarting over and over says the same every time */
+		if (state != reg && restarts_lately() < 2 && state != 0)
 			klog("modem: network: %s", modem_network_text(state));
 		reg = state;
 	} else if (!strncmp(line, "+CPIN:", 6)) {
-		klog("modem: the SIM card: %s", line + 7);
+		if (strcmp(sim_state, line + 7) && restarts_lately() < 2)
+			klog("modem: the SIM card: %s", line + 7);
+		strlcpy(sim_state, line + 7, sizeof(sim_state));
 	} else if (!strncmp(line, "+CUSD:", 6)) {
 		strlcpy(ussd, line + 6, sizeof(ussd));
 		xSemaphoreGive(ussd_done);
@@ -224,12 +240,18 @@ static void news(const char *line)
 
 		memmove(started_at + 1, started_at, sizeof(started_at) - sizeof(started_at[0]));
 		started_at[0] = now;
-		if (restarts_lately() >= 3)
-			klog("modem: the module has restarted %d times in a minute: its supply "
-			     "sags when it transmits (it needs 3.4-4.4 V with 2 A to spare)",
-			     restarts_lately());
-		else
+		if (restarts_lately() < 3) {
 			klog("modem: the module has started");
+		} else if (!warned_at || now - warned_at > 600000000) {
+			warned_at = now;
+			klog("modem: the module keeps restarting (%d times in a minute): its "
+			     "supply sags when it transmits (it needs 3.4-4.4 V with 2 A to spare)",
+			     restarts_lately());
+		}
+		/* set up again once it has finished starting: before that, what
+		 * it is told can be undone by its own start (the radio comes on) */
+		booted = false;
+		setup_at = now + 8000000;
 		resetup = heard_start = true;
 	} else if (!strncmp(line, "UNDER-VOLTAGE", 13) || !strncmp(line, "OVER-VOLTAGE", 12)) {
 		klog("modem: %s: the module's supply is %s", line,
@@ -243,7 +265,7 @@ static void news(const char *line)
 	} else if (!strncmp(line, "+PDP: DEACT", 11)) {
 		klog("modem: the network ended the data session");
 	} else if (!strcmp(line, "SMS Ready")) {
-		heard_start = true;
+		heard_start = booted = true;
 	}
 }
 
@@ -268,6 +290,27 @@ static void drain(void)
 }
 
 /*
+ * Asleep -- AT+CSCLK=2, after five seconds with nothing on the port -- a
+ * SIM800 loses the byte that wakes it and needs a moment before it
+ * listens: a throwaway AT first, whose answer, if any, drain() takes.
+ */
+static void wake(void)
+{
+	if (!sleepy || esp_timer_get_time() - last_io_us < 4000000)
+		return;
+	uart_write_bytes(PORT, "AT\r", 3);
+	vTaskDelay(pdMS_TO_TICKS(120));
+	late_ms = late_ms > 200 ? late_ms : 200;
+}
+
+/* Writing to the module, which keeps it awake. */
+static void put(const void *data, size_t n)
+{
+	uart_write_bytes(PORT, data, n);
+	last_io_us = esp_timer_get_time();
+}
+
+/*
  * Sends a command and collects what comes back, up to OK or ERROR. The
  * reply keeps the informational lines only; the final OK is not part of
  * it. News that comes in the middle goes to news().
@@ -285,9 +328,10 @@ int modem_at(const char *cmd, char *reply, size_t size, int timeout_ms)
 	if (reply && size)
 		*reply = '\0';
 	xSemaphoreTake(lock, portMAX_DELAY);
+	wake();
 	drain();
-	uart_write_bytes(PORT, cmd, strlen(cmd));
-	uart_write_bytes(PORT, "\r\n", 2);
+	put(cmd, strlen(cmd));
+	put("\r\n", 2);
 	while (read_line(line, sizeof(line), timeout_ms)) {
 		if (!strcmp(line, cmd))
 			continue;	/* the echo, if it is still on */
@@ -462,9 +506,10 @@ int modem_sms_send(const char *number, const char *text)
 	to_module(body, sizeof(body), text);
 	snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"", number);
 	xSemaphoreTake(lock, portMAX_DELAY);
+	wake();
 	drain();
-	uart_write_bytes(PORT, cmd, strlen(cmd));
-	uart_write_bytes(PORT, "\r", 1);
+	put(cmd, strlen(cmd));
+	put("\r", 1);
 
 	/* The module answers "> " and then waits for the text. */
 	for (int64_t end = esp_timer_get_time() + 5000000; esp_timer_get_time() < end;) {
@@ -479,8 +524,8 @@ int modem_sms_send(const char *number, const char *text)
 		xSemaphoreGive(lock);
 		return -EIO;
 	}
-	uart_write_bytes(PORT, body, strlen(body));
-	uart_write_bytes(PORT, "\x1a", 1);		/* Ctrl-Z sends it */
+	put(body, strlen(body));
+	put("\x1a", 1);				/* Ctrl-Z sends it */
 
 	err = -ETIMEDOUT;
 	while (read_line(line, sizeof(line), 60000)) {	/* sending can take a while */
@@ -536,9 +581,10 @@ int modem_sms_list(struct sms *out, int max, bool unread_only)
 		return err;
 
 	xSemaphoreTake(lock, portMAX_DELAY);
+	wake();
 	drain();
-	uart_write_bytes(PORT, unread_only ? "AT+CMGL=\"REC UNREAD\"\r\n"
-					   : "AT+CMGL=\"ALL\"\r\n", unread_only ? 22 : 16);
+	put(unread_only ? "AT+CMGL=\"REC UNREAD\"\r\n" : "AT+CMGL=\"ALL\"\r\n",
+	    unread_only ? 22 : 16);
 	while (read_line(line, sizeof(line), 10000)) {
 		bool text_due = n && !*out[n - 1].text;
 
@@ -606,6 +652,7 @@ int modem_sms_delete(int index)
 
 static u32_t ppp_output(ppp_pcb *pcb, const void *data, u32_t len, void *ctx)
 {
+	last_io_us = esp_timer_get_time();
 	return uart_write_bytes(PORT, data, len);
 }
 
@@ -652,30 +699,125 @@ bool modem_data_up(void)
 }
 
 /*
- * The network's data service: /etc/modem ("apn NAME", "user NAME",
- * "password WORD", a line each, from `modem apn`), else menuconfig's.
+ * /etc/modem, a line each: "apn NAME", "user NAME", "password WORD" (from
+ * `modem apn`, else menuconfig's), and "radio off" (from `modem off`).
  */
-int modem_apn(char *apn, size_t asz, char *user, size_t usz, char *pass, size_t psz)
+static void conf_load(void)
 {
 	char path[64], line[96];
 	FILE *f;
 
-	strlcpy(apn, CONFIG_PT_MODEM_APN, asz);
-	strlcpy(user, CONFIG_PT_MODEM_USER, usz);
-	strlcpy(pass, CONFIG_PT_MODEM_PASSWORD, psz);
+	strlcpy(conf.apn, CONFIG_PT_MODEM_APN, sizeof(conf.apn));
+	strlcpy(conf.user, CONFIG_PT_MODEM_USER, sizeof(conf.user));
+	strlcpy(conf.pass, CONFIG_PT_MODEM_PASSWORD, sizeof(conf.pass));
+	conf.radio_off = false;
 	if (!mount_resolve("/etc/modem", path, sizeof(path)) || !(f = fopen(path, "r")))
-		return 0;
+		return;
 	while (fgets(line, sizeof(line), f)) {
 		line[strcspn(line, "\r\n")] = '\0';
 		if (!strncmp(line, "apn ", 4))
-			strlcpy(apn, line + 4, asz);
+			strlcpy(conf.apn, line + 4, sizeof(conf.apn));
 		else if (!strncmp(line, "user ", 5))
-			strlcpy(user, line + 5, usz);
+			strlcpy(conf.user, line + 5, sizeof(conf.user));
 		else if (!strncmp(line, "password ", 9))
-			strlcpy(pass, line + 9, psz);
+			strlcpy(conf.pass, line + 9, sizeof(conf.pass));
+		else if (!strcmp(line, "radio off"))
+			conf.radio_off = true;
 	}
 	fclose(f);
+}
+
+/* Written whole to a new file and renamed over the old: never half a file. */
+static int conf_save(void)
+{
+	char path[64], tmp[72];
+	FILE *f;
+	int err = 0;
+
+	if (!mount_resolve("/etc/modem", path, sizeof(path)))
+		return -ENOENT;
+	snprintf(tmp, sizeof(tmp), "%s.new", path);
+	if (!(f = fopen(tmp, "w")))
+		return -EIO;
+	fprintf(f, "apn %s\n", conf.apn);
+	if (*conf.user)
+		fprintf(f, "user %s\npassword %s\n", conf.user, conf.pass);
+	if (conf.radio_off)
+		fprintf(f, "radio off\n");
+	if (fclose(f))
+		err = -EIO;
+	if (!err && rename(tmp, path))
+		err = -EIO;
+	if (err)
+		remove(tmp);
+	return err;
+}
+
+int modem_apn(char *apn, size_t asz, char *user, size_t usz, char *pass, size_t psz)
+{
+	strlcpy(apn, conf.apn, asz);
+	strlcpy(user, conf.user, usz);
+	strlcpy(pass, conf.pass, psz);
 	return 1;
+}
+
+int modem_set_apn(const char *apn, const char *user, const char *pass)
+{
+	strlcpy(conf.apn, apn, sizeof(conf.apn));
+	strlcpy(conf.user, user ? user : "", sizeof(conf.user));
+	strlcpy(conf.pass, pass ? pass : "", sizeof(conf.pass));
+	return conf_save();
+}
+
+/*
+ * The radio on or off (AT+CFUN=1 or 0): off, the module takes about
+ * 0.7 mA and hears nothing. Kept in /etc/modem, and made so again when
+ * the module restarts.
+ */
+int modem_radio(bool on)
+{
+	int err = 0, saved;
+
+	/* kept even if the module is not answering: it is made so when it does */
+	conf.radio_off = !on;
+	if (present)
+		err = modem_at(on ? "AT+CFUN=1" : "AT+CFUN=0", NULL, 0, 10000);
+	saved = conf_save();
+	return err ? err : saved;
+}
+
+bool modem_radio_on(void)
+{
+	return !conf.radio_off;
+}
+
+/*
+ * Before the board switches itself off (`poweroff`, or a flat cell): the
+ * module stays on the cell's wires whatever the board does, so its radio
+ * goes off too, not to be drained for days by a board that is off. Not
+ * kept: at the next start the driver puts it back as /etc/modem says.
+ */
+void modem_power_off(void)
+{
+	if (present && !data_mode && !conf.radio_off && !modem_at("AT+CFUN=0", NULL, 0, 5000))
+		klog("modem: radio off while the board is");
+}
+
+/*
+ * What the module draws from the cell, for the battery's estimate: it is
+ * on the cell's wires, and nothing measures it. Figures from SIMCom's
+ * SIM800 sheet, rounded up: asleep and registered about 1.5 mA, awake 20,
+ * a data session 150 on average, the radio off 0.7.
+ */
+int modem_load_ma(void)
+{
+	if (!present)
+		return 0;
+	if (data_mode)
+		return 150;
+	if (conf.radio_off)
+		return 1;
+	return sleepy && esp_timer_get_time() - last_io_us > 5000000 ? 2 : 20;
 }
 
 /* A USSD answer's text: GSM or 8859-1 as it is, UCS2 (scheme 72) from its hex. */
@@ -753,15 +895,22 @@ int modem_data(bool on)
 		ppp = NULL;
 		data_mode = false;
 		vTaskDelay(pdMS_TO_TICKS(1000));	/* the guard time before +++ */
-		uart_write_bytes(PORT, "+++", 3);
+		put("+++", 3);
 		vTaskDelay(pdMS_TO_TICKS(1000));
 		modem_at("ATH", NULL, 0, 5000);
+		if (sleepy)
+			modem_at("AT+CSCLK=2", NULL, 0, 2000);
 		return 0;
 	}
 	if (ppp)
 		return -EALREADY;
 
+	if (conf.radio_off)
+		return -ENETDOWN;
 	modem_apn(apn, sizeof(apn), user, sizeof(user), pass, sizeof(pass));
+	/* asleep it would lose a PPP frame's first byte: awake for the session */
+	if (sleepy)
+		modem_at("AT+CSCLK=0", NULL, 0, 2000);
 	snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"IP\",\"%s\"", apn);
 	if ((err = modem_at(cmd, NULL, 0, 5000)))
 		return err;
@@ -769,7 +918,7 @@ int modem_data(bool on)
 	/* ATD dials the packet service; the answer is CONNECT, then PPP. */
 	xSemaphoreTake(lock, portMAX_DELAY);
 	drain();
-	uart_write_bytes(PORT, "ATD*99***1#\r\n", 13);
+	put("ATD*99***1#\r\n", 13);
 	err = -ETIMEDOUT;
 	while (read_line(line, sizeof(line), 30000)) {
 		if (!strncmp(line, "CONNECT", 7)) {
@@ -839,6 +988,7 @@ int modem_init(void)
 		.source_clk = UART_SCLK_DEFAULT,
 	};
 
+	conf_load();
 	lock = xSemaphoreCreateMutex();
 	ussd_done = xSemaphoreCreateBinary();
 	if (!lock || !ussd_done)
@@ -894,6 +1044,13 @@ static void setup(void)
 	snprintf(cmd, sizeof(cmd), "AT+IPR=%d", baud);
 	if (!modem_at(cmd, NULL, 0, 2000))
 		modem_at("AT&W", NULL, 0, 2000);
+	/* as /etc/modem has it; at the next start after `poweroff`, on again */
+	modem_at(conf.radio_off ? "AT+CFUN=0" : "AT+CFUN=1", NULL, 0, 10000);
+	/*
+	 * Asleep whenever the port is quiet: about 1.5 mA registered instead
+	 * of 20, and a message or a call still wakes it. Not while PPP runs.
+	 */
+	sleepy = !data_mode && !modem_at("AT+CSCLK=2", NULL, 0, 2000);
 }
 
 /* What it is, once it answers. */
@@ -962,7 +1119,7 @@ static void after_news(void)
 		heard_start = false;
 		modem_probe();
 	}
-	if (present && resetup) {
+	if (present && resetup && (booted || esp_timer_get_time() >= setup_at)) {
 		resetup = false;
 		setup();
 		if (!*model)
@@ -979,6 +1136,20 @@ static void after_news(void)
 }
 
 /*
+ * Whether the module still answers, looked at now and then: an unplugged
+ * one would otherwise count in the battery's estimate for ever, and
+ * `modem` would wait on it. Gone, it is looked for again by `modem`.
+ */
+static void still_there(void)
+{
+	for (int i = 0; i < 3; i++)
+		if (!modem_at("AT", NULL, 0, 1000))
+			return;
+	present = false;
+	klog("modem: the module does not answer any more; `modem` looks for it again");
+}
+
+/*
  * kmodem, from the end of the look at boot: whenever the port receives
  * something with no command waiting for it, that is news.
  */
@@ -987,8 +1158,14 @@ static void watch(void)
 	uart_event_t ev;
 
 	for (;;) {
-		if (!xQueueReceive(events, &ev, portMAX_DELAY))
+		/* a second while a restarted module waits to be set up again,
+		 * five minutes otherwise: whether it is still there at all */
+		if (!xQueueReceive(events, &ev, pdMS_TO_TICKS(resetup ? 1000 : 300000))) {
+			after_news();
+			if (present && !resetup && !data_mode && !probing)
+				still_there();
 			continue;
+		}
 		if (ev.type == UART_FIFO_OVF || ev.type == UART_BUFFER_FULL) {
 			if (!data_mode)
 				uart_flush_input(PORT);
@@ -1033,6 +1210,11 @@ int  modem_probe(void) { return -ENODEV; }
 const char *modem_network_text(int reg) { return "unknown"; }
 int  modem_ussd(const char *code, char *out, size_t size) { return -ENODEV; }
 int  modem_apn(char *apn, size_t asz, char *user, size_t usz, char *pass, size_t psz) { return 0; }
+int  modem_set_apn(const char *apn, const char *user, const char *pass) { return -ENODEV; }
+int  modem_radio(bool on) { return -ENODEV; }
+bool modem_radio_on(void) { return false; }
+void modem_power_off(void) { }
+int  modem_load_ma(void) { return 0; }
 bool modem_present(void) { return false; }
 int  modem_at(const char *cmd, char *reply, size_t size, int timeout_ms) { return -ENODEV; }
 int  modem_info(struct modem_info *out) { return -ENODEV; }

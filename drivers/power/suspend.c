@@ -218,6 +218,7 @@ void power_off(void)
 {
 	int key = watch_keyboard(ENTER), button = watch_button();
 
+	modem_power_off();		/* on the cell's wires whatever the board does */
 	power_quiesce();
 	klog("power: off; wake with %s", wake_text(key, button, "Enter on the CardKB"));
 	vTaskDelay(pdMS_TO_TICKS(150));
@@ -228,6 +229,7 @@ void power_off_empty(void)
 {
 	watch_keyboard(ENTER);
 	watch_button();
+	modem_power_off();
 	power_quiesce();
 	empty_mark = EMPTY_MARK;
 	esp_sleep_enable_timer_wakeup(EMPTY_CHECK_S * 1000000ULL);

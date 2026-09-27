@@ -146,6 +146,8 @@ NETWORK
   curl URL          what an address returns: -L
                     follows, -I headers, -d posts
   modem             the SIM module, if one is wired
+  modem on, off     its radio (off: 0.7 mA, nothing
+                    heard), kept across restarts
   modem scan        the networks it can hear
   modem apn NAME    the network's data service name
   modem ussd *123#  ask the network: credit, offers

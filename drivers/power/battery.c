@@ -816,6 +816,7 @@ static int load_ma(void)
 		ma -= PANEL_MA;
 	if (wifi_radio_on())
 		ma += RADIO_MA;
+	ma += modem_load_ma();		/* a SIM module on the cell's wires */
 	return ma;
 }
 
@@ -826,8 +827,11 @@ static int load_ma(void)
  */
 static int draw_ma(int mv, int load)
 {
-	if (bat.state == BATTERY_FULL || bat.state == BATTERY_IDLE)
+	if (bat.state == BATTERY_FULL)
 		return 0;
+	/* on USB the board runs from it, but a SIM module on the cell does not */
+	if (bat.state == BATTERY_IDLE)
+		return modem_load_ma();
 	/*
 	 * Just plugged into a PC with a cell high enough that the charger
 	 * may not have started: nothing is counted in until the voltage is

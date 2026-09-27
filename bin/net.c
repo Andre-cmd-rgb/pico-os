@@ -404,6 +404,8 @@ static int modem_status(void)
 	if (err)
 		return no_modem("modem");
 	pt_printf("module   %s\n", *m.model ? m.model : "unknown");
+	if (!modem_radio_on())
+		pt_printf("radio    off (`modem on` turns it on)\n");
 	pt_printf("imei     %s\n", *m.imei ? m.imei : "-");
 	pt_printf("sim      %s\n", m.sim);
 	pt_printf("network  %s%s%s\n", m.reg >= 0 ? modem_network_text(m.reg) :
@@ -422,10 +424,10 @@ static int modem_status(void)
 }
 
 /* modem apn: the data service's name, and a login if it wants one. */
-static int modem_set_apn(int argc, char **argv)
+static int modem_apn_cmd(int argc, char **argv)
 {
-	char apn[64], user[32], pass[32], text[160];
-	int fd, n, err;
+	char apn[64], user[32], pass[32];
+	int err;
 
 	if (argc == 2) {
 		modem_apn(apn, sizeof(apn), user, sizeof(user), pass, sizeof(pass));
@@ -438,14 +440,7 @@ static int modem_set_apn(int argc, char **argv)
 		pt_dprintf(PT_STDERR, "usage: modem apn [NAME [USER PASSWORD]]\n");
 		return 2;
 	}
-	n = snprintf(text, sizeof(text), "apn %s\n", argv[2]);
-	if (argc == 5)
-		n += snprintf(text + n, sizeof(text) - n, "user %s\npassword %s\n", argv[3], argv[4]);
-	if ((fd = pt_open("/etc/modem", O_WRONLY | O_CREAT | O_TRUNC)) < 0)
-		return fail("modem", "/etc/modem", fd);
-	err = write_all(fd, text, n);
-	pt_close(fd);
-	if (err)
+	if ((err = modem_set_apn(argv[2], argc == 5 ? argv[3] : NULL, argc == 5 ? argv[4] : NULL)))
 		return fail("modem", "/etc/modem", err);
 	pt_printf("the APN is %s from the next `modem data on`\n", argv[2]);
 	return 0;
@@ -507,12 +502,14 @@ static int modem_scan(void)
 	return 0;
 }
 
-PT_COMPLETE(modem, ": data at scan apn ussd\ndata: on off\n")
+PT_COMPLETE(modem, ": on off data at scan apn ussd\ndata: on off\n")
 
 PT_PROGRAM(modem, "talk to the mobile module\n"
-	   "usage: modem [data on|off | scan | ussd CODE |\n"
-	   "              apn [NAME [USER PASS]] | at COMMAND]\n"
+	   "usage: modem [on | off | data on|off | scan | ussd CODE\n"
+	   "              | apn [NAME [USER PASS]] | at COMMAND]\n"
 	   "Alone, shows the module, the SIM and the network.\n"
+	   "  on, off    its radio (off: 0.7 mA, nothing heard);\n"
+	   "             kept across restarts\n"
 	   "  scan       the networks the module can hear\n"
 	   "  data on    mobile internet, over PPP\n"
 	   "  apn        the data service's name: data on uses\n"
@@ -543,13 +540,29 @@ PT_PROGRAM(modem, "talk to the mobile module\n"
 		if (ret) {
 			pt_dprintf(PT_STDERR, "modem: %s\n", ret == -ETIMEDOUT ?
 				   "the network never finished the connection" :
+				   ret == -ENETDOWN ? "the radio is off: `modem on`" :
 				   "the link would not come up");
 			return 1;
 		}
 		return modem_status();
 	}
 	if (argc >= 2 && !strcmp(argv[1], "apn"))
-		return modem_set_apn(argc, argv);
+		return modem_apn_cmd(argc, argv);
+	if (argc == 2 && (!strcmp(argv[1], "on") || !strcmp(argv[1], "off"))) {
+		bool on = !strcmp(argv[1], "on");
+
+		ret = modem_radio(on);
+		if (ret == -ETIMEDOUT) {
+			pt_printf("radio %s from when the module answers: it is not answering now\n",
+				  on ? "on" : "off");
+			return 0;
+		}
+		if (ret)
+			return fail("modem", argv[1], ret);
+		pt_printf("radio %s%s\n", on ? "on" : "off",
+			  on ? ": it looks for the network" : ": 0.7 mA, no messages or calls");
+		return 0;
+	}
 	if (argc == 2 && !strcmp(argv[1], "scan"))
 		return modem_scan();
 	if (argc == 3 && !strcmp(argv[1], "ussd"))
@@ -569,7 +582,7 @@ PT_PROGRAM(modem, "talk to the mobile module\n"
 				   ret == -ETIMEDOUT ? "no answer" : "the module said no");
 		return ret ? 1 : 0;
 	}
-	pt_dprintf(PT_STDERR, "usage: modem [data on|off | scan | apn | ussd | at]\n");
+	pt_dprintf(PT_STDERR, "usage: modem [on|off | data | scan | apn | ussd | at]\n");
 	return 2;
 }
 
