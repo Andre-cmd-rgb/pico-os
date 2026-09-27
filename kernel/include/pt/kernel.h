@@ -126,6 +126,7 @@ void	proc_signal_group(int pgid, int sig);
 int	proc_list(struct pt_procinfo *out, int max);
 int	proc_count(void);
 bool	proc_alive(int pid);		/* whether that process is still running */
+bool	proc_stopped(int pid);		/* stopped by SIGSTOP or SIGTSTP */
 /*
  * How often a wait looks for signals: every `ms` normally, once a second
  * while nobody is looking (the screen is dark), so the chip can sleep.

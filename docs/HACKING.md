@@ -118,6 +118,27 @@ Two rules came out of getting this wrong:
 - **a terminal exists before it is in front.** Its buffers are made on
   first use, and the keyboard would otherwise write into nothing.
 
+A program that draws on the panel itself -- `nes`, `video`, `view`,
+`lcdtest`, `bench`'s screen test -- **holds its own terminal's screen**
+with `vt_hold_screen(true)`: the renderer leaves that terminal alone, and
+the program draws only between `vt_screen_begin()` and `_end()`, and
+only when begin says its terminal is in front. When the terminal comes
+back, `vt_screen_gen()` has changed and the program paints everything
+again. Each terminal has its own holder: with one for all of them, a
+game on the first terminal and a clip started on the second overwrote
+each other's claim, and the game drew over the clip. A program's helper
+task is no program and has no terminal of its own, so it draws with the
+`_on()` calls and the terminal the program got from `vt_screen_mine()`
+(the clip's blitter does). `vt_redraw()` never paints over a terminal a
+program holds; it asks that program to paint again instead.
+
+What else two programs on two terminals share is made safe the same
+way: the speaker is a stream each (below); the screen kept lit is a
+count (`power_keep_screen`); the CPU's speed is a count too
+(`cpufreq_boost`: a clip lifts the policy's floor to its top while it
+plays, and never saves and restores the policy, which `cpufreq` on
+another terminal may have changed meanwhile).
+
 ## Sound files
 
 `codec/` decodes them, with one interface for every format the way a

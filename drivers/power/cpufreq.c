@@ -26,6 +26,9 @@
 static int  cur_min = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
 static int  cur_max = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
 static bool cur_sleep;
+static int  boosts;		/* programs that want the policy's top all the time */
+
+static void account(void);
 
 #if CONFIG_PT_IDLE_SLEEP
 #define IS_IDLE_SLEEP	true
@@ -70,10 +73,13 @@ static int apply(int min_mhz, int max_mhz, bool sleep)
 #if CONFIG_PM_ENABLE
 	const esp_pm_config_t cfg = {
 		.max_freq_mhz = max_mhz,
-		.min_freq_mhz = min_mhz,
+		.min_freq_mhz = boosts ? max_mhz : min_mhz,
 		.light_sleep_enable = sleep,
 	};
-	esp_err_t err = esp_pm_configure(&cfg);
+	esp_err_t err;
+
+	account();			/* the time so far, at the speeds it was at */
+	err = esp_pm_configure(&cfg);
 	if (err) {
 		klog("cpufreq: %d-%d MHz%s rejected (%s)", min_mhz, max_mhz,
 		     sleep ? " with idle sleep" : "", esp_err_to_name(err));
@@ -91,6 +97,27 @@ static int apply(int min_mhz, int max_mhz, bool sleep)
 int cpufreq_set(int min_mhz, int max_mhz)
 {
 	return apply(min_mhz, max_mhz, cur_sleep);
+}
+
+/*
+ * A program never idle long enough for the governor to be right about it
+ * -- a clip, whose frame missed while the clock ramps up is a frame
+ * missed -- asks for the policy's top speed for as long as it runs. It
+ * was a save and a restore in the player: two clips at once, or the
+ * policy changed with `cpufreq` while one played, came out wrong. Now it
+ * is counted, and only the minimum is lifted: powersave stays at its 80.
+ */
+void cpufreq_boost(bool on)
+{
+	boosts += on ? 1 : -1;
+	if (boosts < 0)
+		boosts = 0;
+	apply(cur_min, cur_max, cur_sleep);
+}
+
+int cpufreq_boosted(void)
+{
+	return boosts;
 }
 
 int cpufreq_set_idle_sleep(bool on)
@@ -115,29 +142,33 @@ bool cpufreq_idle_sleep(void)
  * What matters is where the time went, which the power manager counts for
  * us -- this digs the per-frequency totals out of its report.
  */
-int cpufreq_time_summary(char *buf, size_t size)
-{
 #if CONFIG_PM_ENABLE && CONFIG_PM_PROFILING
+/*
+ * The power manager counts time per mode -- CPU_MAX, APB_MIN -- and a
+ * mode's speed changes with the policy, so its report would put time
+ * spent at 240 MHz under 80 after `cpufreq powersave`. What it has
+ * counted since last time is added up here per speed, before every change
+ * of policy and before every summary.
+ */
+#define MODES	8
+
+static struct { int mhz; long long us; } at_speed[4];
+static long long mode_seen[MODES];
+
+static void account(void)
+{
 	char *dump = malloc(4096), *line;
-	struct { int mhz; long long us; } bucket[4] = { 0 };
-	int n = 0;
-	long long total = 0;
-	size_t len = 0;
+	int mode = 0;
 
 	if (!dump)
-		return -ENOMEM;
-	if (cpufreq_stats(dump, 4096) < 0) {
+		return;
+	if (cpufreq_stats(dump, 4096) < 0 || !(line = strstr(dump, "Mode stats:"))) {
 		free(dump);
-		return -EIO;
+		return;
 	}
-	line = strstr(dump, "Mode stats:");
-	if (!line) {
-		free(dump);
-		return -ENOTSUP;
-	}
-	for (line = strchr(line, '\n'); line; line = strchr(line, '\n')) {
+	for (line = strchr(line, '\n'); line && mode < MODES; line = strchr(line, '\n')) {
 		char name[16];
-		long long us;
+		long long us, delta;
 		int mhz, i;
 
 		line++;
@@ -145,22 +176,43 @@ int cpufreq_time_summary(char *buf, size_t size)
 		 * its M are sometimes one token and sometimes two. */
 		if (sscanf(line, "%15s %d %*[M] %lld", name, &mhz, &us) != 3 || !mhz)
 			continue;
-		for (i = 0; i < n && bucket[i].mhz != mhz; i++)
+		delta = us - mode_seen[mode];
+		mode_seen[mode++] = us;
+		if (delta <= 0)
+			continue;
+		for (i = 0; i < 4 && at_speed[i].mhz && at_speed[i].mhz != mhz; i++)
 			;
-		if (i == n && n < 4)
-			bucket[n++].mhz = mhz;
 		if (i < 4) {
-			bucket[i].mhz = mhz;
-			bucket[i].us += us;
+			at_speed[i].mhz = mhz;
+			at_speed[i].us += delta;
 		}
-		total += us;
 	}
 	free(dump);
+}
+#else
+static void account(void) { }
+#endif
+
+/*
+ * Asking "what frequency is it at?" from a command is a loaded question:
+ * running the command is itself work, so the answer is always the top.
+ * What matters is where the time went, which the power manager counts for
+ * us -- account() keeps it by speed.
+ */
+int cpufreq_time_summary(char *buf, size_t size)
+{
+#if CONFIG_PM_ENABLE && CONFIG_PM_PROFILING
+	long long total = 0;
+	size_t len = 0;
+
+	account();
+	for (int i = 0; i < 4; i++)
+		total += at_speed[i].us;
 	if (!total)
 		return -ENOTSUP;
-	for (int i = 0; i < n; i++)
+	for (int i = 0; i < 4 && at_speed[i].mhz; i++)
 		len += snprintf(buf + len, size - len, "%s%lld%% at %d MHz",
-				i ? ", " : "", bucket[i].us * 100 / total, bucket[i].mhz);
+				i ? ", " : "", at_speed[i].us * 100 / total, at_speed[i].mhz);
 	return len;
 #else
 	return -ENOTSUP;

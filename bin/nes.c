@@ -75,6 +75,11 @@ PT_PROGRAM_STACK(nes, 16, "play a NES game\n"
 	pt_tty_raw(PT_STDIN, false);
 	vt_redraw();
 
+	if (ret == -EBUSY) {
+		pt_dprintf(PT_STDERR, "nes: a game is running on another terminal already;\n"
+			   "  there is room for one at a time\n");
+		return 1;
+	}
 	if (ret)
 		return fail("nes", argv[i], ret);
 	nes_last_stats(&stats);

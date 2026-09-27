@@ -274,12 +274,21 @@ static int bench_lcd(void)
 	int64_t start;
 
 	power_screen_wake();
+	vt_hold_screen(true);
+	if (!vt_screen_front()) {
+		vt_hold_screen(false);
+		pt_printf("lcd    skipped: its terminal is not the one showing\n");
+		return 0;
+	}
 	start = now();
-
-	while (frames < 20 && !pt_interrupted())
-		lcd_fill(0, 0, w, h, colors[frames++ % 4]);
+	while (frames < 20 && !pt_interrupted()) {
+		if (vt_screen_begin())
+			lcd_fill(0, 0, w, h, colors[frames % 4]);
+		vt_screen_end();
+		frames++;
+	}
 	double s = (now() - start) / 1e6;
-	vt_redraw();
+	vt_hold_screen(false);
 	pt_printf("lcd    full frame  %7.1f fps  (%.2f MB/s on the bus)\n", frames / s,
 		  frames * w * h * 2 / s / (1 << 20));
 	return 0;

@@ -220,6 +220,7 @@ struct job {
 	bool		 done[MAX_STAGES];
 	int		 n, status;	/* the last process's status */
 	bool		 stopped;
+	int		 raw;		/* its terminal's mode when it stopped: fg puts it back */
 	char		*cmd;		/* as it was typed */
 };
 

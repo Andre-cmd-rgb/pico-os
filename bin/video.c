@@ -205,6 +205,7 @@ static void helper_task(void *arg)
 struct blitter {
 	TaskHandle_t	  task;
 	SemaphoreHandle_t go, done;
+	int		  vt;		/* the terminal the player holds: this is no program */
 	struct canvas	 *c;
 	const uint8_t	 *native;	/* its turned copy, when the panel can be read */
 	volatile bool	  quit, pending;
@@ -219,7 +220,8 @@ static void blit_task(void *arg)
 		if (b->quit)
 			break;
 		/* in step with the panel's refresh if it can be, or else as it is */
-		if (vt_screen_begin() && (!b->native || canvas_send_native(b->c, b->native)))
+		if (vt_screen_begin_on(b->vt) &&
+		    (!b->native || canvas_send_native(b->c, b->native)))
 			canvas_blit_fit(b->c);
 		vt_screen_end();
 		xSemaphoreGive(b->done);
@@ -712,11 +714,11 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	const char *path = argc > 1 + index_only ? argv[1 + index_only] : chosen, *name;
 	void *native_mem[2] = { NULL, NULL };
 	uint8_t *native[2] = { NULL, NULL };
-	int ret, was_min = 0, was_max = 0, next = 0, ahead = 0, nread = 0, end;
+	int ret, next = 0, ahead = 0, nread = 0, end;
 	int shown_n = 0, dropped = 0, frame_us, buffer_us = 0, i = 0, from = 0, target;
 	int64_t read_us = 0, decode_us = 0, blit_us = 0, started;
 	int64_t decode_guess = 0;
-	bool keys = true, screen = false, played = false, step = false;
+	bool keys = true, screen = false, played = false, step = false, boosted = false;
 	uint32_t from_off = 0;
 	unsigned gen = vt_screen_gen();
 
@@ -824,14 +826,14 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			goto done;
 		}
 	}
-	/* As fast as the policy lets it, all the time: nothing here is idle
-	 * long enough for the governor to be right about it, and a frame
-	 * missed while the clock ramps up is a frame missed. A policy that
-	 * holds it slower (powersave) is kept to, and frames dropped. */
-	cpufreq_get(&was_min, &was_max);
-	cpufreq_set(was_max, was_max);
+	/* As fast as the policy lets it, all the time (cpufreq_boost()):
+	 * nothing here is idle long enough for the governor to be right
+	 * about it. Under powersave that is 80 MHz, and frames are dropped. */
+	cpufreq_boost(true);
+	boosted = true;
 
 	vt_hold_screen(true);
+	blit.vt = vt_screen_mine();
 	power_keep_screen(true);		/* nobody presses keys to watch */
 	screen = true;
 	canvas_clear(&page[0]);
@@ -1071,8 +1073,8 @@ done:
 		task_stop(&helpers[i].task, &helpers[i].go, &helpers[i].done, &helpers[i].quit);
 	if (screen)
 		pt_tty_raw(PT_STDIN, false);
-	if (was_max)
-		cpufreq_set(was_min, was_max);
+	if (boosted)
+		cpufreq_boost(false);
 	if (clip.audio_bytes)
 		audio_stop();
 	canvas_close(&page[0]);

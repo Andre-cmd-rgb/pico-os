@@ -133,6 +133,12 @@ bool	vt_screen_begin(void);
 void	vt_screen_end(void);
 bool	vt_screen_front(void);		/* no lock: for deciding to pause */
 unsigned vt_screen_gen(void);
+/* The same for a program's helper task, which is no program itself: with
+ * the terminal the program holds, from vt_screen_mine() (-1 for none). */
+int	vt_screen_mine(void);
+bool	vt_screen_begin_on(int vt);
+bool	vt_screen_front_on(int vt);
+unsigned vt_screen_gen_on(int vt);
 
 /* tty/tty.c: the console line discipline */
 void	tty_init(void);
@@ -239,6 +245,11 @@ int	modem_probe(void);		/* look again for one: 0 when there is one */
 const char *modem_network_text(int reg);
 int	modem_ussd(const char *code, char *out, size_t size);	/* *123# and the like */
 int	modem_apn(char *apn, size_t asz, char *user, size_t usz, char *pass, size_t psz);
+int	modem_set_apn(const char *apn, const char *user, const char *pass);	/* kept */
+int	modem_radio(bool on);		/* AT+CFUN, kept in /etc/modem */
+bool	modem_radio_on(void);
+void	modem_power_off(void);		/* the board is switching off: the radio too */
+int	modem_load_ma(void);		/* its draw from the cell, for the battery */
 int	modem_at(const char *cmd, char *reply, size_t size, int timeout_ms);
 int	modem_info(struct modem_info *out);
 int	modem_sms_send(const char *number, const char *text);
@@ -383,6 +394,8 @@ bool	alarm_button(bool held);	/* a press snoozes, holding stops */
 int	cpufreq_init(void);
 int	cpufreq_set(int min_mhz, int max_mhz);		/* one of cpufreq_speeds */
 void	cpufreq_get(int *min_mhz, int *max_mhz);
+void	cpufreq_boost(bool on);	/* counted: the policy's top as its floor too */
+int	cpufreq_boosted(void);
 void	cpufreq_speeds(int *slowest, int *middle, int *fastest);	/* 80, 160, 240 on the S3 */
 int	cpufreq_current_mhz(void);
 const char *cpufreq_policy_name(int min_mhz, int max_mhz);

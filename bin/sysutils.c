@@ -1000,6 +1000,8 @@ PT_PROGRAM(cpufreq, "show or set the CPU frequency policy\n"
 	 * program. Where the time went is the honest answer.
 	 */
 	char since[96];
+	if (cpufreq_boosted())
+		pt_printf("held at %d MHz while a clip plays\n", max);
 	if (cpufreq_time_summary(since, sizeof(since)) > 0)
 		pt_printf("since boot %s\n", since);
 	return 0;
@@ -1041,6 +1043,27 @@ PT_PROGRAM(led, "control the status LED\n"
 }
 
 /* ------------------------------------------------------------ hardware checks */
+
+/* lcdtest's two pictures: the colour bars, and a border with a square. */
+static void lcdtest_picture(int which, const uint16_t bars[8])
+{
+	int w = lcd_width(), h = lcd_height();
+
+	if (vt_screen_begin()) {
+		if (which == 0) {
+			for (int i = 0; i < 8; i++)
+				lcd_fill(i * w / 8, 0, w / 8 + (i == 7 ? w % 8 : 0), h, bars[i]);
+		} else {
+			lcd_fill(0, 0, w, h, 0x0000);
+			lcd_fill(0, 0, w, 2, 0xffff);
+			lcd_fill(0, h - 2, w, 2, 0xffff);
+			lcd_fill(0, 0, 2, h, 0xffff);
+			lcd_fill(w - 2, 0, 2, h, 0xffff);
+			lcd_fill(w / 2 - 20, h / 2 - 20, 40, 40, 0xf800);
+		}
+	}
+	vt_screen_end();
+}
 
 PT_COMPLETE(lcdtest, ": clock tear read scan dir\ntear: up down land\ndir: up down\n")
 
@@ -1084,10 +1107,13 @@ PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 				px[2 * i] = c >> 8;
 				px[2 * i + 1] = c & 0xff;
 			}
-			if (land)
-				lcd_draw(0, 0, lcd_width(), lcd_height(), px);
-			else
-				lcd_draw_native(px, 0, lcd_height(), 0, lcd_width());
+			if (vt_screen_begin()) {
+				if (land)
+					lcd_draw(0, 0, lcd_width(), lcd_height(), px);
+				else
+					lcd_draw_native(px, 0, lcd_height(), 0, lcd_width());
+			}
+			vt_screen_end();
 		}
 		lcd_native_order(true);
 		vt_hold_screen(false);
@@ -1100,17 +1126,20 @@ PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 		return 0;
 	}
 	if (argc == 2 && !strcmp(argv[1], "scan")) {
-		/* where the panel's refresh is, sampled as fast as it can be */
-		static uint8_t b[400][4];
-		static int64_t at[400];
+		/* where the panel's refresh is, sampled as fast as it can be;
+		 * on the heap, as each copy's own */
+		struct { uint8_t b[4]; int64_t at; } *v = pt_calloc(400, sizeof(*v));
 
+		if (!v)
+			return fail("lcdtest", "scan", -ENOMEM);
 		for (int k = 0; k < 400; k++) {
-			lcd_read_reg(0x45, b[k], 4);
-			at[k] = pt_uptime_us();
+			lcd_read_reg(0x45, v[k].b, 4);
+			v[k].at = pt_uptime_us();
 		}
 		for (int k = 0; k < 400; k++)
-			pt_printf("%lld %02x %02x %02x\n", (long long)(at[k] - at[0]), b[k][0], b[k][1],
-				  b[k][2]);
+			pt_printf("%lld %02x %02x %02x\n", (long long)(v[k].at - v[0].at), v[k].b[0],
+				  v[k].b[1], v[k].b[2]);
+		pt_free(v);
 		return 0;
 	}
 	if (argc == 3 && !strcmp(argv[1], "read")) {
@@ -1144,23 +1173,26 @@ PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 		return 1;
 	}
 	power_screen_wake();
-	int w = lcd_width(), h = lcd_height();
-	for (int i = 0; i < 8; i++)
-		lcd_fill(i * w / 8, 0, w / 8 + (i == 7 ? w % 8 : 0), h, bars[i]);
-	pt_printf("bars left to right: %s\npress a key...\n", names);
+	pt_printf("bars left to right: %s\n"
+		  "then a white border and a red square; a key for each\n", names);
 	pt_tty_raw(PT_STDERR, true);
-	pt_readkey(PT_STDERR);
+	vt_hold_screen(true);
+	for (int picture = 0; picture < 2; picture++) {
+		unsigned gen = vt_screen_gen() - 1;	/* drawn at once */
+		int key;
 
-	lcd_fill(0, 0, w, h, 0x0000);
-	lcd_fill(0, 0, w, 2, 0xffff);
-	lcd_fill(0, h - 2, w, 2, 0xffff);
-	lcd_fill(0, 0, 2, h, 0xffff);
-	lcd_fill(w - 2, 0, 2, h, 0xffff);
-	lcd_fill(w / 2 - 20, h / 2 - 20, 40, 40, 0xf800);
-	pt_printf("white border and a red square in the middle\npress a key...\n");
-	pt_readkey(PT_STDERR);
+		/* drawn again whenever its terminal comes back in front */
+		do {
+			if (gen != vt_screen_gen()) {
+				gen = vt_screen_gen();
+				lcdtest_picture(picture, bars);
+			}
+		} while ((key = pt_readkey_timeout(PT_STDERR, 200)) == PT_KEY_NONE);
+		if (key == PT_KEY_EOF || key == PT_KEY_ERROR || key == PT_KEY_INTR)
+			break;
+	}
+	vt_hold_screen(false);
 	pt_tty_raw(PT_STDERR, false);
-	vt_redraw();
 	return 0;
 }
 

@@ -593,11 +593,30 @@ static void draw_cell(uint8_t *px, int span_w, int cell_x, uint8_t glyph, uint16
  * its own terminal: switch to another and the renderer paints that one as
  * usual, while the program draws nothing until its terminal is back in
  * front. `panel` keeps the two from drawing at once.
+ *
+ * Each terminal has a holder of its own. With one for them all, a game on
+ * the first terminal and a clip started on the second overwrote each
+ * other's claim: the game drew over the clip, the first terminal showed
+ * an empty console, and when the clip ended the game never drew again.
  */
-static volatile bool held_by_program;
-static volatile int hold_pid;		/* the program holding it, 0 for none */
-static volatile int hold_vt;		/* the terminal it runs on */
-static volatile unsigned hold_gen;	/* its terminal's returns to the front */
+static struct {
+	volatile bool	  held;
+	volatile int	  pid;		/* the program holding it */
+	volatile unsigned gen;		/* its terminal's returns to the front */
+} holder[CONFIG_PT_VT_COUNT];
+static bool was_owned;			/* the renderer's: a program had the screen */
+static int owned_vt;			/* on that terminal */
+
+/*
+ * Whether the program holding a terminal is the one showing it: not while
+ * an alarm rings -- it takes the screen, as a phone's does from a film,
+ * and a game pauses -- nor while the program is stopped, whose shell has
+ * the prompt to bring it back with. Otherwise the terminal is painted.
+ */
+static bool program_shows(int vt)
+{
+	return holder[vt].held && !alarm_ringing(NULL) && !proc_stopped(holder[vt].pid);
+}
 static SemaphoreHandle_t panel;
 
 static volatile bool repaint_all;	/* the screen changed under us */
@@ -799,17 +818,37 @@ static void render_task(void *arg)
 			continue;
 		vTaskDelay(pdMS_TO_TICKS(8));	/* let a burst of output land in one frame */
 		ulTaskNotifyTake(pdTRUE, 0);
-		if (held_by_program && hold_pid && !proc_alive(hold_pid)) {
-			held_by_program = false;	/* it has gone without giving it back */
-			hold_pid = 0;
-			klog("vt: a program ended holding the screen; taking it back");
-			xSemaphoreTake(lock, portMAX_DELAY);
-			mark_all();
-			xSemaphoreGive(lock);
-			repaint_all = true;
+		for (int i = 0; i < CONFIG_PT_VT_COUNT; i++) {
+			if (!holder[i].held || !holder[i].pid || proc_alive(holder[i].pid))
+				continue;
+			holder[i].held = false;		/* gone without giving it back */
+			holder[i].pid = 0;
+			klog("vt: a program ended holding terminal %d's screen; taking it back",
+			     i + 1);
+			if (i == active) {
+				xSemaphoreTake(lock, portMAX_DELAY);
+				mark_all();
+				xSemaphoreGive(lock);
+				repaint_all = true;
+			}
 		}
+		/* taken from the program or given back: program_shows() */
+		bool owned = program_shows(active);
+
+		if (owned != was_owned && holder[active].held && active == owned_vt) {
+			xSemaphoreTake(lock, portMAX_DELAY);
+			if (!owned) {
+				mark_all();
+				repaint_all = true;
+			} else {
+				holder[active].gen++;
+			}
+			xSemaphoreGive(lock);
+		}
+		was_owned = owned;
+		owned_vt = active;
 		xSemaphoreTake(panel, portMAX_DELAY);
-		if (blanked || (held_by_program && hold_vt == active)) {
+		if (blanked || owned) {
 			xSemaphoreGive(panel);
 			continue;		/* the program in front owns the screen */
 		}
@@ -904,8 +943,9 @@ static void repaint_everything(void)
 		}
 	}
 	repaint_all = true;
-	if (held_by_program)
-		hold_gen++;		/* whoever holds it paints its own again */
+	for (int i = 0; i < CONFIG_PT_VT_COUNT; i++)
+		if (holder[i].held)
+			holder[i].gen++;	/* whoever holds one paints its own again */
 	xSemaphoreGive(lock);
 	if (renderer)
 		xTaskNotifyGive(renderer);
@@ -1131,8 +1171,8 @@ int vt_switch(int which)
 	cur = &screens[which];
 	mark_all();
 	repaint_all = true;
-	if (held_by_program && which == hold_vt)
-		hold_gen++;		/* the program's turn to paint it all */
+	if (holder[which].held)
+		holder[which].gen++;	/* the program's turn to paint it all */
 	xSemaphoreGive(lock);
 	if (renderer)
 		xTaskNotifyGive(renderer);
@@ -1146,27 +1186,63 @@ int vt_switch(int which)
  * and takes the screen back, rather than leave the console frozen behind a
  * picture.
  */
+/*
+ * The terminal the calling program holds the screen on: found by its pid
+ * first, which holds even with its output sent elsewhere, then by the
+ * terminal it runs on. -1 for a task that is no program: a program's
+ * helper draws with the _on() calls and the terminal the program found.
+ */
+static int holder_of_current(void)
+{
+	struct proc *p = proc_current();
+
+	if (!p)
+		return -1;
+	for (int i = 0; i < CONFIG_PT_VT_COUNT; i++)
+		if (holder[i].held && holder[i].pid == p->pid)
+			return i;
+	return tty_of_current();
+}
+
 void vt_hold_screen(bool held)
 {
 	struct proc *p = proc_current();
-	int vt = tty_of_current();
+	int vt = held ? tty_of_current() : holder_of_current();
 
 	if (!display)
 		return;
 	if (held)
 		power_activity();		/* a program about to show something */
+	if (vt < 0)
+		vt = active;			/* its output goes elsewhere: where it started */
 	xSemaphoreTake(panel, portMAX_DELAY);	/* not halfway through a repaint */
-	hold_vt = vt >= 0 ? vt : active;
-	hold_pid = held && p ? p->pid : 0;
-	held_by_program = held;
+	if (held || !holder[vt].pid || !p || holder[vt].pid == p->pid) {
+		holder[vt].pid = held && p ? p->pid : 0;
+		holder[vt].held = held;
+	}
 	xSemaphoreGive(panel);
-	if (!held)
+	/* its terminal's console again, if it is the one showing */
+	if (!held && vt == active)
 		vt_redraw();
 }
 
+int vt_screen_mine(void)
+{
+	int vt = holder_of_current();
+
+	return vt >= 0 && holder[vt].held ? vt : -1;
+}
+
+bool vt_screen_front_on(int vt)
+{
+	return vt >= 0 && vt < CONFIG_PT_VT_COUNT && vt == active && !blanked &&
+	       program_shows(vt);
+}
+
+
 bool vt_screen_front(void)
 {
-	return held_by_program && hold_vt == active && !blanked;
+	return vt_screen_front_on(holder_of_current());
 }
 
 /*
@@ -1174,12 +1250,17 @@ bool vt_screen_front(void)
  * if not, it draws nothing -- with the renderer kept off the panel until
  * vt_screen_end().
  */
-bool vt_screen_begin(void)
+bool vt_screen_begin_on(int vt)
 {
 	if (!display)
 		return false;
 	xSemaphoreTake(panel, portMAX_DELAY);
-	return vt_screen_front();
+	return vt_screen_front_on(vt);
+}
+
+bool vt_screen_begin(void)
+{
+	return vt_screen_begin_on(holder_of_current());
 }
 
 void vt_screen_end(void)
@@ -1188,9 +1269,14 @@ void vt_screen_end(void)
 		xSemaphoreGive(panel);
 }
 
+unsigned vt_screen_gen_on(int vt)
+{
+	return vt >= 0 && vt < CONFIG_PT_VT_COUNT ? holder[vt].gen : 0;
+}
+
 unsigned vt_screen_gen(void)
 {
-	return hold_gen;
+	return vt_screen_gen_on(holder_of_current());
 }
 
 void vt_redraw(void)
@@ -1201,10 +1287,22 @@ void vt_redraw(void)
 		repaint_everything();		/* when it is lit again */
 		return;
 	}
-	lcd_fill(0, 0, lcd_width(), lcd_height(), palette[BG_DEFAULT][0] << 8 | palette[BG_DEFAULT][1]);
-	xSemaphoreTake(lock, portMAX_DELAY);
-	mark_all();
-	xSemaphoreGive(lock);
+	/*
+	 * Not over a program that holds the terminal in front -- a clip
+	 * ending on another terminal wiped the game showing on this one --
+	 * which is asked to paint its own again instead.
+	 */
+	xSemaphoreTake(panel, portMAX_DELAY);
+	if (program_shows(active)) {
+		holder[active].gen++;
+	} else {
+		lcd_fill(0, 0, lcd_width(), lcd_height(),
+			 palette[BG_DEFAULT][0] << 8 | palette[BG_DEFAULT][1]);
+		xSemaphoreTake(lock, portMAX_DELAY);
+		mark_all();
+		xSemaphoreGive(lock);
+	}
+	xSemaphoreGive(panel);
 	if (renderer)
 		xTaskNotifyGive(renderer);
 }

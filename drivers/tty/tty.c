@@ -447,6 +447,9 @@ static int tty_ioctl(struct pt_file *f, int req, void *arg)
 	case PT_TTY_SETTIMEOUT:
 		tty->read_timeout_ms = *(int *)arg;
 		return 0;
+	case PT_TTY_GETRAW:
+		*(int *)arg = tty->raw;
+		return 0;
 	}
 	return -ENOTTY;
 }

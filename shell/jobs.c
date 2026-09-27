@@ -206,6 +206,14 @@ int job_wait(struct sh *sh, struct job *j, bool cont)
 
 	if (tty >= 0)
 		pt_ioctl(tty, PT_TTY_SETPGRP, &j->pgid);
+	/*
+	 * A game or a player runs its terminal raw; stopped, the shell's own
+	 * line editing set it cooked again, and continued so it read keys a
+	 * line at a time: q echoed instead of quitting. So it gets back the
+	 * mode it had, as a shell restores a stopped job's terminal modes.
+	 */
+	if (cont && tty >= 0)
+		pt_ioctl(tty, PT_TTY_SETRAW, &j->raw);
 	for (int k = 0; cont && k < j->n; k++)
 		if (!j->done[k])
 			pt_kill(j->pid[k], PT_SIGCONT);
@@ -223,8 +231,12 @@ int job_wait(struct sh *sh, struct job *j, bool cont)
 					pt_kill(j->pid[k], sig);
 		}
 		if (r > 0 && (st & PT_WSTOPPED)) {
-			if (tty >= 0)
+			int raw = 0;
+
+			if (tty >= 0) {
+				pt_ioctl(tty, PT_TTY_GETRAW, &raw);
 				pt_ioctl(tty, PT_TTY_SETPGRP, &sh->pgid);
+			}
 			if (!in_table(sh, j)) {
 				struct job *kept = job_add(sh, j->pgid, j->pid, j->n, j->cmd,
 							   strlen(j->cmd));
@@ -235,6 +247,7 @@ int job_wait(struct sh *sh, struct job *j, bool cont)
 			}
 			if (j) {
 				j->stopped = true;
+				j->raw = raw;
 				sh->current_job = j->id;
 				pt_puts("\n");
 				job_report(j, "Stopped");

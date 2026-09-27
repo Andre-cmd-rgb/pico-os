@@ -136,6 +136,7 @@ char	*pt_strdup(const char *s);
 #define PT_TTY_GETSIZE	0x5402	/* struct pt_winsize * */
 #define PT_TTY_SETPGRP	0x5403	/* int *: foreground process group */
 #define PT_TTY_SETTIMEOUT 0x5404 /* int *: read timeout in ms, -1 blocks; -EAGAIN on expiry */
+#define PT_TTY_GETRAW	0x5405	/* int *: 1 raw, 0 cooked */
 
 struct pt_winsize {
 	uint16_t cols;

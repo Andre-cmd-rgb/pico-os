@@ -16,6 +16,7 @@
  * where it was when its terminal comes back.
  */
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,12 @@ static apu_t	*apu;		/* the core's own mixed output */
 static int	 origin_x, origin_y;
 static struct nes_stats stats;
 static bool	 want_shot;
+/*
+ * The game running, if any. The core and all of the above are the one
+ * copy there is -- programs share an address space -- so a second game
+ * on another terminal would run on the first one's memory.
+ */
+static atomic_int owner;
 
 /* ------------------------------------------------------------ host hooks */
 
@@ -220,6 +227,12 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 	if (!mount_resolve(rom_path, vfs, sizeof(vfs)))
 		return -ENOENT;
 
+	int me = pt_getpid(), was = atomic_load(&owner);
+
+	/* one killed outright never gave it back: a pid no longer alive */
+	if ((was && proc_alive(was)) || !atomic_compare_exchange_strong(&owner, &was, me))
+		return -EBUSY;
+
 	/*
 	 * Both buffers are in PSRAM. The row buffer goes to the display by
 	 * DMA, which reads PSRAM directly if the buffer starts on a cache
@@ -360,5 +373,6 @@ out:
 	pt_free(vidbuf);
 	rowbuf = rowmem = vidbuf = NULL;
 	apu = NULL;
+	atomic_store(&owner, 0);
 	return ret;
 }

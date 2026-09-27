@@ -285,6 +285,18 @@ bool proc_alive(int pid)
 	return alive;
 }
 
+bool proc_stopped(int pid)
+{
+	bool stopped = false;
+
+	LOCK();
+	for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++)
+		if (procs[i].state == PROC_RUNNING && procs[i].pid == pid)
+			stopped = procs[i].stopped;
+	UNLOCK();
+	return stopped;
+}
+
 /* ------------------------------------------------------------ exit */
 
 static void deliver(struct proc *p, int sig);
