@@ -78,6 +78,7 @@ def ppm(path):
 # bin/jpeg.c), before cutting to RGB565: one offset for all three colours,
 # by the pixel's column and row, each taken modulo 2.
 DITHER = {(0, 0): 1, (1, 0): 5, (0, 1): 7, (1, 1): 3}
+BLACK_BELOW = 8         # luma left undithered, to cut to black
 
 
 def green6(g):
@@ -129,10 +130,11 @@ def fade_faint(rgb, w):
     return bytes(rgb)
 
 
-def to565(rgb, w=0):
+def to565(rgb, w=0, black=BLACK_BELOW - 0.5):
     """RGB888 narrowed to RGB565 and widened back, as the decoder's output is.
     With the width given, dithered first the way the decoder's 4:2:0 path is,
-    after taking faint colour off near black as it does."""
+    after taking faint colour off near black as it does, and not below a
+    luma of `black`."""
     if w:
         rgb = fade_faint(rgb, w)
     out = bytearray(len(rgb))
@@ -141,6 +143,8 @@ def to565(rgb, w=0):
         if w:
             px = i // 3
             o = DITHER[(px % w % 2, px // w % 2)]
+            if 0.299 * r + 0.587 * g + 0.114 * b < black:
+                o = 0
             r, g, b = min(r + o, 255), min(g + o, 255), min(b + o, 255)
         r, g, b = r >> 3, green6(g), b >> 3
         out[i] = r << 3 | r >> 2
@@ -167,13 +171,18 @@ def shrink(rgb, w, h, scale):
     return bytes(out)
 
 
-def compare(a, b):
-    """PSNR in dB, and the largest difference in any channel."""
+def compare(a, b, b2=None):
+    """PSNR in dB, and the largest difference in any channel. With b2, each
+    pixel is held to whichever of b and b2 it is nearer."""
     worst, total = 0, 0
-    for x, y in zip(a, b):
-        d = abs(x - y)
-        total += d * d
-        worst = max(worst, d)
+    for i in range(0, len(a) - len(a) % 3, 3):
+        ds = [abs(a[i + k] - b[i + k]) for k in range(3)]
+        if b2:
+            ds2 = [abs(a[i + k] - b2[i + k]) for k in range(3)]
+            ds = ds2 if max(ds2) < max(ds) else ds
+        for d in ds:
+            total += d * d
+            worst = max(worst, d)
     mse = total / max(len(a), 1)
     return (99.0 if not mse else 10 * math.log10(255 * 255 / mse)), worst
 
@@ -221,7 +230,12 @@ def main():
                     failed += 1
                     continue
                 dither = rw if scale == 0 and ("2x2" in name or "mjpeg" in name) else 0
-                psnr, worst = compare(got, to565(shrink(full, rw, rh, scale), dither))
+                small = shrink(full, rw, rh, scale)
+                # The decoder leaves luma below BLACK_BELOW undithered, and
+                # the luma it goes by is its own, which the reference's RGB
+                # only estimates: right at the line, either way is right.
+                psnr, worst = compare(got, to565(small, dither, BLACK_BELOW - 2),
+                                      to565(small, dither, BLACK_BELOW + 1) if dither else None)
                 # At full size the arithmetic is libjpeg's fast IDCT, which
                 # truncates where this one rounds: within a step of RGB565 (9,
                 # once widened) everywhere. Scaled down, each output pixel is

@@ -788,8 +788,16 @@ static void build_rgb(struct jpeg *j)
  * changes in steps and a dark colour that is really there -- a deep
  * blue -- is left as it is. (Blacking out whole dark greyish blocks
  * instead made dark scenes blotchy.)
+ *
+ * And the very darkest greys are not dithered at all, so that they cut to
+ * black. A compressed picture beside black bars rings: the bars come out
+ * with lumas of 1 to 7 near the edge, and any of those dithered up made
+ * one pixel in four the panel's first grey, a line of dots round every
+ * letterboxed clip. That dark, the panel shows no detail anyway.
  */
-#define DITHER(y, o)	(r[(y) + (o)] | g[(y) + (o)] | b[(y) + (o)])
+#define BLACK_BELOW	8	/* of 255: a step of red and blue */
+#define DOT(i)		(r[i] | g[i] | b[i])
+#define DITHER(y, o)	DOT((y) + ((y) < BLACK_BELOW ? 0 : (o)))
 
 /*
  * Both chroma samples of a 2x2 group, taken off near black when they are
