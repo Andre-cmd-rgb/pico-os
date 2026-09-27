@@ -64,6 +64,7 @@ static bool		 latin1;		/* texts go as ISO 8859-1, not GSM */
 static char		 ussd[256];
 static SemaphoreHandle_t ussd_done;
 static int64_t		 last_call_us;
+static int64_t		 started_at[4];		/* its last restarts, for restarts_lately() */
 
 static int text_mode(void);
 static int read_sms(int index, struct sms *out, bool peek);
@@ -157,6 +158,18 @@ const char *modem_network_text(int state)
 	}
 }
 
+/* How many times it has restarted in the last minute: more than once is its supply. */
+static int restarts_lately(void)
+{
+	int64_t now = esp_timer_get_time();
+	int n = 0;
+
+	for (size_t i = 0; i < sizeof(started_at) / sizeof(started_at[0]); i++)
+		if (started_at[i] && now - started_at[i] < 60000000)
+			n++;
+	return n;
+}
+
 /* The text between the first and the last quote: "+CLIP: \"+39...\",145". */
 static void quoted(const char *line, char *out, size_t size)
 {
@@ -207,7 +220,16 @@ static void news(const char *line)
 		strlcpy(ussd, line + 6, sizeof(ussd));
 		xSemaphoreGive(ussd_done);
 	} else if (!strcmp(line, "RDY")) {
-		klog("modem: the module has started");
+		int64_t now = esp_timer_get_time();
+
+		memmove(started_at + 1, started_at, sizeof(started_at) - sizeof(started_at[0]));
+		started_at[0] = now;
+		if (restarts_lately() >= 3)
+			klog("modem: the module has restarted %d times in a minute: its supply "
+			     "sags when it transmits (it needs 3.4-4.4 V with 2 A to spare)",
+			     restarts_lately());
+		else
+			klog("modem: the module has started");
 		resetup = heard_start = true;
 	} else if (!strncmp(line, "UNDER-VOLTAGE", 13) || !strncmp(line, "OVER-VOLTAGE", 12)) {
 		klog("modem: %s: the module's supply is %s", line,
@@ -311,6 +333,7 @@ int modem_info(struct modem_info *out)
 {
 	char reply[REPLY_MAX];
 	const char *p;
+	int err;
 
 	memset(out, 0, sizeof(*out));
 	out->reg = -1;
@@ -320,7 +343,15 @@ int modem_info(struct modem_info *out)
 	strlcpy(out->imei, imei, sizeof(out->imei));
 	out->data = ppp_up;
 
-	if (!modem_at("AT+CPIN?", reply, sizeof(reply), 5000) && (p = field(reply, "+CPIN: ")))
+	out->restarts = restarts_lately();
+	/*
+	 * A module that does not answer the first question will not answer
+	 * the rest either -- it is restarting, most likely -- and four
+	 * timeouts in a row made `modem` look hung.
+	 */
+	if ((err = modem_at("AT+CPIN?", reply, sizeof(reply), 3000)) == -ETIMEDOUT)
+		return err;
+	if (!err && (p = field(reply, "+CPIN: ")))
 		strlcpy(out->sim, p, strcspn(p, "\n") + 1 < sizeof(out->sim) ?
 			strcspn(p, "\n") + 1 : sizeof(out->sim));
 	else
@@ -331,7 +362,7 @@ int modem_info(struct modem_info *out)
 		/* 0..31 maps onto -113..-51 dBm; 99 means it cannot tell. */
 		out->rssi = rssi == 99 ? 0 : -113 + 2 * rssi;
 	}
-	if (!modem_at("AT+COPS?", reply, sizeof(reply), 10000) && (p = field(reply, "+COPS: "))) {
+	if (!modem_at("AT+COPS?", reply, sizeof(reply), 3000) && (p = field(reply, "+COPS: "))) {
 		const char *name = strchr(p, '"');
 
 		if (name) {
@@ -934,6 +965,8 @@ static void after_news(void)
 	if (present && resetup) {
 		resetup = false;
 		setup();
+		if (!*model)
+			identify();
 	}
 	if (present && (index = new_sms) >= 0) {
 		new_sms = -1;

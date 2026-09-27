@@ -221,6 +221,7 @@ struct modem_info {
 	char	operator[32];
 	int	rssi;			/* dBm, 0 when the module cannot tell */
 	int	reg;			/* +CREG's state, -1 unknown: modem_network_text() */
+	int	restarts;		/* in the last minute: more than one is its supply */
 	bool	registered, roaming, data;
 };
 

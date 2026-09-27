@@ -392,10 +392,16 @@ static int find_modem(const char *prog)
 static int modem_status(void)
 {
 	struct modem_info m;
+	int err;
 
 	if (find_modem("modem"))
 		return 1;
-	if (modem_info(&m))
+	if ((err = modem_info(&m)) == -ETIMEDOUT) {
+		pt_dprintf(PT_STDERR, "modem: the module is not answering: restarting?\n"
+			   "  `dmesg | grep modem` says how often it does.\n");
+		return 1;
+	}
+	if (err)
 		return no_modem("modem");
 	pt_printf("module   %s\n", *m.model ? m.model : "unknown");
 	pt_printf("imei     %s\n", *m.imei ? m.imei : "-");
@@ -409,6 +415,9 @@ static int modem_status(void)
 		pt_printf(" (%d dBm)", m.rssi);
 	pt_printf("\n");
 	pt_printf("data     %s\n", m.data ? "up" : "down");
+	if (m.restarts >= 2)
+		pt_printf("warning  it restarted %d times in a minute: its\n"
+			  "         supply sags when it transmits (WIRING.md)\n", m.restarts);
 	return 0;
 }
 
