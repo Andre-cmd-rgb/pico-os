@@ -512,14 +512,15 @@ static int modem_scan(void)
 	return 0;
 }
 
-PT_COMPLETE(modem, ": on off data at scan apn ussd\ndata: on off\n")
+PT_COMPLETE(modem, ": on off restart data at scan apn ussd\ndata: on off\n")
 
 PT_PROGRAM(modem, "talk to the mobile module\n"
-	   "usage: modem [on | off | data on|off | scan | ussd CODE\n"
-	   "              | apn [NAME [USER PASS]] | at COMMAND]\n"
+	   "usage: modem [on | off | restart | scan | data on|off\n"
+	   "       | ussd CODE | apn [NAME [USER PASS]] | at CMD]\n"
 	   "Alone, shows the module, the SIM and the network.\n"
 	   "  on, off    its radio (off: 0.7 mA, nothing heard);\n"
 	   "             kept across restarts\n"
+	   "  restart    start it over: it reads its SIM again\n"
 	   "  scan       the networks the module can hear\n"
 	   "  data on    mobile internet, over PPP\n"
 	   "  apn        the data service's name: data on uses\n"
@@ -575,6 +576,13 @@ PT_PROGRAM(modem, "talk to the mobile module\n"
 	}
 	if (argc == 2 && !strcmp(argv[1], "scan"))
 		return modem_scan();
+	if (argc == 2 && !strcmp(argv[1], "restart")) {
+		/* it restarts before it answers: a short wait is all there is */
+		modem_at("AT+CFUN=1,1", reply, sizeof(reply), 1000);
+		pt_printf("the module is starting again: it reads its SIM and\n"
+			  "looks for the network in about ten seconds\n");
+		return 0;
+	}
 	if (argc == 3 && !strcmp(argv[1], "ussd"))
 		return modem_ussd_cmd(argv[2]);
 	if (argc >= 2 && !strcmp(argv[1], "at")) {
@@ -592,7 +600,7 @@ PT_PROGRAM(modem, "talk to the mobile module\n"
 				   ret == -ETIMEDOUT ? "no answer" : "the module said no");
 		return ret ? 1 : 0;
 	}
-	pt_dprintf(PT_STDERR, "usage: modem [on|off | data | scan | apn | ussd | at]\n");
+	pt_dprintf(PT_STDERR, "usage: modem [on|off|restart | data | scan | apn | ussd | at]\n");
 	return 2;
 }
 
@@ -606,7 +614,12 @@ static int sms_list(bool unread_only)
 	n = modem_sms_list(list, SMS_MAX, unread_only);
 	if (n < 0) {
 		pt_free(list);
-		return n == -ENODEV ? no_modem("sms") : fail("sms", "list", n);
+		if (n == -ENODEV)
+			return no_modem("sms");
+		/* the messages are on the SIM: the usual reason is the SIM */
+		pt_dprintf(PT_STDERR, "sms: the module would not list them: is its SIM\n"
+			   "  ready? `modem` says\n");
+		return 1;
 	}
 	for (int i = 0; i < n; i++)
 		pt_printf("%3d %c %-18s %s  %s\n", list[i].index, list[i].unread ? '*' : ' ',
@@ -646,7 +659,9 @@ PT_PROGRAM(sms, "text messages\n"
 		ret = modem_sms_send(argv[2], text);
 		if (ret) {
 			pt_dprintf(PT_STDERR, "sms: not sent (%s)\n",
-				   ret == -EBUSY ? "the data link has the port" : "the network refused");
+				   ret == -EBUSY ? "the data link has the port" :
+				   ret == -ETIMEDOUT ? "no answer from the module" :
+				   "refused: no credit, or the SIM not ready");
 			return 1;
 		}
 		pt_printf("sent\n");

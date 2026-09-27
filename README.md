@@ -102,7 +102,10 @@ shell only starts when you first switch to its terminal. The status line
 on, the time, the next alarm, the battery and the network. Programs on
 different terminals run at the same time: music keeps playing while a
 game or a clip on another terminal makes its own sound, and the two are
-mixed.
+mixed. A game or a clip draws only while its own terminal is showing (a
+game pauses when you switch away), an alarm takes the screen from either
+until it is answered, and one stopped with `kill -STOP` gives its
+terminal back to the shell until `fg`.
 
 **Themes**: `theme list` shows ten -- amber and green CRTs, gruvbox,
 nord, dracula, solarized, catppuccin, tokyonight, rosepine and mono --
@@ -375,9 +378,12 @@ Be aware of these before relying on it:
   Grove cable drops reads. The driver rides out short runs of them.
 - **The parallel-bus panel on the Uno shield never worked** — the end of
   docs/WIRING.md says what was tried.
-- **The modem has never seen a module.** The AT layer, SMS and the PPP
-  data link are written and compile, and the no-module path is tested
-  (it says so and gets out of the way), but nothing has been plugged in.
+- **The modem is half tried.** A SIM800L (the ESP-800L board) answers:
+  it is found at any speed, its news is heard (restarts, the SIM, the
+  network), sleep mode and `modem off` work, and it has heard networks
+  at -81 dBm. On this board's wiring it loses its SIM once it starts to
+  transmit, which is its supply (docs/WIRING.md); SMS and PPP data have
+  not been sent over the air yet.
 - **MP3 decoding is not ours.** FLAC and WAV are (`codec/`); MP3 leans on
   minimp3 in `third_party/`, which says why.
 

@@ -203,7 +203,7 @@ def run_tests(b):
     step("wifi scan", any_of=[missing, "networks", "network", "radio is off"], timeout=20)
     step("ntp", any_of=[missing, "no network", ":"], timeout=15)
     step("modem", any_of=[missing, "no modem", "module"])
-    step("sms", any_of=[missing, "no modem", "message"])
+    step("sms", any_of=[missing, "no modem", "message", "SIM"])
     step("cat /proc/net", any_of=[missing, "No such file", "interface wlan0", "wifi: off"])
     step("screenshot /tmp/work/shot.bmp", any_of=[missing, "no screen", ".bmp"], timeout=20)
     step("nes /nope.nes", any_of=[missing, "no screen", "No such file", "not a ROM"])
