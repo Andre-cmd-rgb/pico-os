@@ -1233,7 +1233,13 @@ static void estimate(int mv, bool usb, bool step)
 		bat.rest = bat.smooth + bat.ma * bat.mohm / 1000;
 	else
 		bat.rest += (rest - bat.rest) >> SMOOTH_SHIFT;
-	bat.ma_avg = bat.reseed || !bat.ma_avg ? bat.ma : bat.ma_avg + (bat.ma - bat.ma_avg) / 24;
+	/*
+	 * The average `battery -v` shows starts again when a charger comes
+	 * or goes: carried over, it said "into it" beside "charger no" for
+	 * minutes after a charger turned out not to be one.
+	 */
+	bat.ma_avg = bat.reseed || !bat.ma_avg || bat.charger != was ? bat.ma :
+		     bat.ma_avg + (bat.ma - bat.ma_avg) / 24;
 	count_charge();
 	wear();
 	keep();
