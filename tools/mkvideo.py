@@ -28,7 +28,8 @@ What makes a clip look its best on the board, all on by default:
 
 The container is described in pico-os/bin/video.c. It interleaves each
 frame's picture and its sound, so the player reads straight through the
-file without seeking, which is what an SD card is good at.
+file without seeking, which is what an SD card is good at; an index of
+where each frame starts comes last, for jumping about in it.
 
 Needs ffmpeg and ffprobe on PATH.
 """
@@ -249,17 +250,25 @@ def main():
         count = min(len(s) for s in slices)
 
     per_frame = rate // args.fps * 2 if sound else 0
+    offsets = []
     with open(out_path, "wb") as f:
         f.write(struct.pack("<4sHHHHIIIHHI", MAGIC, w, h, args.fps,
                             1 if sound else 0, count, rate if sound else 0,
                             per_frame, args.slices, 0, 0))
         for i in range(count):
+            offsets.append(f.tell())
             for part in slices:
                 f.write(struct.pack("<I", len(part[i])))
                 f.write(part[i])
             if per_frame:
                 chunk = pcm[i * per_frame:(i + 1) * per_frame]
                 f.write(chunk + b"\0" * (per_frame - len(chunk)))
+        # The index, so that the player can jump: where each frame starts.
+        # The header says where it is, in what was a spare word.
+        index_at = f.tell()
+        f.write(b"PTVI" + struct.pack(f"<I{count}I", count, *offsets))
+        f.seek(28)
+        f.write(struct.pack("<I", index_at))
 
     size = os.path.getsize(out_path)
     secs = count / args.fps

@@ -11,9 +11,11 @@
  *	 0  "PTV2"
  *	 4  u16 width, u16 height, u16 frames a second, u16 flags (1: sound)
  *	12  u32 frames, u32 sample rate, u32 sound bytes per frame
- *	24  u16 slices, then six bytes kept back
+ *	24  u16 slices, two bytes kept back, u32 where the index is (0: none)
  *	32  each frame: for each slice u32 length and that many bytes of
  *	    JPEG, then the frame's sound
+ *	 .  the index, after the last frame: "PTVI", u32 frames, and a u32
+ *	    for each frame, where in the file it starts
  *
  * A frame is cut into horizontal slices, each its own small JPEG, because
  * this chip has two cores and one of them was watching. Slice 0 is decoded
@@ -33,6 +35,14 @@
  *
  * On another terminal the clip goes on playing its sound, as music would,
  * and decodes no pictures; back in front, it paints the last one again.
+ *
+ * Jumping about needs to know where each frame starts, and frames are all
+ * sizes. A clip made since the index was added says; for an older one the
+ * player notes where each frame it reads starts, and to go further than
+ * it has been it hops from one frame's lengths to the next without
+ * reading the pictures (`video -i` does that once and writes the index
+ * into the clip). Where a clip was left is kept in /etc/resume, frame and
+ * place in the file both, so going back to it is one seek.
  */
 #include <string.h>
 
@@ -65,6 +75,11 @@
 #define CLIP_LATENCY_MS	150
 #define MAX_AHEAD	12		/* frames read ahead, at most */
 #define SHOW_LEAD_US	8000		/* a frame takes most of a refresh to reach the glass */
+#define SECTOR		512
+#define RESUME		"/etc/resume"
+#define RESUME_KEEP	16		/* clips whose place is kept */
+#define RESUME_EDGE_S	10		/* this near the start or the end, none is */
+#define RESUME_ASK_MS	8000		/* then it goes on from there by itself */
 
 /*
  * A frame read ahead: its slices, its sound, and when that sound is heard
@@ -80,9 +95,15 @@ struct slot {
 };
 
 struct clip {
-	int	w, h, fps, frames;
-	int	rate, audio_bytes;	/* per frame; 0 when silent */
-	int	slices;
+	int	 w, h, fps, frames;
+	int	 rate, audio_bytes;	/* per frame; 0 when silent */
+	int	 slices;
+	uint32_t index_at;		/* where its index is, or 0 */
+};
+
+/* Where each frame starts in the file, as far as that is known; 0 is not known. */
+struct index {
+	uint32_t *off;			/* frames + 1: the last is the end */
 };
 
 /*
@@ -97,6 +118,7 @@ struct reader {
 	int	 fd;
 	uint8_t	*buf;
 	size_t	 len, at;
+	uint32_t base;			/* where in the file buf[0] came from */
 };
 
 static int reader_get(struct reader *r, void *dst, size_t n)
@@ -111,6 +133,7 @@ static int reader_get(struct reader *r, void *dst, size_t n)
 
 			if (got <= 0)
 				return -EIO;
+			r->base += r->len;
 			r->len = got;
 			r->at = 0;
 		}
@@ -121,6 +144,28 @@ static int reader_get(struct reader *r, void *dst, size_t n)
 		n -= k;
 	}
 	return 0;
+}
+
+static uint32_t reader_tell(const struct reader *r)
+{
+	return r->base + r->at;
+}
+
+/*
+ * Carries on from `off`. The read starts on the sector before it, so that
+ * the pieces after it are whole sectors again, as they are from the top.
+ */
+static int reader_seek(struct reader *r, uint32_t off)
+{
+	uint32_t from = off & ~(uint32_t)(SECTOR - 1);
+	int got;
+
+	if (pt_lseek(r->fd, from, SEEK_SET) < 0 || (got = pt_read(r->fd, r->buf, READ_SIZE)) < 0)
+		return -EIO;
+	r->base = from;
+	r->len = got;
+	r->at = off - from;
+	return r->at <= r->len ? 0 : -EIO;
 }
 
 /*
@@ -272,6 +317,7 @@ static int read_header(struct reader *r, struct clip *c)
 	c->rate = (int)le32(h + 16);
 	c->audio_bytes = le16(h + 10) & 1 ? (int)le32(h + 20) : 0;
 	c->slices = memcmp(h, "PTV1", 4) ? le16(h + 24) : 1;
+	c->index_at = memcmp(h, "PTV1", 4) ? le32(h + 28) : 0;
 	if (c->w <= 0 || c->h <= 0 || c->fps <= 0 || c->fps > 120 || c->frames < 0 ||
 	    c->audio_bytes < 0 || c->audio_bytes > 1 << 16 || c->audio_bytes & 1)
 		return -EINVAL;
@@ -330,6 +376,218 @@ static int read_frame(struct reader *r, const struct clip *c, struct slot *f)
 	return 0;
 }
 
+static int read_all(int fd, void *buf, size_t n)
+{
+	for (size_t done = 0; done < n;) {
+		int got = pt_read(fd, (uint8_t *)buf + done, n - done);
+
+		if (got <= 0)
+			return -EIO;
+		done += got;
+	}
+	return 0;
+}
+
+/*
+ * The index: the clip's own if it has one, or else only frame 0, the rest
+ * noted as frames are read or passed over. The file is left where the
+ * reader expects it.
+ */
+static int index_open(struct reader *r, const struct clip *c, struct index *x)
+{
+	uint8_t head[8];
+
+	if (!(x->off = pt_calloc((size_t)c->frames + 1, sizeof(*x->off))))
+		return -ENOMEM;
+	x->off[0] = HEADER;
+	if (!c->index_at || !c->frames)
+		return 0;
+	if (pt_lseek(r->fd, c->index_at, SEEK_SET) < 0 || read_all(r->fd, head, 8) ||
+	    memcmp(head, "PTVI", 4) || le32(head + 4) != (uint32_t)c->frames ||
+	    read_all(r->fd, x->off, (size_t)c->frames * 4) || x->off[0] != HEADER) {
+		memset(x->off, 0, ((size_t)c->frames + 1) * sizeof(*x->off));
+		x->off[0] = HEADER;
+	} else {
+		x->off[c->frames] = c->index_at;	/* it follows the last frame */
+	}
+	return pt_lseek(r->fd, r->base + r->len, SEEK_SET) < 0 ? -EIO : 0;
+}
+
+/* Onward by `n`: within what has been read, or by reading on from there. */
+static int reader_skip(struct reader *r, uint32_t n)
+{
+	if (n <= r->len - r->at) {
+		r->at += n;
+		return 0;
+	}
+	return reader_seek(r, reader_tell(r) + n);
+}
+
+/*
+ * Goes to frame `t`, from the nearest frame before it whose place is
+ * known, hopping from each frame's lengths to the next's. The hops go
+ * through the reader's 64 KB pieces and only ever forward: a small read
+ * and a seek per frame cost 10 ms each, because FAT finds a place behind
+ * the one it is at by walking the file's clusters from the start.
+ * Returns the frame it got to, which is short of `t` if the file is.
+ */
+static int seek_to(struct reader *r, const struct clip *c, struct index *x, int t)
+{
+	int k = t;
+
+	while (k > 0 && !x->off[k])
+		k--;
+	if (k < t && reader_seek(r, x->off[k]))
+		return -EIO;
+	for (; k < t && !pt_interrupted(); k++) {
+		uint8_t len[4];
+		int s;
+
+		for (s = 0; s < c->slices; s++)
+			if (reader_get(r, len, 4) || le32(len) > MAX_FRAME ||
+			    reader_skip(r, le32(len)))
+				break;
+		if (s < c->slices || reader_skip(r, c->audio_bytes))
+			break;
+		x->off[k + 1] = reader_tell(r);
+	}
+	/* the file may have been moved under the reader (frame_at) */
+	return reader_seek(r, x->off[k]) ? -EIO : k;
+}
+
+/* Whether a frame's first slice starts at `off`: its length, and a JPEG. */
+static bool frame_at(int fd, uint32_t off)
+{
+	uint8_t head[6];
+
+	return pt_lseek(fd, off, SEEK_SET) >= 0 && !read_all(fd, head, 6) &&
+	       le32(head) <= MAX_FRAME && head[4] == 0xff && head[5] == 0xd8;
+}
+
+/* video -i: every frame's place found, and written into the clip. */
+static int index_write(struct reader *r, const struct clip *c, struct index *x)
+{
+	uint8_t head[8] = { 'P', 'T', 'V', 'I' }, at[4];
+	uint32_t end;
+	int ret;
+
+	if (c->index_at && x->off[c->frames])
+		return -EEXIST;
+	if ((ret = seek_to(r, c, x, c->frames)) < 0)
+		return ret;
+	if (ret != c->frames)
+		return pt_interrupted() ? -EINTR : -EIO;
+	end = x->off[c->frames];
+	memcpy(head + 4, &(uint32_t){ c->frames }, 4);
+	memcpy(at, &end, 4);
+	/* the index first, then the header that points at it */
+	if (pt_lseek(r->fd, end, SEEK_SET) < 0 || (ret = write_all(r->fd, (const char *)head, 8)) ||
+	    (ret = write_all(r->fd, (const char *)x->off, (size_t)c->frames * 4)))
+		return ret < 0 ? ret : -EIO;
+	if (pt_lseek(r->fd, 28, SEEK_SET) < 0 || (ret = write_all(r->fd, (const char *)at, 4)))
+		return ret < 0 ? ret : -EIO;
+	return 0;
+}
+
+/*
+ * /etc/resume, a line a clip, the last left first: the frame it was left
+ * at, where that frame starts, how many frames the clip has (a clip made
+ * again under the same name is not the same clip), and its name.
+ */
+static bool resume_get(const char *name, const struct clip *c, int *frame, uint32_t *off)
+{
+	struct lines l;
+	char *line;
+	size_t len;
+	bool found = false;
+	int fd = pt_open(RESUME, O_RDONLY);
+
+	if (fd < 0)
+		return false;
+	lines_init(&l, fd);
+	while (!found && (line = lines_next(&l, &len))) {
+		unsigned long f, o, n;
+		int used = 0;
+
+		if (len && line[len - 1] == '\n')
+			line[len - 1] = '\0';
+		if (sscanf(line, "%lu %lu %lu %n", &f, &o, &n, &used) == 3 && used &&
+		    !strcmp(line + used, name) && n == (unsigned long)c->frames &&
+		    f < n && o >= HEADER) {
+			*frame = (int)f;
+			*off = (uint32_t)o;
+			found = true;
+		}
+	}
+	lines_free(&l);
+	pt_close(fd);
+	return found;
+}
+
+/* Keeps where a clip was left, or with frame < 0 forgets it. */
+static void resume_put(const char *name, const struct clip *c, int frame, uint32_t off)
+{
+	size_t cap = RESUME_KEEP * (PT_PATH_MAX + 40), n = 0;
+	char *out = pt_malloc(cap), *line;
+	struct lines l;
+	int fd, kept = 0;
+	size_t len;
+
+	if (!out)
+		return;
+	if (frame >= 0)
+		n = snprintf(out, cap, "%d %lu %d %s\n", frame, (unsigned long)off, c->frames,
+			     name);
+	if ((fd = pt_open(RESUME, O_RDONLY)) >= 0) {
+		lines_init(&l, fd);
+		while ((line = lines_next(&l, &len)) && kept < RESUME_KEEP - 1) {
+			unsigned long f, o, k;
+			int used = 0;
+			char *nl = len && line[len - 1] == '\n' ? &line[len - 1] : NULL;
+
+			if (nl)
+				*nl = '\0';
+			if (sscanf(line, "%lu %lu %lu %n", &f, &o, &k, &used) != 3 || !used ||
+			    !strcmp(line + used, name) || n + strlen(line) + 2 > cap)
+				continue;
+			n += snprintf(out + n, cap - n, "%s\n", line);
+			kept++;
+		}
+		lines_free(&l);
+		pt_close(fd);
+	}
+	if ((fd = pt_open(RESUME ".new", O_WRONLY | O_CREAT | O_TRUNC)) >= 0) {
+		int err = write_all(fd, out, n);
+
+		pt_close(fd);
+		if (err || pt_rename(RESUME ".new", RESUME))
+			pt_unlink(RESUME ".new");
+	}
+	pt_free(out);
+}
+
+/*
+ * The frame a key goes to from frame `i`: the arrows ten seconds and a
+ * minute, the digits a tenth of the way through each. -1 for other keys.
+ */
+static int seek_key(int key, int i, const struct clip *c)
+{
+	int step;
+
+	switch (key) {
+	case PT_KEY_RIGHT:	step = 10; break;
+	case PT_KEY_LEFT:	step = -10; break;
+	case PT_KEY_UP:		step = 60; break;
+	case PT_KEY_DOWN:	step = -60; break;
+	default:
+		if (key >= '0' && key <= '9')
+			return (int)((int64_t)c->frames * (key - '0') / 10);
+		return -1;
+	}
+	i += step * c->fps;
+	return i < 0 ? 0 : i >= c->frames ? c->frames - 1 : i;
+}
+
 /* Sleeps until `t` on the microsecond clock, or until a signal. */
 static void wait_until(int64_t t)
 {
@@ -382,6 +640,13 @@ static void clock_text(char *out, size_t size, int seconds)
 		snprintf(out, size, "%d:%02d", seconds / 60, seconds % 60);
 }
 
+static void bar(const char *line)
+{
+	if (vt_screen_begin())
+		vt_bar_line(lcd_height() - vt_line_height(), line);
+	vt_screen_end();
+}
+
 /*
  * Paused: a line along the bottom, in the status line's colours, saying
  * where in the clip this is -- the time, and a bar filled that far --
@@ -408,17 +673,30 @@ static void pause_bar(const struct clip *clip, int frame)
 	for (int i = 0; i < width && n + 4 < sizeof(line); i++)
 		n += snprintf(line + n, sizeof(line) - n, "%s", i < done ? "\u2588" : "\u00b7");
 	snprintf(line + n, sizeof(line) - n, "%s", right);
-	if (vt_screen_begin())
-		vt_bar_line(lcd_height() - vt_line_height(), line);
-	vt_screen_end();
+	bar(line);
+}
+
+/* A question or a note on the bottom line, over the picture. */
+static void bar_at(const char *what, int seconds, const char *after)
+{
+	char at[16], line[96];
+
+	clock_text(at, sizeof(at), seconds);
+	snprintf(line, sizeof(line), " %s %s%s", what, at, after);
+	bar(line);
 }
 
 PT_COMPLETE(video, ": <file:.ptv>\n")
 
 PT_PROGRAM_STACK(video, 8, "play a clip\n"
-		 "usage: video [clip.ptv]\n"
+		 "usage: video [clip.ptv]    video -i clip.ptv\n"
 		 "With no file, what is in ~/video is offered as a list.\n"
-		 "Space pauses, q or Esc stops, s saves a copy of the screen.\n"
+		 "Space pauses, q or Esc stops, s saves the screen.\n"
+		 "Left/right go 10 s back or on, up/down a minute,\n"
+		 "0-9 a tenth of the way in each. A clip goes on from\n"
+		 "where it was left, unless 0 is pressed at the start.\n"
+		 "-i  write an index into an older clip, so that\n"
+		 "    jumping in it is quick (new clips have one)\n"
 		 "Make a clip on the PC: make video FILE=something.mp4")
 {
 	static const char *const exts[] = { ".ptv", NULL };
@@ -427,23 +705,26 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	struct blitter blit = { 0 };
 	struct reader rd = { .fd = -1 };
 	struct clip clip = { 0 };
+	struct index idx = { 0 };
 	struct slot *slots = NULL;
 	char chosen[PT_PATH_MAX], shot[PT_PATH_MAX];
-	const char *path = argc > 1 ? argv[1] : chosen;
+	bool index_only = argc > 1 && !strcmp(argv[1], "-i");
+	const char *path = argc > 1 + index_only ? argv[1 + index_only] : chosen, *name;
 	void *native_mem[2] = { NULL, NULL };
 	uint8_t *native[2] = { NULL, NULL };
 	int ret, was_min = 0, was_max = 0, next = 0, ahead = 0, nread = 0, end;
-	int shown_n = 0, dropped = 0, frame_us, buffer_us = 0;
+	int shown_n = 0, dropped = 0, frame_us, buffer_us = 0, i = 0, from = 0, target;
 	int64_t read_us = 0, decode_us = 0, blit_us = 0, started;
 	int64_t decode_guess = 0;
-	bool keys = true, screen = false;
+	bool keys = true, screen = false, played = false, step = false;
+	uint32_t from_off = 0;
 	unsigned gen = vt_screen_gen();
 
-	if (argc > 2) {
-		pt_dprintf(PT_STDERR, "usage: video [clip.ptv]\n");
+	if (argc > 2 + index_only || (index_only && argc != 3)) {
+		pt_dprintf(PT_STDERR, "usage: video [clip.ptv]    video -i clip.ptv\n");
 		return 2;
 	}
-	if (!vt_has_display()) {
+	if (!index_only && !vt_has_display()) {
 		pt_dprintf(PT_STDERR, "video: there is no screen\n");
 		return 1;
 	}
@@ -455,14 +736,24 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			return fail("video", VIDEO, ret);
 	}
 
-	if ((rd.fd = pt_open(path, O_RDONLY)) < 0)
+	name = path_basename(path);	/* what /etc/resume knows it by */
+	if ((rd.fd = pt_open(path, index_only ? O_RDWR : O_RDONLY)) < 0)
 		return fail("video", path, rd.fd);
 	if (!(rd.buf = pt_malloc(READ_SIZE))) {
 		ret = -ENOMEM;
 		goto done;
 	}
-	if ((ret = read_header(&rd, &clip)))
+	if ((ret = read_header(&rd, &clip)) || (ret = index_open(&rd, &clip, &idx)))
 		goto done;
+	if (index_only) {
+		pt_printf("%s: finding where its %d frames start\n", path, clip.frames);
+		if ((ret = index_write(&rd, &clip, &idx)) == -EEXIST)
+			pt_printf("%s has an index already\n", path);
+		else if (!ret)
+			pt_printf("%s: indexed\n", path);
+		ret = ret == -EEXIST ? 0 : ret;
+		goto done;
+	}
 	/* Two pages: one being sent to the panel while the next is
 	 * decoded into the other. */
 	if ((ret = canvas_open(&page[0])) || (ret = canvas_open(&page[1])))
@@ -552,10 +843,36 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	 * end the program under them.
 	 */
 	pt_sigcatch(true);
-	started = esp_timer_get_time();
-	end = clip.frames;
 
-	for (int i = 0; i < end && !pt_interrupted(); i++) {
+	/* Left part of the way through last time: on from there, unless 0. */
+	if (resume_get(name, &clip, &from, &from_off) && frame_at(rd.fd, from_off)) {
+		bar_at("go on from", from / clip.fps, "?  enter: yes  0: from the start");
+		switch (pt_readkey_timeout(PT_STDIN, RESUME_ASK_MS)) {
+		case 'q':
+		case PT_KEY_ESC:
+		case PT_CTRL('c'):
+			goto done;
+		case '0':
+		case PT_KEY_HOME:
+			from = 0;
+			break;
+		default:			/* Enter, anything else, or nobody there */
+			idx.off[from] = from_off;
+			break;
+		}
+		repaint(&page[0]);
+	} else {
+		from = 0;
+	}
+	if ((ret = seek_to(&rd, &clip, &idx, from)) < 0)
+		goto done;
+	from = nread = ret;
+	ret = 0;
+	started = esp_timer_get_time() - (int64_t)from * frame_us;
+	end = clip.frames;
+	played = true;
+
+	for (i = from; i < end && !pt_interrupted(); i++) {
 		int64_t mark, now;
 		struct canvas *into = &page[next];
 		struct slot *f;
@@ -570,10 +887,12 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 		 * paces a clip that nobody is watching.
 		 */
 		while (nread < end && nread - i < ahead &&
-		       (nread == i || !clip.audio_bytes || audio_queued_us() + frame_us <= buffer_us)) {
+		       (nread == i || (!step && (!clip.audio_bytes ||
+						 audio_queued_us() + frame_us <= buffer_us)))) {
 			struct slot *r = &slots[nread % ahead];
 
 			mark = esp_timer_get_time();
+			idx.off[nread] = reader_tell(&rd);
 			if ((ret = read_frame(&rd, &clip, r))) {
 				if (ret == -ENOMEM)
 					goto done;
@@ -581,9 +900,12 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 				end = nread;		/* a short file: stop, not an error */
 				break;
 			}
+			idx.off[nread + 1] = reader_tell(&rd);
 			now = esp_timer_get_time();
 			read_us += now - mark;
-			if (clip.audio_bytes) {
+			if (step) {
+				r->play_at = now;	/* shown at once, and heard never */
+			} else if (clip.audio_bytes) {
 				r->play_at = now + audio_queued_us();
 				audio_write(r->pcm, clip.audio_bytes, 1);
 			} else {
@@ -596,7 +918,7 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 		f = &slots[i % ahead];
 		hidden = !vt_screen_front();
 		/* not ready before half its sound is gone: let it go */
-		late = esp_timer_get_time() + decode_guess > f->play_at + frame_us / 2;
+		late = !step && esp_timer_get_time() + decode_guess > f->play_at + frame_us / 2;
 
 		if (!hidden && gen != vt_screen_gen()) {
 			gen = vt_screen_gen();
@@ -659,12 +981,24 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 		/* No keyboard -- a clip started from a script -- is not a
 		 * reason to stop, only a reason to stop asking. */
 		key = keys ? pt_readkey_timeout(PT_STDIN, 0) : PT_KEY_NONE;
+		if (step) {		/* a jump made while paused: paused again there */
+			step = false;
+			/* unless a key came while it was finding the frame */
+			if ((target = seek_key(key, i, &clip)) >= 0) {
+				step = true;
+				goto jump;
+			}
+			if (key != 'q' && key != PT_KEY_ESC && key != PT_CTRL('c'))
+				key = ' ';
+		}
 		if (key == PT_KEY_EOF || key == PT_KEY_ERROR) {
 			keys = false;
 			continue;
 		}
 		if (key == 'q' || key == PT_KEY_ESC || key == PT_CTRL('c'))
 			break;
+		if ((target = seek_key(key, i, &clip)) >= 0)
+			goto jump;
 		if (key == 's' || key == ' ') {
 			int64_t paused = esp_timer_get_time();
 
@@ -689,6 +1023,10 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 				if (key == 'q' || key == PT_KEY_ESC || key == PT_CTRL('c') ||
 				    key == PT_KEY_EOF || key == PT_KEY_ERROR)
 					break;
+				if ((target = seek_key(key, i, &clip)) >= 0) {
+					step = true;	/* to show where it went */
+					goto jump;
+				}
 			} else {
 				save_shot(shown, shot, sizeof(shot));
 			}
@@ -696,8 +1034,33 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			requeue(slots, ahead, i + 1, nread, &clip, esp_timer_get_time() - paused);
 			started += esp_timer_get_time() - paused;
 		}
+		continue;
+jump:
+		/* Everything read ahead is let go, and its sound with it. */
+		blit_finish(&blit);
+		if (clip.audio_bytes)
+			audio_discard();
+		if (!idx.off[target]) {		/* not been there: a hop at a time */
+			bar_at("finding", target / clip.fps, "...");
+			if ((ret = seek_to(&rd, &clip, &idx, target)) >= 0)
+				repaint(shown);
+		} else {
+			ret = seek_to(&rd, &clip, &idx, target);
+		}
+		if (ret < 0)
+			goto done;
+		i = ret - 1;			/* and the loop's i++ makes it that frame */
+		nread = ret;
+		ret = 0;
+		started = esp_timer_get_time() - (int64_t)nread * frame_us;
 	}
 	ret = 0;
+	/* Where it was left, for next time; played to the end, or all but, is done with. */
+	if (played && i < end && i / clip.fps >= RESUME_EDGE_S &&
+	    (clip.frames - i) / clip.fps >= RESUME_EDGE_S && idx.off[i])
+		resume_put(name, &clip, i, idx.off[i]);
+	else if (played)
+		resume_put(name, &clip, -1, 0);
 done:
 	blit_finish(&blit);		/* the frame on its way to the panel first */
 	task_stop(&blit.task, &blit.go, &blit.done, &blit.quit);
@@ -718,6 +1081,7 @@ done:
 		pt_free(slots[k].pcm);
 	}
 	pt_free(slots);
+	pt_free(idx.off);
 	pt_free(rd.buf);
 	pt_close(rd.fd);
 	if (screen) {
@@ -727,6 +1091,8 @@ done:
 	}
 	if (ret)
 		return fail("video", path, ret);
+	if (index_only)
+		return 0;
 
 	int seen = shown_n + dropped;
 
