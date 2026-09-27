@@ -462,6 +462,12 @@ int modem_info(struct modem_info *out)
 			unquote(out->operator);
 		}
 	}
+	/* +CBC: 0,52,3818 -- the last is its supply in millivolts */
+	if (!modem_at("AT+CBC", reply, sizeof(reply), 2000) && (p = field(reply, "+CBC: "))) {
+		const char *mv = strrchr(p, ',');
+
+		out->supply_mv = mv ? atoi(mv + 1) : 0;
+	}
 	if (!modem_at("AT+CREG?", reply, sizeof(reply), 2000) && (p = field(reply, "+CREG: "))) {
 		int state = 0;
 

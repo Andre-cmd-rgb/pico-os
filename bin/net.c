@@ -407,12 +407,23 @@ static int modem_status(void)
 	if (!modem_radio_on())
 		pt_printf("radio    off (`modem on` turns it on)\n");
 	pt_printf("imei     %s\n", *m.imei ? m.imei : "-");
+	struct battery_status bat;
+	bool cell = !battery_status(&bat) && bat.state != BATTERY_NONE && bat.mv > 0;
+	/* at rest it draws next to nothing: a loss now is far more at 2 A */
+	int lost = cell && m.supply_mv ? bat.mv - m.supply_mv : 0;
+
 	pt_printf("sim      %s\n", m.sim);
-	/* what to do about it, where there is something to do */
-	if (!strcmp(m.sim, "not inserted") || !strcmp(m.sim, "not working") ||
-	    !strcmp(m.sim, "not readable"))
+	/*
+	 * What to do about it, where there is something to do. A SIM read at
+	 * the start and lost once the module transmits is its supply sagging,
+	 * not the card: that is said first when the supply is short.
+	 */
+	if (lost > 150 && (!strcmp(m.sim, "not readable") || !strcmp(m.sim, "not ready")))
+		pt_printf("         lost when it transmits: its supply (below)\n");
+	else if (!strcmp(m.sim, "not inserted") || !strcmp(m.sim, "not working") ||
+		 !strcmp(m.sim, "not readable"))
 		pt_printf("         gold contacts to the board, pushed right\n"
-			  "         in; an adapter can shift off them\n");
+			  "         in; `modem restart` reads it again\n");
 	else if (!strcmp(m.sim, "PIN needed") || !strcmp(m.sim, "PUK needed"))
 		pt_printf("         turn its PIN off in a phone first\n");
 	else if (!strcmp(m.sim, "not ready") || !strcmp(m.sim, "busy"))
@@ -427,6 +438,15 @@ static int modem_status(void)
 		pt_printf(" (%d dBm)", m.rssi);
 	pt_printf("\n");
 	pt_printf("data     %s\n", m.data ? "up" : "down");
+	if (m.supply_mv) {
+		pt_printf("supply   %d.%02d V", m.supply_mv / 1000, m.supply_mv % 1000 / 10);
+		if (cell)
+			pt_printf(", the cell %d.%02d V", bat.mv / 1000, bat.mv % 1000 / 10);
+		pt_printf("\n");
+		if (lost > 150)
+			pt_printf("warning  %d mV lost on the way at rest: a diode\n"
+				  "         or a thin wire (WIRING.md)\n", lost);
+	}
 	if (m.restarts >= 2)
 		pt_printf("warning  it restarted %d times in a minute: its\n"
 			  "         supply sags when it transmits (WIRING.md)\n", m.restarts);

@@ -228,6 +228,7 @@ struct modem_info {
 	int	rssi;			/* dBm, 0 when the module cannot tell */
 	int	reg;			/* +CREG's state, -1 unknown: modem_network_text() */
 	int	restarts;		/* in the last minute: more than one is its supply */
+	int	supply_mv;		/* what it says it gets (AT+CBC), 0 unknown */
 	bool	registered, roaming, data;
 };
 
