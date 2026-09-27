@@ -66,6 +66,9 @@ static SemaphoreHandle_t ussd_done;
 static int64_t		 last_call_us;
 static int64_t		 started_at[4];		/* its last restarts, for restarts_lately() */
 static bool		 sleepy;		/* AT+CSCLK=2 taken: it sleeps when let be */
+static volatile bool	 want_sleep;		/* registered: sleep mode may go on */
+static int64_t		 slept_at;		/* when it went on, to see what it did */
+static volatile bool	 sleep_went_wrong;	/* the SIM lost after it: undo it */
 static int64_t		 setup_at;		/* after a restart: set it up from then */
 static volatile bool	 booted;		/* "SMS Ready": it has finished starting */
 static int64_t		 warned_at;		/* the restart warning, at most every 10 min */
@@ -76,6 +79,7 @@ static int64_t		 last_io_us;		/* the port last used, for wake() */
 static struct {
 	char	apn[64], user[32], pass[32];
 	bool	radio_off;
+	bool	no_sleep;		/* sleep mode cost the SIM once: never again */
 } conf;
 
 static int text_mode(void);
@@ -228,10 +232,16 @@ static void news(const char *line)
 		if (state != reg && restarts_lately() < 2 && state != 0)
 			klog("modem: network: %s", modem_network_text(state));
 		reg = state;
+		if (state == 1 || state == 5)
+			want_sleep = true;
 	} else if (!strncmp(line, "+CPIN:", 6)) {
 		if (strcmp(sim_state, line + 7) && restarts_lately() < 2)
 			klog("modem: the SIM card: %s", line + 7);
 		strlcpy(sim_state, line + 7, sizeof(sim_state));
+		/* lost within a minute of the module starting to sleep */
+		if (sleepy && strcmp(line + 7, "READY") &&
+		    esp_timer_get_time() - slept_at < 60000000)
+			sleep_went_wrong = true;
 	} else if (!strncmp(line, "+CUSD:", 6)) {
 		strlcpy(ussd, line + 6, sizeof(ussd));
 		xSemaphoreGive(ussd_done);
@@ -293,10 +303,13 @@ static void drain(void)
  * Asleep -- AT+CSCLK=2, after five seconds with nothing on the port -- a
  * SIM800 loses the byte that wakes it and needs a moment before it
  * listens: a throwaway AT first, whose answer, if any, drain() takes.
+ * Whenever the port has been quiet, whatever the driver thinks of its
+ * sleep: a module left asleep by an earlier start slept through every
+ * command of a driver that thought it awake.
  */
 static void wake(void)
 {
-	if (!sleepy || esp_timer_get_time() - last_io_us < 4000000)
+	if (esp_timer_get_time() - last_io_us < 4000000)
 		return;
 	uart_write_bytes(PORT, "AT\r", 3);
 	vTaskDelay(pdMS_TO_TICKS(120));
@@ -746,6 +759,7 @@ static void conf_load(void)
 	strlcpy(conf.user, CONFIG_PT_MODEM_USER, sizeof(conf.user));
 	strlcpy(conf.pass, CONFIG_PT_MODEM_PASSWORD, sizeof(conf.pass));
 	conf.radio_off = false;
+	conf.no_sleep = false;
 	if (!mount_resolve("/etc/modem", path, sizeof(path)) || !(f = fopen(path, "r")))
 		return;
 	while (fgets(line, sizeof(line), f)) {
@@ -758,6 +772,8 @@ static void conf_load(void)
 			strlcpy(conf.pass, line + 9, sizeof(conf.pass));
 		else if (!strcmp(line, "radio off"))
 			conf.radio_off = true;
+		else if (!strcmp(line, "sleep off"))
+			conf.no_sleep = true;
 	}
 	fclose(f);
 }
@@ -779,6 +795,8 @@ static int conf_save(void)
 		fprintf(f, "user %s\npassword %s\n", conf.user, conf.pass);
 	if (conf.radio_off)
 		fprintf(f, "radio off\n");
+	if (conf.no_sleep)
+		fprintf(f, "sleep off\n");
 	if (fclose(f))
 		err = -EIO;
 	if (!err && rename(tmp, path))
@@ -933,8 +951,8 @@ int modem_data(bool on)
 		put("+++", 3);
 		vTaskDelay(pdMS_TO_TICKS(1000));
 		modem_at("ATH", NULL, 0, 5000);
-		if (sleepy)
-			modem_at("AT+CSCLK=2", NULL, 0, 2000);
+		if (sleepy && modem_at("AT+CSCLK=2", NULL, 0, 2000))
+			sleepy = false;
 		return 0;
 	}
 	if (ppp)
@@ -1068,7 +1086,8 @@ static bool answer_at(void)
  */
 static void setup(void)
 {
-	char cmd[32];
+	char cmd[32], reply[64];
+	const char *p;
 
 	modem_at("ATE0", NULL, 0, 1000);
 	modem_at("AT+CMEE=1", NULL, 0, 1000);
@@ -1076,16 +1095,26 @@ static void setup(void)
 	modem_at("AT+CNMI=2,1,0,0,0", NULL, 0, 2000);
 	modem_at("AT+CLIP=1", NULL, 0, 2000);
 	modem_at("AT+CREG=1", NULL, 0, 2000);
+	/* awake, and kept so in its profile: AT&W below keeps what is set */
+	modem_at("AT+CSCLK=0", NULL, 0, 2000);
+	sleepy = false;
 	snprintf(cmd, sizeof(cmd), "AT+IPR=%d", baud);
 	if (!modem_at(cmd, NULL, 0, 2000))
 		modem_at("AT&W", NULL, 0, 2000);
-	/* as /etc/modem has it; at the next start after `poweroff`, on again */
-	modem_at(conf.radio_off ? "AT+CFUN=0" : "AT+CFUN=1", NULL, 0, 10000);
 	/*
-	 * Asleep whenever the port is quiet: about 1.5 mA registered instead
-	 * of 20, and a message or a call still wakes it. Not while PPP runs.
+	 * The radio as /etc/modem has it (on again at the start after a
+	 * `poweroff`), told only if it is not so already: the SIM is started
+	 * over by a change of CFUN, and one was lost around such a start.
 	 */
-	sleepy = !data_mode && !modem_at("AT+CSCLK=2", NULL, 0, 2000);
+	if (!modem_at("AT+CFUN?", reply, sizeof(reply), 2000) && (p = field(reply, "+CFUN: "))) {
+		int fun = atoi(p);
+
+		if (conf.radio_off && fun != 0)
+			modem_at("AT+CFUN=0", NULL, 0, 10000);
+		else if (!conf.radio_off && fun == 0)
+			modem_at("AT+CFUN=1", NULL, 0, 10000);
+	}
+	/* sleep mode goes on once it is registered: after_news() */
 }
 
 /* What it is, once it answers. */
@@ -1159,6 +1188,30 @@ static void after_news(void)
 		setup();
 		if (!*model)
 			identify();
+	}
+	/*
+	 * Asleep whenever the port is quiet: about 1.5 mA registered instead
+	 * of 20, and a message or a call still wakes it. Only once it is on
+	 * the network, not while PPP runs, and not again if the SIM was lost
+	 * soon after it went to sleep once: then it is woken, kept awake (in
+	 * /etc/modem), and started over to read the SIM again.
+	 */
+	if (present && sleep_went_wrong) {
+		sleep_went_wrong = false;
+		sleepy = false;
+		conf.no_sleep = true;
+		conf_save();
+		klog("modem: the SIM was lost soon after the module began to sleep; "
+		     "it stays awake from now on");
+		modem_at("AT+CSCLK=0", NULL, 0, 2000);
+		modem_at("AT+CFUN=1,1", NULL, 0, 2000);		/* started over */
+	}
+	if (present && want_sleep && !sleepy && !conf.no_sleep && !data_mode && !resetup) {
+		want_sleep = false;
+		if (!modem_at("AT+CSCLK=2", NULL, 0, 2000)) {
+			sleepy = true;
+			slept_at = esp_timer_get_time();
+		}
 	}
 	if (present && (index = new_sms) >= 0) {
 		new_sms = -1;
