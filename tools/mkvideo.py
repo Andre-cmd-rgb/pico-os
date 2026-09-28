@@ -291,7 +291,10 @@ def main():
             if args.loud is not None:
                 # One pass, so it rides the level as it goes: dialogue
                 # comes up, explosions come down, for a speaker this size.
-                cmd += ["-af", f"loudnorm=I={args.loud}:LRA=9:TP=-1.5"]
+                # Measured on the mono it plays, not on a 5.1 mix, whose
+                # downmix comes out several dB under the target.
+                cmd += ["-af", "aformat=channel_layouts=mono,"
+                               f"loudnorm=I={args.loud}:LRA=9:TP=-1.5"]
             cmd += ["-ar", str(rate), "-f", "s16le", audio]
         run(cmd)
         slices = []
