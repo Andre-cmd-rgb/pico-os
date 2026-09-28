@@ -24,6 +24,8 @@ What makes a clip look its best on the board, all on by default:
   taking 30 from 25 repeats every fifth frame, and motion judders;
 - JPEG quality 3 (a 320x240 frame decodes in about 14 ms, so 30 fps
   still has room), scaled with lanczos and lightly sharpened;
+- 30% more colour than the source (--saturation 1 for none): the
+  board's TN panel washes colour out;
 - sound at 44.1 kHz, where it used to be 16.
 
 The container is described in pico-os/bin/video.c. It interleaves each
@@ -160,6 +162,8 @@ def main():
                          "than letterbox")
     ap.add_argument("--sharpen", type=float, default=0.5,
                     help="unsharp mask after scaling down, 0 for none")
+    ap.add_argument("--saturation", type=float, default=1.3,
+                    help="colour, 1.0 as the source has it (the TN panel wants more)")
     ap.add_argument("--size", default=DEFAULT_SIZE,
                     help="WxH of the screen the picture has to fit. Only the "
                          "picture is stored, not bars round it: the player "
@@ -206,6 +210,9 @@ def main():
     # matrix, where a web video is limited range BT.709 -- left to ffmpeg's
     # defaults the greens and reds came out a little wrong. A light unsharp
     # mask afterwards puts back the edge that shrinking a picture softens.
+    # And 30% more colour: the Freenove's TN panel washes colour out, and of
+    # the source as it is, 1.3 and 1.3 with more contrast side by side on
+    # the panel, the user chose 1.3.
     screen_w, screen_h = w, h
     w, h = picture_size(cw, ch, screen_w, screen_h, args.fill)
     if args.fill:
@@ -215,6 +222,7 @@ def main():
         scale = f"scale={w}:{h}:flags=lanczos:out_color_matrix=bt601:out_range=full"
     picture = (f"fps={args.fps},{crop + ',' if crop else ''}{scale},"
                f"{f'unsharp=5:5:{args.sharpen}:5:5:0,' if args.sharpen else ''}"
+               f"{f'eq=saturation={args.saturation},' if args.saturation != 1 else ''}"
                f"format=yuvj420p")
 
     # One pass makes every strip and the sound. Each strip is its own little
