@@ -567,7 +567,8 @@ static int modem_scan(void)
 	return 0;
 }
 
-PT_COMPLETE(modem, ": on off restart data at scan network apn ussd\ndata: on off\n"
+PT_COMPLETE(modem, ": on off restart diagnose data at scan network apn ussd\n"
+	    "data: on off\n"
 	    "network: auto tim vodafone windtre iliad\n")
 
 PT_PROGRAM(modem, "talk to the mobile module\n"
@@ -577,6 +578,7 @@ PT_PROGRAM(modem, "talk to the mobile module\n"
 	   "  on, off    its radio (off: 0.7 mA, nothing heard);\n"
 	   "             kept across restarts\n"
 	   "  restart    start it over: it reads its SIM again\n"
+	   "  diagnose   start it over with every line logged\n"
 	   "  scan       the networks the module can hear\n"
 	   "  network X  try that one first: tim, vodafone,\n"
 	   "             windtre, iliad, a code; auto for any\n"
@@ -636,6 +638,15 @@ PT_PROGRAM(modem, "talk to the mobile module\n"
 		return modem_scan();
 	if (argc == 3 && !strcmp(argv[1], "network"))
 		return modem_network_cmd(argv[2]);
+	if (argc == 2 && !strcmp(argv[1], "diagnose")) {
+		if (find_modem("modem"))
+			return 1;
+		pt_printf("restarting the module with every line logged, for a\n"
+			  "minute: `dmesg | grep modem` has it all\n");
+		ret = modem_diagnose(60);
+		pt_printf("done\n");
+		return ret ? fail("modem", "diagnose", ret) : 0;
+	}
 	if (argc == 2 && !strcmp(argv[1], "restart")) {
 		/* it restarts before it answers: a short wait is all there is */
 		modem_at("AT+CFUN=1,1", reply, sizeof(reply), 1000);

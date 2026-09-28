@@ -74,6 +74,14 @@ static volatile bool	 booted;		/* "SMS Ready": it has finished starting */
 static int64_t		 warned_at;		/* the restart warning, at most every 10 min */
 static char		 sim_state[24];		/* +CPIN's last word, logged when it changes */
 static int64_t		 last_io_us;		/* the port last used, for wake() */
+/*
+ * `modem diagnose`: every line to and from the module logged, and at the
+ * moments that matter -- the module started, the SIM read, the network's
+ * refusal -- the questions asked at once (after_news()), with the driver's
+ * own setting-up kept out of the way. Nothing is ever written to the SIM.
+ */
+static volatile bool	 trace, diagnosing;
+static volatile bool	 diag_started, diag_ready, diag_refused;
 
 /* /etc/modem, kept by the driver: `modem apn`, `modem off` */
 static struct {
@@ -85,6 +93,7 @@ static struct {
 
 static int text_mode(void);
 static int read_sms(int index, struct sms *out, bool peek);
+static void put(const void *data, size_t n);
 static char		 model[48], imei[20];
 static ppp_pcb		*ppp;
 static struct netif	 ppp_netif;
@@ -110,12 +119,16 @@ static bool read_line(char *out, size_t size, int timeout_ms)
 			if (!len)
 				continue;	/* the blank line between answers */
 			out[len] = '\0';
+			if (trace)
+				klog("modem< %s", out);
 			return true;
 		}
 		if (len + 1 < size)
 			out[len++] = c;
 	}
 	out[len] = '\0';
+	if (trace && len)
+		klog("modem< %s (no line end)", out);
 	return len > 0;
 }
 
@@ -226,8 +239,16 @@ static void news(const char *line)
 		snprintf(note, sizeof(note), "\u260e %s", *who ? who : "a call");
 		vt_note(note);
 	} else if (!strncmp(line, "+CREG:", 6)) {
+		/*
+		 * News is "+CREG: 3", or with AT+CREG=2 "+CREG: 3,"lac","ci"":
+		 * the state first. An answer to a query that came late is
+		 * "+CREG: 1,3[,...]", the state second.
+		 */
 		const char *p = strchr(line, ',');
-		int state = atoi(p ? p + 1 : line + 6);
+		int state = atoi(p && p[1] != '"' ? p + 1 : line + 6);
+
+		if (diagnosing && state == 3)
+			diag_refused = true;
 
 		/* a module restarting over and over says the same every time */
 		if (state != reg && restarts_lately() < 2 && state != 0)
@@ -236,6 +257,8 @@ static void news(const char *line)
 		if (state == 1 || state == 5)
 			want_sleep = true;
 	} else if (!strncmp(line, "+CPIN:", 6)) {
+		if (diagnosing && !strcmp(line + 7, "READY"))
+			diag_ready = true;
 		if (strcmp(sim_state, line + 7) && restarts_lately() < 2)
 			klog("modem: the SIM card: %s", line + 7);
 		strlcpy(sim_state, line + 7, sizeof(sim_state));
@@ -264,6 +287,8 @@ static void news(const char *line)
 		booted = false;
 		setup_at = now + 8000000;
 		resetup = heard_start = true;
+		if (diagnosing)
+			diag_started = true;
 	} else if (!strncmp(line, "UNDER-VOLTAGE", 13) || !strncmp(line, "OVER-VOLTAGE", 12)) {
 		klog("modem: %s: the module's supply is %s", line,
 		     line[0] == 'U' ? "sagging (it needs 3.4 V, with 2 A to spare)"
@@ -312,7 +337,7 @@ static void wake(void)
 {
 	if (esp_timer_get_time() - last_io_us < 4000000)
 		return;
-	uart_write_bytes(PORT, "AT\r", 3);
+	put("AT\r", 3);
 	vTaskDelay(pdMS_TO_TICKS(120));
 	late_ms = late_ms > 200 ? late_ms : 200;
 }
@@ -322,6 +347,9 @@ static void put(const void *data, size_t n)
 {
 	uart_write_bytes(PORT, data, n);
 	last_io_us = esp_timer_get_time();
+	if (trace && n > 2)			/* not the line endings on their own */
+		klog("modem> %.*s", (int)strcspn(data, "\r\n") < (int)n ?
+		     (int)strcspn(data, "\r\n") : (int)n, (const char *)data);
 }
 
 /*
@@ -1221,6 +1249,69 @@ static void probe_task(void *arg)
 }
 
 /*
+ * The questions `modem diagnose` asks, each as soon as its moment comes.
+ * Their answers are in the log with everything else the module says.
+ * All reads: the SIM's IMSI (6F07), its last location (6F7E: TMSI, the
+ * area, whether the update was allowed) and its forbidden networks (6F7B).
+ */
+static void diagnose_step(void)
+{
+	static const char *const verbose[] = {
+		"ATE0", "AT+CMEE=2", "AT+CREG=2", "AT+CGREG=2", "AT+CENG=1",
+	};
+	static const char *const sim[] = {
+		"AT+CIMI", "AT+CRSM=176,28423,0,0,9", "AT+CRSM=176,28542,0,0,11",
+		"AT+CRSM=176,28539,0,0,12", "AT+CENG?",
+	};
+	static const char *const refused[] = {
+		"AT+CEER", "AT+CENG?", "AT+CREG?", "AT+CPIN?",
+	};
+
+	if (diag_started) {
+		diag_started = false;
+		for (size_t i = 0; i < sizeof(verbose) / sizeof(verbose[0]); i++)
+			modem_at(verbose[i], NULL, 0, 2000);
+	}
+	if (diag_ready) {
+		diag_ready = false;
+		for (size_t i = 0; i < sizeof(sim) / sizeof(sim[0]); i++)
+			modem_at(sim[i], NULL, 0, 3000);
+	}
+	if (diag_refused) {
+		diag_refused = false;
+		for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++)
+			modem_at(refused[i], NULL, 0, 3000);
+	}
+}
+
+/*
+ * `modem diagnose`: verbose errors and registration, every line logged
+ * from before the module starts over, and the questions above at their
+ * moments; `seconds` later back to normal, the module set up again.
+ */
+int modem_diagnose(int seconds)
+{
+	if (!present)
+		return -ENODEV;
+	trace = true;
+	diagnosing = true;
+	klog("modem: diagnosis: every line to and from the module logged for %d s", seconds);
+	modem_at("AT+CMEE=2", NULL, 0, 2000);
+	modem_at("AT+CREG=2", NULL, 0, 2000);
+	modem_at("AT+CGREG=2", NULL, 0, 2000);
+	modem_at("AT+CFUN=1,1", NULL, 0, 1000);		/* it restarts before it answers */
+	for (int i = 0; i < seconds * 10 && !pt_interrupted(); i++)
+		vTaskDelay(pdMS_TO_TICKS(100));
+	diagnosing = false;
+	trace = false;
+	modem_at("AT+CENG=0", NULL, 0, 2000);
+	resetup = true;
+	setup_at = 0;
+	klog("modem: diagnosis over");
+	return 0;
+}
+
+/*
  * What news leaves to be done, with the port let go: set a restarted
  * module up again, look for one that has just started, and say who a
  * message that came is from (read without taking its unread mark).
@@ -1234,6 +1325,10 @@ static void after_news(void)
 	if (!present && heard_start) {
 		heard_start = false;
 		modem_probe();
+	}
+	if (diagnosing) {
+		diagnose_step();
+		return;
 	}
 	if (present && resetup && (booted || esp_timer_get_time() >= setup_at)) {
 		resetup = false;
@@ -1353,6 +1448,7 @@ int  modem_apn(char *apn, size_t asz, char *user, size_t usz, char *pass, size_t
 int  modem_set_apn(const char *apn, const char *user, const char *pass) { return -ENODEV; }
 int  modem_radio(bool on) { return -ENODEV; }
 int  modem_network(const char *plmn) { return -ENODEV; }
+int  modem_diagnose(int seconds) { return -ENODEV; }
 bool modem_radio_on(void) { return false; }
 void modem_power_off(void) { }
 int  modem_load_ma(void) { return 0; }
