@@ -131,7 +131,8 @@ SOUND
               checksum, for testing
   rec FILE    record from the microphone
   beep [hz] [ms]
-  volume [0-100]
+  volume [0-100] [speaker|jack|auto]
+              auto: the jack while a plug is in
 
 NETWORK
   wifi              what the radio is doing

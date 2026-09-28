@@ -417,7 +417,9 @@ static void idle_load(void)
 			audio_set_volume(v);
 			if (v)
 				unmuted = v;
-		}
+		} else if (!strncmp(line, "output ", 7))
+			audio_set_output(!strncmp(line + 7, "jack", 4) ? AUDIO_OUT_JACK :
+					 AUDIO_OUT_SPEAKER);
 	}
 	fclose(f);
 }
@@ -441,6 +443,8 @@ static int save_config(void)
 		fprintf(f, "backlight %d\n", light);	/* never a dark screen at boot */
 	if (audio_present())
 		fprintf(f, "volume %d\n", audio_volume());
+	if (audio_has_jack() && audio_output() != AUDIO_OUT_AUTO)
+		fprintf(f, "output %s\n", audio_output() == AUDIO_OUT_JACK ? "jack" : "speaker");
 	return fclose(f) ? -EIO : 0;
 }
 

@@ -787,6 +787,45 @@ config PT_AUDIO_VOLUME
 	range 0 100
 	default 60
 
+config PT_AUDIO_JACK
+	bool "Headphone jack: a PCM5102A DAC on its own I2S pins"
+	default n
+	help
+	  A second output, fed the same mix as the speaker, on the chip's
+	  other I2S controller. Sound goes to one or the other: to the jack
+	  while a plug is in, if the socket has a switch wired to the
+	  detect pin, or wherever `volume jack` or `volume speaker` sends
+	  it. The PCM5102A's SCK pin goes to ground (it makes its own
+	  clock from BCK), FMT, FLT and DEMP to ground, XSMT to 3.3 V.
+
+if PT_AUDIO_JACK
+
+config PT_AUDIO_JACK_BCLK
+	int "Jack I2S BCLK (the DAC's BCK)"
+	default 2
+config PT_AUDIO_JACK_WS
+	int "Jack I2S word select (the DAC's LCK)"
+	default 3
+config PT_AUDIO_JACK_DOUT
+	int "Jack I2S data (the DAC's DIN)"
+	default 14
+config PT_AUDIO_JACK_DETECT
+	int "The socket's plug switch (-1 if none)"
+	range -1 54 if IDF_TARGET_ESP32P4
+	range -1 48
+	default 21
+
+config PT_AUDIO_JACK_DETECT_LOW
+	bool "A plug going in pulls that pin low"
+	depends on PT_AUDIO_JACK_DETECT >= 0
+	default y
+	help
+	  A socket whose switch connects the pin to ground while a plug is
+	  in (the pin has a pull-up). Off for one that connects it to 3.3 V
+	  (with a pull-down).
+
+endif
+
 endif
 
 endmenu

@@ -184,6 +184,14 @@ bool	audio_mic_alc(void);
 ssize_t	audio_write(const void *pcm, size_t bytes, int channels);	/* 16-bit */
 ssize_t	audio_read(void *pcm, size_t bytes);				/* 16-bit mono */
 
+/* The headphone jack, where there is one: sound goes there or to the speaker. */
+enum audio_out { AUDIO_OUT_AUTO, AUDIO_OUT_SPEAKER, AUDIO_OUT_JACK };
+bool	audio_has_jack(void);
+bool	audio_jack_switch(void);	/* the socket says when a plug is in */
+int	audio_set_output(enum audio_out out);	/* -ENODEV with no jack */
+enum audio_out audio_output(void);	/* as it was asked for */
+bool	audio_to_jack(void);		/* where sound would go now */
+
 /* net/wifi.c */
 struct wifi_ap {
 	char	ssid[33];

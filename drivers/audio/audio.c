@@ -29,7 +29,17 @@
  * While an alarm rings the speaker is its task's: what anything else
  * plays goes nowhere, at the pace it would have played, so a song does
  * not garble the alarm and its player does not notice.
+ *
+ * A headphone jack, where there is one, is a DAC of its own (a PCM5102A)
+ * on a second I2S controller, fed the same mix. Sound goes to the jack
+ * or to the speaker, never both: to the jack while a plug is in, if a
+ * switch in the socket says so, or wherever `volume jack` or `volume
+ * speaker` sent it. The DAC has no volume of its own and plays at line
+ * level, so the jack's volume is a multiplier here, on the codec's
+ * curve. Its clock stops with the speaker's, and the DAC powers itself
+ * down when it does.
  */
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -87,6 +97,21 @@ static int			alc_max;
  */
 static volatile bool		tx_on, rx_on, amp_on, alc_on, codec_on = true;
 static TaskHandle_t		owner;		/* an alarm ringing */
+static int			tx_rate = CONFIG_PT_AUDIO_RATE;	/* the codec's clock */
+
+#if CONFIG_PT_AUDIO_JACK
+#define PLUG_BLOCKS	24		/* a plug seen for this long: ~100 ms or more */
+
+static i2s_chan_handle_t	jack;		/* the headphone DAC's controller */
+static bool			jack_failed;	/* no controller was left for it */
+static volatile bool		jack_on;	/* its clock running */
+static int			jack_rate;
+static enum audio_out		out_wanted = AUDIO_OUT_AUTO;
+static bool			to_jack;	/* where the last block went */
+static bool			plugged;	/* the socket's switch, settled */
+static int			plug_seen;	/* blocks it has said otherwise */
+static int32_t			jack_gain = 32768;	/* the volume: 32768 is 0 dB */
+#endif
 
 static void audio_dev_register(void);
 
@@ -134,6 +159,10 @@ bool audio_present(void)
 /* Playing or recording: the transmitter's clock runs for both. */
 bool audio_busy(void)
 {
+#if CONFIG_PT_AUDIO_JACK
+	if (jack_on)
+		return true;
+#endif
 	return tx_on;
 }
 
@@ -158,7 +187,7 @@ static int clock_at(int hz)
 	i2s_std_clk_config_t clk = I2S_STD_CLK_DEFAULT_CONFIG(hz);
 
 	codec_wake();
-	if (tx_on && hz == rate)
+	if (tx_on && hz == tx_rate)
 		return 0;
 	if (tx_on && rx_on)
 		return 0;			/* a recording has the clock */
@@ -166,18 +195,169 @@ static int clock_at(int hz)
 		i2s_channel_disable(tx);
 		tx_on = false;
 	}
-	if (hz != rate) {
+	if (hz != tx_rate) {
 		clk.mclk_multiple = MCLK_MULTIPLE;
 		if (i2s_channel_reconfig_std_clock(tx, &clk) ||
 		    (rx && i2s_channel_reconfig_std_clock(rx, &clk)) || es8311_set_rate(hz))
 			return -EIO;
-		rate = hz;
+		tx_rate = hz;
 	}
 	if (i2s_channel_enable(tx))
 		return -EIO;
 	tx_on = true;
 	return 0;
 }
+
+#if CONFIG_PT_AUDIO_JACK
+
+/*
+ * 16-bit samples in 32-bit slots: the bit clock at 64 times the rate,
+ * from which the PCM5102A makes its own system clock (its SCK pin tied
+ * low), with room to spare at 8 kHz.
+ */
+static i2s_std_config_t jack_config(int hz)
+{
+	i2s_std_config_t cfg = {
+		.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(hz),
+		.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
+							       I2S_SLOT_MODE_STEREO),
+		.gpio_cfg = {
+			.mclk = I2S_GPIO_UNUSED,
+			.bclk = CONFIG_PT_AUDIO_JACK_BCLK,
+			.ws = CONFIG_PT_AUDIO_JACK_WS,
+			.dout = CONFIG_PT_AUDIO_JACK_DOUT,
+			.din = I2S_GPIO_UNUSED,
+		},
+	};
+
+	cfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
+	return cfg;
+}
+
+static int jack_clock_at(int hz)
+{
+	i2s_std_clk_config_t clk = I2S_STD_CLK_DEFAULT_CONFIG(hz);
+
+	if (jack_on && hz == jack_rate)
+		return 0;
+	if (jack_on) {
+		i2s_channel_disable(jack);
+		jack_on = false;
+	}
+	if (hz != jack_rate) {
+		if (i2s_channel_reconfig_std_clock(jack, &clk))
+			return -EIO;
+		jack_rate = hz;
+	}
+	if (i2s_channel_enable(jack))
+		return -EIO;
+	jack_on = true;
+	return 0;
+}
+
+/* The jack's clock stopped, once what the DMA holds has played. Locked. */
+static void jack_stop(void)
+{
+	if (!jack_on)
+		return;
+	vTaskDelay(pdMS_TO_TICKS(DMA_BUFS * BLOCK * 1000 / rate + 10));
+	i2s_channel_disable(jack);
+	jack_on = false;
+}
+
+/* The socket's switch now, if it has one. */
+static bool plug_now(void)
+{
+#if CONFIG_PT_AUDIO_JACK_DETECT >= 0
+#ifdef CONFIG_PT_AUDIO_JACK_DETECT_LOW
+	return gpio_get_level(CONFIG_PT_AUDIO_JACK_DETECT) == 0;
+#else
+	return gpio_get_level(CONFIG_PT_AUDIO_JACK_DETECT) == 1;
+#endif
+#else
+	return false;
+#endif
+}
+
+/*
+ * Whether this block goes to the jack. The switch is believed once it
+ * has said the same for PLUG_BLOCKS blocks, since a plug going in makes
+ * and breaks the contact a few times; `fresh` takes it at its word, as
+ * the output starts after a silence.
+ */
+static bool jack_wanted(bool fresh)
+{
+	bool now = plug_now();
+
+	if (jack_failed)
+		return false;
+	if (fresh || now == plugged) {
+		plugged = now;
+		plug_seen = 0;
+	} else if (++plug_seen >= PLUG_BLOCKS) {
+		plugged = now;
+		plug_seen = 0;
+		klog("audio: headphones %s", now ? "in" : "out");
+	}
+	if (out_wanted == AUDIO_OUT_JACK)
+		return true;
+	return out_wanted == AUDIO_OUT_AUTO && plugged;
+}
+
+/*
+ * Its own controller, taken the first time sound goes to the jack: its
+ * DMA buffers are internal RAM, which a machine whose jack is never
+ * used should not give up. Locked. Without one, the speaker only.
+ */
+static int jack_open(void)
+{
+	i2s_chan_config_t cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
+	i2s_std_config_t std = jack_config(rate);
+
+	cfg.auto_clear = true;
+	cfg.dma_desc_num = DMA_BUFS;
+	cfg.dma_frame_num = BLOCK;
+	/* "controller 0 has been occupied" is the search for a free one */
+	esp_log_level_set("i2s_platform", ESP_LOG_ERROR);
+	if (i2s_new_channel(&cfg, &jack, NULL) || i2s_channel_init_std_mode(jack, &std)) {
+		klog("audio: no I2S controller left for the headphone jack");
+		if (jack)
+			i2s_del_channel(jack);
+		jack = NULL;
+		jack_failed = true;
+		return -EIO;
+	}
+	jack_rate = rate;
+	return 0;
+}
+
+/* The socket's switch, from the start: whether a plug is in is asked before a sound. */
+static void jack_init(void)
+{
+#if CONFIG_PT_AUDIO_JACK_DETECT >= 0
+	gpio_config_t io = {
+		.pin_bit_mask = 1ULL << CONFIG_PT_AUDIO_JACK_DETECT,
+		.mode = GPIO_MODE_INPUT,
+#ifdef CONFIG_PT_AUDIO_JACK_DETECT_LOW
+		.pull_up_en = GPIO_PULLUP_ENABLE,
+#else
+		.pull_down_en = GPIO_PULLDOWN_ENABLE,
+#endif
+	};
+
+	gpio_config(&io);
+	plugged = plug_now();
+#endif
+}
+
+/* The codec's curve (0.4 dB a percent, 100 is 0 dB), as a multiplier. */
+static void jack_volume(int percent)
+{
+	jack_gain = percent <= 0 ? 0 :
+		    (int32_t)(32768.0f * powf(10.0f, -(100 - percent) * 0.4f / 20.0f));
+}
+
+#endif /* CONFIG_PT_AUDIO_JACK */
 
 /* Silence: the DMA played out, the amplifier off, the clock stopped. Locked. */
 static void output_stop(void)
@@ -191,6 +371,9 @@ static void output_stop(void)
 		i2s_channel_disable(tx);
 		tx_on = false;
 	}
+#if CONFIG_PT_AUDIO_JACK
+	jack_stop();
+#endif
 }
 
 /* ------------------------------------------------------------ streams */
@@ -330,6 +513,10 @@ static void mixer_task(void *arg)
 	int32_t *acc = heap_caps_malloc(BLOCK * sizeof(*acc), MALLOC_CAP_INTERNAL);
 	int16_t *wire = heap_caps_malloc(BLOCK * 2 * sizeof(*wire), MALLOC_CAP_INTERNAL);
 	int quiet = QUIET_BLOCKS, blocks = 0;
+	i2s_chan_handle_t out = tx;
+#if CONFIG_PT_AUDIO_JACK
+	bool fresh = true;		/* the first block after a silence */
+#endif
 
 	if (!acc || !wire) {
 		klog("audio: no memory for the mixer");
@@ -357,12 +544,49 @@ static void mixer_task(void *arg)
 				ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 			}
 			quiet = 0;
+#if CONFIG_PT_AUDIO_JACK
+			fresh = true;
+#endif
 			continue;
 		}
-		if (clock_at(hz ? hz : rate)) {
-			xSemaphoreGive(lock);
-			vTaskDelay(pdMS_TO_TICKS(100));
-			continue;
+#if CONFIG_PT_AUDIO_JACK
+		if (jack_wanted(fresh) != to_jack) {
+			/* from one output to the other: the one left goes quiet */
+			to_jack = !to_jack;
+			if (to_jack && !jack && jack_open()) {
+				to_jack = false;
+			} else if (to_jack) {
+				amp(false);
+				if (tx_on && !rx_on) {
+					i2s_channel_disable(tx);
+					tx_on = false;
+				}
+			} else {
+				jack_stop();
+			}
+		}
+		fresh = false;
+		if (to_jack) {
+			/* the codec's clock only for a recording, the mix at the jack's */
+			if (!hz)
+				hz = rate;
+			if (jack_clock_at(hz) || (rx_on && clock_at(tx_rate))) {
+				xSemaphoreGive(lock);
+				vTaskDelay(pdMS_TO_TICKS(100));
+				continue;
+			}
+			rate = hz;
+			out = jack;
+		} else
+#endif
+		{
+			if (clock_at(hz ? hz : rate)) {
+				xSemaphoreGive(lock);
+				vTaskDelay(pdMS_TO_TICKS(100));
+				continue;
+			}
+			rate = tx_rate;
+			out = tx;
 		}
 		memset(acc, 0, BLOCK * sizeof(*acc));
 		for (int i = 0; i < MAX_STREAMS; i++) {
@@ -386,13 +610,17 @@ static void mixer_task(void *arg)
 		for (int k = 0; k < BLOCK; k++) {
 			int v = acc[k] > 32767 ? 32767 : acc[k] < -32768 ? -32768 : acc[k];
 
+#if CONFIG_PT_AUDIO_JACK
+			if (out == jack)
+				v = (int)(((int64_t)v * jack_gain) >> 15);
+#endif
 			wire[2 * k] = wire[2 * k + 1] = (int16_t)v;
 		}
 		quiet = sound ? 0 : quiet + 1;
-		if (sound && !amp_on)
+		if (sound && !amp_on && out == tx)
 			amp(true);
 		/* the DMA takes it when it has room: this is what paces everything */
-		i2s_channel_write(tx, wire, BLOCK * 2 * sizeof(*wire), &wrote, pdMS_TO_TICKS(500));
+		i2s_channel_write(out, wire, BLOCK * 2 * sizeof(*wire), &wrote, pdMS_TO_TICKS(500));
 	}
 }
 
@@ -438,11 +666,66 @@ int audio_init(void)
 #ifdef CONFIG_PT_AUDIO_MIC_ALC
 	audio_set_mic_alc(true, CONFIG_PT_AUDIO_MIC_ALC_MAX_DB);
 #endif
+#if CONFIG_PT_AUDIO_JACK
+	jack_init();
+	jack_volume(volume);
+#endif
 	xTaskCreatePinnedToCore(mixer_task, "kaudio", 3072, NULL, 18, &mixer, 0);
 	audio_dev_register();
-	klog("audio: %d Hz mono, %s; streams mixed", rate,
-	     duplex ? "speaker and microphone" : "speaker only");
+	klog("audio: %d Hz mono, %s%s; streams mixed", rate,
+	     duplex ? "speaker and microphone" : "speaker only",
+	     audio_has_jack() ? ", headphone jack" : "");
 	return 0;
+}
+
+bool audio_has_jack(void)
+{
+#if CONFIG_PT_AUDIO_JACK
+	return !jack_failed;
+#else
+	return false;
+#endif
+}
+
+bool audio_jack_switch(void)
+{
+#if CONFIG_PT_AUDIO_JACK && CONFIG_PT_AUDIO_JACK_DETECT >= 0
+	return !jack_failed;
+#else
+	return false;
+#endif
+}
+
+int audio_set_output(enum audio_out o)
+{
+#if CONFIG_PT_AUDIO_JACK
+	if (jack_failed)
+		return -ENODEV;
+	out_wanted = o;
+	xTaskNotifyGive(mixer);
+	return 0;
+#else
+	return -ENODEV;
+#endif
+}
+
+enum audio_out audio_output(void)
+{
+#if CONFIG_PT_AUDIO_JACK
+	return jack_failed ? AUDIO_OUT_SPEAKER : out_wanted;
+#else
+	return AUDIO_OUT_SPEAKER;
+#endif
+}
+
+bool audio_to_jack(void)
+{
+#if CONFIG_PT_AUDIO_JACK
+	return !jack_failed &&
+	       (out_wanted == AUDIO_OUT_JACK || (out_wanted == AUDIO_OUT_AUTO && plug_now()));
+#else
+	return false;
+#endif
 }
 
 void audio_claim(bool mine)
@@ -586,6 +869,9 @@ int audio_set_volume(int percent)
 	if (percent < 0 || percent > 100)
 		return -EINVAL;
 	volume = percent;
+#if CONFIG_PT_AUDIO_JACK
+	jack_volume(percent);
+#endif
 	return codec_on ? es8311_set_volume(percent) : 0;
 }
 
@@ -780,5 +1066,10 @@ int audio_set_mic_alc(bool on, int max_db) { return -ENODEV; }
 bool audio_mic_alc(void) { return false; }
 ssize_t audio_write(const void *pcm, size_t bytes, int channels) { return -ENODEV; }
 ssize_t audio_read(void *pcm, size_t bytes) { return -ENODEV; }
+bool audio_has_jack(void) { return false; }
+bool audio_jack_switch(void) { return false; }
+int audio_set_output(enum audio_out out) { return -ENODEV; }
+enum audio_out audio_output(void) { return AUDIO_OUT_SPEAKER; }
+bool audio_to_jack(void) { return false; }
 
 #endif

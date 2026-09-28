@@ -123,6 +123,39 @@ $ cat tune.raw > /dev/audio    # raw 16-bit mono at the current rate
 from it and you get the microphone. The microphone is the small hole next to
 the codec; `rec -g 30` turns its gain up (0 to 42 dB).
 
+### Headphone jack
+
+The board has no jack, but the four free pins of the IO header (below)
+take one: a PCM5102A DAC module (the purple GY-PCM5102, about 2 euro)
+on the chip's second I2S controller, fed the same mix as the speaker.
+`CONFIG_PT_AUDIO_JACK` in menuconfig (Device drivers, Sound) turns the
+driver on; the pins are the defaults there. Written without the module
+to hand: the first one on the desk is the test.
+
+| PCM5102A | Board | |
+|---|---|---|
+| VIN | 3V3 | the module makes its own 1.8 V and analogue supply |
+| GND | GND | |
+| BCK | GPIO 2 | the bit clock, 64 times the rate |
+| LCK | GPIO 3 | left/right |
+| DIN | GPIO 14 | the samples |
+| SCK | GND | no master clock: the DAC makes its own from BCK (on the purple board, bridge the SCK pads on the back) |
+| FLT, DEMP, FMT | GND | normal filter, no de-emphasis, I2S (pads H1L, H2L and H4L on the back to L) |
+| XSMT | 3V3 | not muted (pad H3L to H) |
+
+A socket with a switch says when a plug is in: wire the switch between
+**GPIO 21** and GND (it has a pull-up; `CONFIG_PT_AUDIO_JACK_DETECT_LOW`
+off for a switch to 3.3 V). Then sound goes to the headphones while a
+plug is in and back to the speaker when it comes out; without one,
+`volume jack` and `volume speaker` choose, and `/etc/power` keeps the
+choice. It is one or the other, never both, and the jack is mono like
+the rest of the sound here.
+
+The DAC plays at line level (2.1 V RMS at full scale), far too loud for
+earbuds, so the jack's volume is a multiplier on the codec's curve: 70%
+is about -12 dB. The module's own jack is fine for a first try; in the
+case a panel-mount socket with a switch wires to its L, R and GND.
+
 ### microSD card
 
 Straight into the slot, FAT32. It mounts on `/mnt/sd`, four bits wide.

@@ -346,23 +346,53 @@ PT_PROGRAM(beep, "play a tone\n"
 
 /* ------------------------------------------------------------ volume */
 
-PT_PROGRAM(volume, "show or set the speaker volume\n"
-	   "usage: volume [0-100]")
-{
-	char *end;
-	long percent = argc > 1 ? strtol(argv[1], &end, 10) : -1;
+static const char *const outputs[] = { "auto", "speaker", "jack" };
 
-	if (argc > 2 || (argc > 1 && (*end || percent < 0 || percent > 100))) {
-		pt_dprintf(PT_STDERR, "usage: volume [0-100]\n");
-		return 2;
+PT_COMPLETE(volume, ": speaker jack auto\n")
+
+PT_PROGRAM(volume, "show or set the volume, and where sound goes\n"
+	   "usage: volume [0-100] [speaker | jack | auto]\n"
+	   "With a headphone jack, speaker or jack sends all the\n"
+	   "sound there, and auto (the start) sends it to the\n"
+	   "jack while a plug is in, if the socket can tell.\n"
+	   "Both are kept in /etc/power.")
+{
+	long percent = -1;
+	int out = -1;
+
+	for (int i = 1; i < argc; i++) {
+		int k = 0;
+
+		while (k < 3 && strcmp(argv[i], outputs[k]))
+			k++;
+		if (k < 3 && out < 0) {
+			out = k;
+		} else if (k < 3 || percent >= 0 || parse_long(argv[i], &percent) ||
+			   percent < 0 || percent > 100) {
+			pt_dprintf(PT_STDERR, "usage: volume [0-100] [speaker | jack | auto]\n");
+			return 2;
+		}
 	}
 	if (!audio_present())
 		return no_codec("volume");
-	if (argc > 1) {
-		audio_set_volume(percent);
-		power_levels_changed();		/* kept in /etc/power */
+	if (out > 0 && !audio_has_jack()) {
+		pt_dprintf(PT_STDERR, "volume: there is no headphone jack (menuconfig:\n"
+			   "  Device drivers, Sound)\n");
+		return 1;
 	}
-	pt_printf("volume %d%%\n", audio_volume());
+	if (percent >= 0)
+		audio_set_volume((int)percent);
+	if (out >= 0 && audio_has_jack())
+		audio_set_output((enum audio_out)out);
+	if (percent >= 0 || out >= 0)
+		power_levels_changed();		/* kept in /etc/power */
+	if (!audio_has_jack())
+		pt_printf("volume %d%%\n", audio_volume());
+	else
+		pt_printf("volume %d%%, to the %s%s\n", audio_volume(),
+			  audio_to_jack() ? "jack" : "speaker",
+			  audio_output() != AUDIO_OUT_AUTO ? " (kept there)" :
+			  audio_jack_switch() ? " (auto: a plug says)" : "");
 	return 0;
 }
 
