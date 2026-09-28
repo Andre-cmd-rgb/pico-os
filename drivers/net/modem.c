@@ -80,8 +80,10 @@ static int64_t		 last_io_us;		/* the port last used, for wake() */
  * refusal -- the questions asked at once (after_news()), with the driver's
  * own setting-up kept out of the way. Nothing is ever written to the SIM.
  */
-static volatile bool	 trace, diagnosing;
+static volatile bool	 trace, diagnosing, diag_radio_off;
 static volatile bool	 diag_started, diag_ready, diag_refused;
+static volatile bool	 check_sim;		/* a SIM was read: is it one for 2G? */
+static bool		 sim_no_2g;		/* its 2G part lacks what 2G needs */
 
 /* /etc/modem, kept by the driver: `modem apn`, `modem off` */
 static struct {
@@ -259,6 +261,8 @@ static void news(const char *line)
 	} else if (!strncmp(line, "+CPIN:", 6)) {
 		if (diagnosing && !strcmp(line + 7, "READY"))
 			diag_ready = true;
+		if (!strcmp(line + 7, "READY"))
+			check_sim = true;
 		if (strcmp(sim_state, line + 7) && restarts_lately() < 2)
 			klog("modem: the SIM card: %s", line + 7);
 		strlcpy(sim_state, line + 7, sizeof(sim_state));
@@ -469,6 +473,7 @@ int modem_info(struct modem_info *out)
 	out->data = ppp_up;
 
 	out->restarts = restarts_lately();
+	out->no_2g = sim_no_2g;
 	/*
 	 * A module that does not answer the first question will not answer
 	 * the rest either -- it is restarting, most likely -- and four
@@ -1249,6 +1254,35 @@ static void probe_task(void *arg)
 }
 
 /*
+ * A card that is a USIM and nothing else keeps a 2G directory (DF_GSM)
+ * with the SIM's identity and last location in it, but not the files a
+ * 2G phone needs to use the network: the cipher key (EF_Kc, 6F20), the
+ * BCCH list, the phase. A phone reaches 2G through the USIM; a module
+ * that is 2G only (SIM800, SIM900) reads the SIM as ready, and as soon
+ * as its radio starts looks for those, finds nothing, and puts the SIM
+ * aside ("SIM wrong", CME 15) -- before any network has said anything.
+ * A Lyca SIM of 2026 did exactly that. So when a SIM is read, a 2G-only
+ * module is asked, read-only, whether EF_Kc is there, and `modem` says.
+ */
+static void check_2g_part(void)
+{
+	char reply[64];
+	const char *p;
+	int sw1 = 0, sw2 = 0;
+
+	if (!strstr(model, "SIM800") && !strstr(model, "SIM900"))
+		return;			/* a module that knows USIMs has no need of it */
+	if (modem_at("AT+CRSM=176,28448,0,0,9", reply, sizeof(reply), 3000) ||
+	    !(p = field(reply, "+CRSM: ")) || sscanf(p, "%d , %d", &sw1, &sw2) != 2)
+		return;
+	/* 6A82 or 9404: file not found */
+	sim_no_2g = (sw1 == 0x6a && sw2 == 0x82) || (sw1 == 0x94 && sw2 == 0x04);
+	if (sim_no_2g)
+		klog("modem: this SIM has no 2G part (no EF_Kc): a 2G module cannot use it "
+		     "on the network; a 4G module can");
+}
+
+/*
  * The questions `modem diagnose` asks, each as soon as its moment comes.
  * Their answers are in the log with everything else the module says.
  * All reads: the SIM's IMSI (6F07), its last location (6F7E: TMSI, the
@@ -1269,6 +1303,9 @@ static void diagnose_step(void)
 
 	if (diag_started) {
 		diag_started = false;
+		/* radio off before the SIM is read: the card's handshake alone */
+		if (diag_radio_off)
+			modem_at("AT+CFUN=4", NULL, 0, 5000);
 		for (size_t i = 0; i < sizeof(verbose) / sizeof(verbose[0]); i++)
 			modem_at(verbose[i], NULL, 0, 2000);
 	}
@@ -1289,22 +1326,35 @@ static void diagnose_step(void)
  * from before the module starts over, and the questions above at their
  * moments; `seconds` later back to normal, the module set up again.
  */
-int modem_diagnose(int seconds)
+int modem_diagnose(int seconds, bool radio_off)
 {
 	if (!present)
 		return -ENODEV;
 	trace = true;
 	diagnosing = true;
-	klog("modem: diagnosis: every line to and from the module logged for %d s", seconds);
+	diag_radio_off = false;
+	klog("modem: diagnosis: every line to and from the module logged for %d s%s", seconds,
+	     radio_off ? ", its radio off" : "");
 	modem_at("AT+CMEE=2", NULL, 0, 2000);
 	modem_at("AT+CREG=2", NULL, 0, 2000);
 	modem_at("AT+CGREG=2", NULL, 0, 2000);
-	modem_at("AT+CFUN=1,1", NULL, 0, 1000);		/* it restarts before it answers */
+	/*
+	 * Started over with its radio off (AT+CFUN=4,1) if it takes that;
+	 * this one's firmware may not, and then it is started over as usual
+	 * and its radio turned off the moment it says RDY, before its SIM.
+	 */
+	if (!radio_off || modem_at("AT+CFUN=4,1", NULL, 0, 1000) == -EIO) {
+		diag_radio_off = radio_off;
+		modem_at("AT+CFUN=1,1", NULL, 0, 1000);	/* it restarts before it answers */
+	}
 	for (int i = 0; i < seconds * 10 && !pt_interrupted(); i++)
 		vTaskDelay(pdMS_TO_TICKS(100));
 	diagnosing = false;
+	diag_radio_off = false;
 	trace = false;
 	modem_at("AT+CENG=0", NULL, 0, 2000);
+	if (radio_off)
+		modem_at("AT+CFUN=1", NULL, 0, 10000);	/* as it was */
 	resetup = true;
 	setup_at = 0;
 	klog("modem: diagnosis over");
@@ -1329,6 +1379,10 @@ static void after_news(void)
 	if (diagnosing) {
 		diagnose_step();
 		return;
+	}
+	if (present && check_sim) {
+		check_sim = false;
+		check_2g_part();
 	}
 	if (present && resetup && (booted || esp_timer_get_time() >= setup_at)) {
 		resetup = false;
@@ -1448,7 +1502,7 @@ int  modem_apn(char *apn, size_t asz, char *user, size_t usz, char *pass, size_t
 int  modem_set_apn(const char *apn, const char *user, const char *pass) { return -ENODEV; }
 int  modem_radio(bool on) { return -ENODEV; }
 int  modem_network(const char *plmn) { return -ENODEV; }
-int  modem_diagnose(int seconds) { return -ENODEV; }
+int  modem_diagnose(int seconds, bool radio_off) { return -ENODEV; }
 bool modem_radio_on(void) { return false; }
 void modem_power_off(void) { }
 int  modem_load_ma(void) { return 0; }

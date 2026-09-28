@@ -226,6 +226,17 @@ Screw the antenna on before it is powered. It takes a micro-SIM, whose
 PIN must be turned off first (in a phone): the driver does not enter
 one. It is **2G only** -- GSM and GPRS -- so it registers only where the
 network still runs 2G; mobile data works, at tens of kilobits a second.
+
+**It needs a SIM with a 2G part**, and many new SIMs have none: they are
+USIMs only, whose 2G directory holds the SIM's identity but not the
+files a 2G phone needs on the network (the cipher key EF_Kc, the BCCH
+list, the phase). A phone reaches 2G through the USIM and works; the
+SIM800 reads such a SIM as ready, then, three seconds after its radio
+starts, puts it aside as "SIM wrong" (CME 15) without the network saying
+anything. A Lyca SIM of 2026 was one. `modem` says so when it sees it
+("it has no 2G part"); `modem diagnose radio-off` shows the SIM staying
+ready for as long as the radio stays off. A 4G module (A7670E) reads
+USIMs.
 It draws 15 to 20 mA all the time, the board asleep or not, which
 empties the cell in about a week: a switch in its VCC wire is worth it.
 The blue "SIM800L v2" board has a regulator of its own and wants 5 V at

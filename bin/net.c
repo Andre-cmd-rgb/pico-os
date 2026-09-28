@@ -418,7 +418,10 @@ static int modem_status(void)
 	 * the start and lost once the module transmits is its supply sagging,
 	 * not the card: that is said first when the supply is short.
 	 */
-	if (lost > 150 && (!strcmp(m.sim, "not readable") || !strcmp(m.sim, "not ready")))
+	if (m.no_2g)
+		pt_printf("         it has no 2G part (a USIM only): this 2G\n"
+			  "         module cannot use it; a 4G one can\n");
+	else if (lost > 150 && (!strcmp(m.sim, "not readable") || !strcmp(m.sim, "not ready")))
 		pt_printf("         lost when it transmits: its supply (below)\n");
 	else if (!strcmp(m.sim, "not inserted") || !strcmp(m.sim, "not working") ||
 		 !strcmp(m.sim, "not readable"))
@@ -568,7 +571,7 @@ static int modem_scan(void)
 }
 
 PT_COMPLETE(modem, ": on off restart diagnose data at scan network apn ussd\n"
-	    "data: on off\n"
+	    "data: on off\ndiagnose: radio-off\n"
 	    "network: auto tim vodafone windtre iliad\n")
 
 PT_PROGRAM(modem, "talk to the mobile module\n"
@@ -579,6 +582,7 @@ PT_PROGRAM(modem, "talk to the mobile module\n"
 	   "             kept across restarts\n"
 	   "  restart    start it over: it reads its SIM again\n"
 	   "  diagnose   start it over with every line logged\n"
+	   "             (radio-off: and its radio off)\n"
 	   "  scan       the networks the module can hear\n"
 	   "  network X  try that one first: tim, vodafone,\n"
 	   "             windtre, iliad, a code; auto for any\n"
@@ -638,12 +642,13 @@ PT_PROGRAM(modem, "talk to the mobile module\n"
 		return modem_scan();
 	if (argc == 3 && !strcmp(argv[1], "network"))
 		return modem_network_cmd(argv[2]);
-	if (argc == 2 && !strcmp(argv[1], "diagnose")) {
+	if ((argc == 2 || (argc == 3 && !strcmp(argv[2], "radio-off"))) &&
+	    !strcmp(argv[1], "diagnose")) {
 		if (find_modem("modem"))
 			return 1;
 		pt_printf("restarting the module with every line logged, for a\n"
 			  "minute: `dmesg | grep modem` has it all\n");
-		ret = modem_diagnose(60);
+		ret = modem_diagnose(60, argc == 3);
 		pt_printf("done\n");
 		return ret ? fail("modem", "diagnose", ret) : 0;
 	}
