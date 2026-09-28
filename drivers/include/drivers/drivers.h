@@ -431,6 +431,7 @@ void	power_levels_changed(void);
 void	power_keep_screen(bool on);	/* moving pictures: never dim (counted) */
 void	power_suspend_soon(void);	/* from a driver's task: the idle task does it */
 void	power_doze(void);		/* dark now, everything kept, until a key */
+int	power_set_sleep(bool on);	/* `power sleep`: light sleep when idle, dark or not */
 enum screen_state power_screen(void);
 int	power_poll_ms(int ms);		/* a polling period, longer while it is dark */
 

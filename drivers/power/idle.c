@@ -71,7 +71,8 @@ static volatile enum screen_state state = SCREEN_ON;
 static volatile bool	 asked;		/* power_suspend_soon() */
 static volatile bool	 doze_asked;	/* power_doze() */
 static volatile bool	 woke_up;	/* a key since the doze began */
-static bool		 dozing, slept_before;	/* and light sleep as it was */
+static bool		 dozing;
+static bool		 slept_before;		/* light sleep as it was before the dark */
 static volatile int64_t	 save_at;	/* /etc/power to be written then; 0: not */
 static int		 unmuted = CONFIG_PT_AUDIO_VOLUME;	/* what Fn 9 goes back to */
 
@@ -121,9 +122,21 @@ static void set_screen(enum screen_state want)
 		vt_blank(true);			/* the renderer stops first */
 		lcd_light(0);
 		lcd_panel_power(false);
+		/*
+		 * Dark, the chip light-sleeps between the keyboard's polls, as
+		 * a phone does with its screen off: everything is kept, and a
+		 * key is answered as before. What must not sleep says so --
+		 * sound playing (the I2S driver), a PC or a keyboard on USB --
+		 * and the chip stays awake for as long as it does.
+		 */
+		slept_before = cpufreq_idle_sleep();
+		if (!slept_before)
+			cpufreq_set_idle_sleep(true);
 		return;
 	}
 	if (was == SCREEN_OFF) {
+		if (!slept_before)
+			cpufreq_set_idle_sleep(false);
 		proc_set_quiet(false);
 		lcd_panel_power(true);
 		vt_blank(false);		/* everything is painted again */
@@ -200,19 +213,36 @@ static bool may_suspend(void)
 
 static int save_config(void);
 
+/* Light sleep as it was asked for (`power sleep`), not as the dark has it now. */
+static bool sleep_wanted(void)
+{
+	return state == SCREEN_OFF ? slept_before : cpufreq_idle_sleep();
+}
+
+/* `power sleep on|off`: while dark, what the screen coming back returns to. */
+int power_set_sleep(bool on)
+{
+	if (state == SCREEN_OFF) {
+		slept_before = on;
+		return 0;
+	}
+	return cpufreq_set_idle_sleep(on);
+}
+
 static int64_t seconds(int s)
 {
 	return (int64_t)s * 1000000;
 }
 
-/* A doze begins: dark at once, the radio resting, the chip light-sleeping. */
+/*
+ * A doze begins: dark at once (and so light-sleeping, set_screen()), the
+ * radio resting.
+ */
 static void doze_begin(void)
 {
 	doze_asked = false;
 	woke_up = false;
 	dozing = true;
-	slept_before = cpufreq_idle_sleep();
-	cpufreq_set_idle_sleep(true);
 	wifi_rest();
 	klog("idle: dozing; a key wakes it where it was");
 }
@@ -221,7 +251,6 @@ static void doze_begin(void)
 static void doze_end(void)
 {
 	dozing = woke_up = false;
-	cpufreq_set_idle_sleep(slept_before);
 	wifi_retry_soon();
 	klog("idle: awake from a doze");
 }
@@ -361,7 +390,7 @@ void power_keep_screen(bool on)
 void idle_get(struct idle_times *t)
 {
 	*t = times;
-	t->sleep = cpufreq_idle_sleep();
+	t->sleep = sleep_wanted();
 }
 
 static void idle_load(void)
@@ -407,7 +436,7 @@ static int save_config(void)
 		"# events. `power` sets these. The brightness and the volume as\n"
 		"# they were last set (backlight, volume, Fn 5 to Fn 9).\n"
 		"dim %d\nblank %d\nsuspend %d\nsleep %s\n", times.dim_s, times.blank_s,
-		times.suspend_s, cpufreq_idle_sleep() ? "on" : "off");
+		times.suspend_s, sleep_wanted() ? "on" : "off");
 	if (light >= LIGHT_MIN)
 		fprintf(f, "backlight %d\n", light);	/* never a dark screen at boot */
 	if (audio_present())

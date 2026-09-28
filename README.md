@@ -262,7 +262,9 @@ runs at 400, 200 and 100 MHz (360, 180 and 90 before revision 3).
 board -- is the first thing to go: with no key for 3 minutes the screen
 dims to a quarter, after 4 it goes dark with the panel asleep (the key
 that lights it again does nothing else, since nobody could see what it
-would do). After 15 minutes with nothing running -- every terminal at its
+would do). Dark, the chip light-sleeps between the keyboard's polls, as
+a phone does, with everything kept; what must not sleep keeps it awake
+for as long as it runs -- sound playing, a PC or a keyboard on USB. After 15 minutes with nothing running -- every terminal at its
 prompt, no sound playing, no PC on USB -- it suspends. A program left
 open, a note being read or a file being edited, keeps it awake with the
 screen dark instead, since waking from deep sleep is a fresh boot. A clip

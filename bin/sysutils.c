@@ -692,9 +692,11 @@ PT_PROGRAM(power, "show power state, or change how it saves power\n"
 			return 2;
 		}
 		if (!strcmp(argv[i], "sleep") && (!strcmp(argv[i + 1], "on") || !strcmp(argv[i + 1], "off"))) {
-			if ((err = cpufreq_set_idle_sleep(!strcmp(argv[++i], "on"))))
+			bool on = !strcmp(argv[++i], "on");
+
+			if ((err = power_set_sleep(on)))
 				return fail("power", "sleep", err);
-			t.sleep = cpufreq_idle_sleep();
+			t.sleep = on;
 		} else if (!what || (*what = parse_wait(argv[++i])) < 0) {
 			pt_dprintf(PT_STDERR, "power: %s: not a time (30, 30s, 5m, 1h, never)\n",
 				   argv[i]);
