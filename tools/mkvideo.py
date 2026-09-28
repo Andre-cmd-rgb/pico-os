@@ -193,10 +193,14 @@ def main():
                     help="horizontal strips per frame, decoded one per core. "
                          "2 is the chip's core count; 1 makes an ordinary "
                          "single-picture file")
+    ap.add_argument("--lift", type=float, default=0,
+                    help="bring the shadows up out of the lumas the board cuts "
+                         "to black, leaving black black and the rest as it "
+                         "was: 1 for a dark film, 0 for none")
     ap.add_argument("--black", type=float, default=0,
                     help="lumas up to this (of 255) become black, the rest "
-                         "stretched to fill the range: for films whose blacks "
-                         "are graded grey, which the panel shows as grain")
+                         "stretched to fill the range. Crushes shadows: a dim "
+                         "face loses its eyes; --lift is usually what is wanted")
     ap.add_argument("--denoise", type=float, default=0,
                     help="smooth the grain before it is compressed (hqdn3d "
                          "strength, 2 is light), 0 for none")
@@ -253,14 +257,19 @@ def main():
                  f"out_color_matrix=bt601:out_range=full,crop={w}:{h}")
     else:
         scale = f"scale={w}:{h}:flags=lanczos:out_color_matrix=bt601:out_range=full"
-    # A black graded grey (a luma of 8 to 20) lands where the board's
-    # decoder cuts to black: the grain in it comes out as black pixels in a
-    # dark grey, and the whole picture looks faded. --black makes those
-    # lumas black and stretches the rest back out.
+    # The board's decoder cuts lumas under 8 to black, and the panel shows
+    # its first few steps of grey as big ones: a shadow at a luma of 5 to
+    # 20 -- a dark sweater, eye sockets in a dim room -- comes out as black
+    # blots, and specks where grain crosses the cut. --lift raises such
+    # lumas by up to A times themselves, fading out by 50 or so:
+    # y + A * y * exp(-y / 16), which keeps black black and never swaps two
+    # lumas round. --black does the opposite and loses the shadows.
     black = ""
+    if args.lift > 0:
+        black += f",lutyuv=y='clip(val+{args.lift}*val*exp(-val/16),0,255)'"
     if args.black > 0:
         k = args.black
-        black = f",lutyuv=y='clip((val-{k})*255/(255-{k}),0,255)'"
+        black += f",lutyuv=y='clip((val-{k})*255/(255-{k}),0,255)'"
     picture = (f"fps={args.fps},{crop + ',' if crop else ''}{scale},"
                f"{f'hqdn3d={args.denoise}:{args.denoise}:{args.denoise * 2}:{args.denoise * 2},' if args.denoise else ''}"
                f"{f'unsharp=5:5:{args.sharpen}:5:5:0,' if args.sharpen else ''}"
