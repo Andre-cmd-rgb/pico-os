@@ -193,6 +193,16 @@ def main():
                     help="horizontal strips per frame, decoded one per core. "
                          "2 is the chip's core count; 1 makes an ordinary "
                          "single-picture file")
+    ap.add_argument("--black", type=float, default=0,
+                    help="lumas up to this (of 255) become black, the rest "
+                         "stretched to fill the range: for films whose blacks "
+                         "are graded grey, which the panel shows as grain")
+    ap.add_argument("--denoise", type=float, default=0,
+                    help="smooth the grain before it is compressed (hqdn3d "
+                         "strength, 2 is light), 0 for none")
+    ap.add_argument("--loud", type=float, default=None, metavar="LUFS",
+                    help="bring the sound to this loudness, evening it out "
+                         "(-14 is loud, for a small speaker); as it is if not given")
     ap.add_argument("--audio", default=None,
                     help="the sound track: a language (eng, ita) or a number "
                          "from 0; the first if not given")
@@ -243,10 +253,19 @@ def main():
                  f"out_color_matrix=bt601:out_range=full,crop={w}:{h}")
     else:
         scale = f"scale={w}:{h}:flags=lanczos:out_color_matrix=bt601:out_range=full"
+    # A black graded grey (a luma of 8 to 20) lands where the board's
+    # decoder cuts to black: the grain in it comes out as black pixels in a
+    # dark grey, and the whole picture looks faded. --black makes those
+    # lumas black and stretches the rest back out.
+    black = ""
+    if args.black > 0:
+        k = args.black
+        black = f",lutyuv=y='clip((val-{k})*255/(255-{k}),0,255)'"
     picture = (f"fps={args.fps},{crop + ',' if crop else ''}{scale},"
+               f"{f'hqdn3d={args.denoise}:{args.denoise}:{args.denoise * 2}:{args.denoise * 2},' if args.denoise else ''}"
                f"{f'unsharp=5:5:{args.sharpen}:5:5:0,' if args.sharpen else ''}"
                f"{f'eq=saturation={args.saturation},' if args.saturation != 1 else ''}"
-               f"format=yuvj420p")
+               f"format=yuvj420p{black}")
 
     # One pass makes every strip and the sound. Each strip is its own little
     # video, so the board can hand one to each core and decode a frame in
@@ -268,7 +287,12 @@ def main():
         for i, name in enumerate(names):
             cmd += ["-map", f"[v{i}]", "-q:v", str(args.quality), "-f", "mjpeg", name]
         if sound:
-            cmd += ["-map", f"0:a:{track}", "-ac", "1", "-ar", str(rate), "-f", "s16le", audio]
+            cmd += ["-map", f"0:a:{track}", "-ac", "1"]
+            if args.loud is not None:
+                # One pass, so it rides the level as it goes: dialogue
+                # comes up, explosions come down, for a speaker this size.
+                cmd += ["-af", f"loudnorm=I={args.loud}:LRA=9:TP=-1.5"]
+            cmd += ["-ar", str(rate), "-f", "s16le", audio]
         run(cmd)
         slices = []
         for name in names:

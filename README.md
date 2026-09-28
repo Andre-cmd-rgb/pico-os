@@ -258,7 +258,10 @@ python3 tools/mkvideo.py ep.mkv ep.ptv --fill --audio eng  # full screen, the En
 
 A 16:9 picture is letterboxed to 320x176 unless `--fill` covers the
 screen and cuts the sides; `--audio` picks one sound track of several
-(a language, or a number from 0). A long clip is big (a 45-minute
+(a language, or a number from 0). A film graded with grey blacks looks
+faded on the panel, with black specks in its shadows: `--black 16` makes
+lumas up to 16 black and stretches the rest back out. `--loud -14`
+brings quiet film sound up and evens it out for the small speaker. A long clip is big (a 45-minute
 episode is about a gigabyte): copying it onto the card on the PC is
 quicker than `make push`, which goes at about 100 KB/s.
 
