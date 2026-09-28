@@ -73,7 +73,9 @@ static void show(void)
 	struct theme_state st;
 
 	theme_get(&st);
-	if (st.mode == THEME_AUTO)
+	if (!st.has_dark || !st.has_light)
+		pt_printf("theme %s, %s only\n", st.name, st.light ? "light" : "dark");
+	else if (st.mode == THEME_AUTO)
 		pt_printf("theme %s, auto: light %d:%02d-%d:%02d, %s now\n", st.name,
 			  st.day_from / 60, st.day_from % 60, st.day_until / 60, st.day_until % 60,
 			  st.light ? "light" : "dark");
@@ -93,11 +95,28 @@ static void show(void)
 static void list(void)
 {
 	struct theme_state st;
+	bool dark, light;
 
 	theme_get(&st);
-	for (int i = 0; i < theme_count(); i++)
-		pt_printf("%c %-11s %s\n", strcmp(theme_name_at(i), st.name) ? ' ' : '*',
-			  theme_name_at(i), theme_about_at(i));
+	for (int i = 0; i < theme_count(); i++) {
+		dark = theme_has_dark_at(i);
+		light = theme_has_light_at(i);
+		pt_printf("%c %-11s%-6s%s\n", strcmp(theme_name_at(i), st.name) ? ' ' : '*',
+			  theme_name_at(i), dark && light ? "both" : dark ? "dark" : "light",
+			  theme_about_at(i));
+	}
+}
+
+/* A mode the theme cannot show is kept, for the next theme that can. */
+static void one_half_note(void)
+{
+	struct theme_state st;
+
+	theme_get(&st);
+	if ((st.mode == THEME_LIGHT && !st.has_light) || (st.mode == THEME_DARK && !st.has_dark) ||
+	    (st.mode == THEME_AUTO && (!st.has_dark || !st.has_light)))
+		pt_dprintf(PT_STDERR, "theme: %s is %s only; the mode is kept for\n"
+			   "a theme with both halves\n", st.name, st.has_dark ? "dark" : "light");
 }
 
 static int mode_arg(int argc, char **argv, int i)
@@ -130,16 +149,19 @@ static int mode_arg(int argc, char **argv, int i)
 		pt_dprintf(PT_STDERR, "theme: dark, light or auto, not %s\n", argv[i]);
 		return -1;
 	}
+	if (!err)
+		one_half_note();
 	return err ? -1 : 0;
 }
 
-/* For Tab: the themes' names first, and after one of them its halves. */
+/* For Tab: the themes' names first, and after one of them the halves it has. */
 static void theme_more(const char *after, pt_complete_add add, void *ctx)
 {
 	for (int i = 0; i < theme_count(); i++) {
 		if (!*after) {
 			add(ctx, theme_name_at(i));
-		} else if (!strcmp(after, theme_name_at(i))) {
+		} else if (!strcmp(after, theme_name_at(i)) && theme_has_dark_at(i) &&
+			   theme_has_light_at(i)) {
 			add(ctx, "dark");
 			add(ctx, "light");
 			add(ctx, "auto");
@@ -157,10 +179,12 @@ PT_COMPLETE_MORE(theme, ": list set reset cursor blink bar dark light auto <more
 PT_PROGRAM(theme, "the screen's colours: dark, light, your own\n"
 	   USAGE
 	   "Alone it shows the theme and its colours; list shows\n"
-	   "them all. A NAME switches (its dark or light half),\n"
-	   "dark and light switch halves, and auto is light from\n"
-	   "FROM until UNTIL (7:00 20:00 unless given), dark the\n"
-	   "rest of the day.\n"
+	   "them all. Most are dark only; paper is light only;\n"
+	   "gruvbox, solarized, catppuccin, rosepine and mono\n"
+	   "have both halves. A NAME switches theme, dark and\n"
+	   "light switch halves, and auto is light from FROM\n"
+	   "until UNTIL (7:00 20:00 unless given), dark the rest\n"
+	   "of the day. A theme with one half always shows it.\n"
 	   "set gives one colour your own value, over the theme's:\n"
 	   "SLOT is fg bg dim bold bar bar-text cursor, a colour\n"
 	   "name (red, bright-red, ...) or 0-15; COLOR is #rrggbb.\n"

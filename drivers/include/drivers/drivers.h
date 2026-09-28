@@ -106,6 +106,7 @@ struct theme_state {
 	const char	*name;
 	enum theme_mode	 mode;
 	bool		 light;		/* what is showing, in auto mode too */
+	bool		 has_dark, has_light;	/* the theme's halves */
 	int		 day_from;	/* auto: light from, minutes after midnight */
 	int		 day_until;	/* and until */
 	int		 own;		/* colours of your own over the theme's */
@@ -119,6 +120,8 @@ void	theme_tick(void);		/* once a second: auto mode's change */
 int	theme_count(void);
 const char *theme_name_at(int i);
 const char *theme_about_at(int i);
+bool	theme_has_dark_at(int i);
+bool	theme_has_light_at(int i);
 int	theme_use(const char *name);	/* -ENOENT for no such theme */
 int	theme_set_mode(enum theme_mode mode, int day_from, int day_until);
 int	theme_set_color(const char *slot, uint32_t rgb);	/* -EINVAL: no such slot */

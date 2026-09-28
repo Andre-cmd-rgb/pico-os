@@ -107,10 +107,12 @@ game pauses when you switch away), an alarm takes the screen from either
 until it is answered, and one stopped with `kill -STOP` gives its
 terminal back to the shell until `fg`.
 
-**Themes**: `theme list` shows ten -- amber and green CRTs, gruvbox,
-nord, dracula, solarized, catppuccin, tokyonight, rosepine and mono --
-each with a dark and a light half. `theme nord light` switches, `theme
-auto 7:00 20:00` is light by day and dark by night, `theme set bg
+**Themes**: `theme list` shows eleven. Amber and green CRTs, nord,
+dracula and tokyonight are dark only, since dark suits this panel far
+better; gruvbox, solarized, catppuccin, rosepine and mono have a dark
+and a light half; paper is light only, for daylight. `theme gruvbox
+light` switches, `theme auto 7:00 20:00` is light by day and dark by
+night on a theme with both halves, `theme set bg
 #101418` gives any colour (text, background, the status line, the
 cursor, any of the sixteen) your own value, and `theme cursor underline`
 or `theme bar bottom` change the rest. It is all kept in `/etc/theme`

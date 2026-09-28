@@ -81,7 +81,7 @@ SYSTEM
 
 LOOKS
   theme             the colours now, and a swatch
-  theme list        every theme (dark and light)
+  theme list        every theme, and its halves
   theme gruvbox     switch; `light`, `dark` after
                     the name, or alone, switch half
   theme auto 7:00 20:00   light by day
@@ -146,8 +146,8 @@ NETWORK
   curl URL          what an address returns: -L
                     follows, -I headers, -d posts
   modem             the SIM module, if one is wired
-  modem on, off     its radio (off: 0.7 mA, nothing
-                    heard), kept across restarts
+  modem on, off     its radio (off: under 1 mA,
+                    nothing heard), kept across restarts
   modem restart     start it over (reads its SIM)
   modem scan        the networks it can hear
   modem network tim try that network first (auto:
