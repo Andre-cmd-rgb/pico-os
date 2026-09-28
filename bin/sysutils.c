@@ -519,11 +519,17 @@ PT_PROGRAM(env, "print the environment, or run a command\n"
 	return 0;
 }
 
+const char *home_dir(char *buf, size_t size, const char *sub)
+{
+	snprintf(buf, size, "%s/%s", user_home(), sub);
+	return buf;
+}
+
 PT_PROGRAM(whoami, "print the user's name")
 {
 	const char *user = pt_getenv("USER");
 
-	pt_printf("%s\n", user ? user : CONFIG_PT_USERNAME);
+	pt_printf("%s\n", user ? user : user_name());
 	return 0;
 }
 
@@ -1574,7 +1580,8 @@ PT_PROGRAM(screenshot, "save a picture of the screen\n"
 	if (argc == 2) {
 		strlcpy(path, argv[1], sizeof(path));
 	} else {
-		const char *dir = sd_mounted() ? "/home/" CONFIG_PT_USERNAME "/photos" : "/tmp";
+		char photos[64];
+		const char *dir = sd_mounted() ? home_dir(photos, sizeof(photos), "photos") : "/tmp";
 		int n = 1;
 
 		if (sd_mounted())

@@ -151,6 +151,22 @@ uint64_t clock_sleep_us(uint64_t us);	/* a timer wake-up, allowing for drift */
 void	clock_changed(bool network);	/* it was set: save it soon */
 void	clock_tick(void);		/* once a second, from a task that may write files */
 
+/*
+ * user.c: who uses the machine and where -- the name, and so the home
+ * directory, and the time zone -- kept in /etc/user and /etc/timezone.
+ */
+#define USER_NAME_MAX	31
+#define USER_TZ_MAX	47
+void	user_restore(void);		/* at boot, once / is mounted */
+bool	user_configured(void);		/* /etc/user is there: setup has run */
+bool	user_name_ok(const char *name);
+const char *user_name(void);
+const char *user_home(void);		/* "/home/<name>" */
+const char *user_tz(void);		/* the POSIX TZ string */
+const char *user_tz_name(void);		/* "Europe/Rome", or "" */
+int	user_set_name(const char *name);	/* -EINVAL: not a user name */
+int	user_set_tz(const char *name, const char *tz);
+
 /* auth.c: the password the network shell asks for, kept hashed in /etc/shadow */
 bool	auth_is_set(void);
 int	auth_check(const char *password);	/* 0, -EACCES, or -ENOENT with none set */
@@ -179,7 +195,7 @@ const char *path_basename(const char *path);
  * a mount that is not present exposes the directory underneath it.
  */
 struct pt_mount {
-	const char *path;
+	const char *path;	/* NULL: the user's home, whatever it is now */
 	const char *vfs;
 	const char *type;
 	const char *source;
@@ -189,6 +205,7 @@ struct pt_mount {
 };
 
 void	mount_register(const struct pt_mount *m);
+const char *mount_path(const struct pt_mount *m);
 int	mount_count(void);
 const struct pt_mount *mount_get(int index);
 

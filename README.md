@@ -92,6 +92,14 @@ There is a printed guide to all of this: **[docs/booklet/](docs/booklet/)**
 has `guide.pdf` (using the machine) and `pico.pdf` (its language), each two
 A4 sheets printed on one side and folded into pocket booklets.
 
+The first start asks a few questions before the shell: your name (the
+prompt's, and your home directory's, `/home/NAME`), the time zone, a
+Wi-Fi network to join, the time if nothing has set it, and the colours.
+Enter keeps the offered answer and Esc leaves the rest for later;
+`setup` asks it all again, and `setup timezone`, say, one thing. The
+answers are in `/etc/user` and `/etc/timezone` (the Wi-Fi's in
+`/etc/wifi`, the colours in `/etc/theme`).
+
 The shell is on the screen and on the serial console at the same time. Type
 on the CardKB, a USB keyboard or the PC; all three work together.
 
@@ -190,7 +198,7 @@ one back, and `%1` names one for `kill` and `wait`. Scripts run with
 | Path | What it is |
 |---|---|
 | `/` | 13 MB LittleFS on the internal flash; safe if the power dies mid-write |
-| `/home/andre` | your home directory |
+| `/home/NAME` | your home directory: the SD card again, under the name `setup` asked for |
 | `/tmp` | 2 MB RAM disk: fast, and empty after every boot |
 | `/mnt/sd` | the microSD card (FAT32, readable on a PC); `umount /mnt/sd` before removing it |
 | `/dev` | `null zero urandom stdin stdout stderr tty`, plus `audio` where there is a codec: raw 16-bit mono, write to play it, read to record |

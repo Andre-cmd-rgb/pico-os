@@ -58,8 +58,6 @@
 
 #if CONFIG_PT_LCD
 
-#define VIDEO		"/home/" CONFIG_PT_USERNAME "/video"
-#define PHOTOS		"/home/" CONFIG_PT_USERNAME "/photos"
 #define HEADER		32
 #define MAX_FRAME	(256 * 1024)	/* a sane limit on one frame */
 #define MAX_SLICES	4
@@ -621,8 +619,11 @@ static void requeue(struct slot *slots, int ahead, int from, int to, const struc
 
 static void save_shot(struct canvas *c, char *shot, size_t size)
 {
+	char photos[64];
+
+	home_dir(photos, sizeof(photos), "photos");
 	if (vt_screen_begin())
-		canvas_save(c, sd_mounted() ? PHOTOS : "/tmp", shot, size);
+		canvas_save(c, sd_mounted() ? photos : "/tmp", shot, size);
 	vt_screen_end();
 }
 
@@ -731,11 +732,14 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 		return 1;
 	}
 	if (argc == 1) {
-		ret = pick_file(VIDEO, exts, "clips", chosen, sizeof(chosen));
+		char dir[64];
+
+		home_dir(dir, sizeof(dir), "video");
+		ret = pick_file(dir, exts, "clips", chosen, sizeof(chosen));
 		if (ret == -ECANCELED)
 			return 0;
 		if (ret)
-			return fail("video", VIDEO, ret);
+			return fail("video", dir, ret);
 	}
 
 	name = path_basename(path);	/* what /etc/resume knows it by */

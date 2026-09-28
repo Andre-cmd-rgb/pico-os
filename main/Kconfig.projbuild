@@ -8,15 +8,18 @@ config PT_HOSTNAME
 
 config PT_USERNAME
 	string "User name"
-	default "andre"
+	default "user"
 	help
-	  Shown in the prompt. Home is /home/<user>.
+	  The name until `setup` asks for one, which the first start
+	  does: then /etc/user has it. Shown in the prompt; home is
+	  /home/<user>.
 
 config PT_TZ
 	string "Time zone (POSIX TZ string)"
 	default "CET-1CEST,M3.5.0,M10.5.0/3"
 	help
-	  The default is Italy (CET/CEST).
+	  The default is Italy (CET/CEST), until `setup` asks, which
+	  the first start does: then /etc/timezone has it.
 
 choice PT_CPUFREQ
 	prompt "CPU frequency policy"

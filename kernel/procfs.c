@@ -97,7 +97,7 @@ static int gen_mounts(char *b, size_t n)
 		const struct pt_mount *m = mount_get(i);
 		if (!m->present || m->present())
 			len += snprintf(b + len, n - len, "%s %s %s rw%s 0 0\n",
-					m->source, m->path, m->type, m->bind ? ",bind" : "");
+					m->source, mount_path(m), m->type, m->bind ? ",bind" : "");
 	}
 	if (len < (int)n)
 		len += snprintf(b + len, n - len, "devfs /dev devfs rw 0 0\nproc /proc proc ro 0 0\n");

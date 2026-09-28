@@ -76,6 +76,8 @@ SYSTEM
   whoami hostname
   sleep env which clear reboot chvt screenshot
   i2cdetect keytest bench lcdtest backlight
+  setup       your name, time zone, Wi-Fi, clock,
+              colours; setup NAME-OF-ONE for one
   rotate      turn the screen upside down (again:
               back); rotate 0 / rotate 180
 

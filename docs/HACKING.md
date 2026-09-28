@@ -10,10 +10,13 @@
 2. status LED, serial console, process table, CPU frequency policy
 3. display, terminal and console
 4. sound, then the keyboards: CardKB, USB
-5. `/` (the root filesystem) and its standard directories; the clock and the
-   battery, which read what they saved there; `/tmp`, `/mnt/sd`
-6. `/etc/rc`, if it exists
-7. a login shell, restarted whenever it exits
+5. `/` (the root filesystem); the user's name and time zone
+   (`kernel/user.c`), then the standard directories, `/home/NAME` among
+   them; the clock and the battery, which read what they saved there;
+   `/tmp`, `/mnt/sd`
+6. `setup -f`, the first start's questions, while there is no `/etc/user`
+7. `/etc/rc`, if it exists
+8. a login shell, restarted whenever it exits
 
 A driver that is switched off compiles to stubs returning `-ENODEV`, so the
 boot sequence never changes shape from one board to the next.
@@ -302,6 +305,14 @@ reason.
   minutes on the timer and goes straight back unless the cell has risen
   past 3.65 V, before the screen lights. `power_boot_reason()` logs why
   the chip started.
+- `kernel/user.c`: the user's name, and so `/home/NAME`, and the time
+  zone, from `/etc/user` and `/etc/timezone` (`bin/setup.c` asks for
+  them). The SD card's second mount has no path of its own
+  (`mount_path()`): it is wherever the home is, and a new name renames
+  the directory on the flash and moves the mount at once. The mount table
+  reads the path on every lookup, from any task, so a change is made in a
+  second copy and switched in with one store. Programs ask `user_home()`
+  (`home_dir()` in `bin/`), never a name built in.
 - `kernel/clock.c`: the time saved to `/etc/clock` hourly and before sleep,
   put back at boot after a power cut; `wifi.c` starts SNTP on every new
   address and hourly after. Going to sleep marks the moment in RTC memory

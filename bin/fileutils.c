@@ -364,7 +364,7 @@ static bool is_mount_point(const char *path)
 	if (!strcmp(abs, "/") || !strcmp(abs, "/proc") || !strcmp(abs, "/dev"))
 		return true;
 	for (int i = 0; i < mount_count(); i++)
-		if (!strcmp(mount_get(i)->path, abs))
+		if (!strcmp(mount_path(mount_get(i)), abs))
 			return true;
 	return false;
 }
@@ -676,7 +676,7 @@ static bool df_line(const struct pt_mount *m, bool *header)
 	human_size(total - free, b, sizeof(b));
 	human_size(free, c, sizeof(c));
 	pt_printf("%-8.8s %7s %7s %7s %3d%% %s\n", src, a, b, c,
-		  total ? (int)((total - free) * 100 / total) : 0, m->path);
+		  total ? (int)((total - free) * 100 / total) : 0, mount_path(m));
 	return true;
 }
 

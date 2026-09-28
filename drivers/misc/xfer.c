@@ -39,7 +39,6 @@
 #include "pt/kernel.h"
 
 #define CHUNK		512
-#define HOME		"/home/" CONFIG_PT_USERNAME
 
 static const char B64[] =
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -140,9 +139,9 @@ static bool resolve(const char *path, char *vfs, size_t size)
 	char abs[PT_PATH_MAX];
 
 	if (path[0] == '~' && (path[1] == '/' || !path[1]))
-		snprintf(abs, sizeof(abs), "%s%s", HOME, path + 1);
+		snprintf(abs, sizeof(abs), "%s%s", user_home(), path + 1);
 	else if (path[0] != '/')
-		snprintf(abs, sizeof(abs), "%s/%s", HOME, path);
+		snprintf(abs, sizeof(abs), "%s/%s", user_home(), path);
 	else
 		strlcpy(abs, path, sizeof(abs));
 	return mount_resolve(abs, vfs, size) != NULL;

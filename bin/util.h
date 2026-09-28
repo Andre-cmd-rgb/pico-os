@@ -64,6 +64,12 @@ void	lines_free(struct lines *l);
 int	for_each_input(const char *prog, int argc, char **argv, int first,
 		       int (*fn)(int fd, const char *name, void *ctx), void *ctx);
 
+/*
+ * A directory in the user's home, "photos" for ~/photos, written into buf
+ * (64 bytes do). On the board only (sysutils.c): the home is the kernel's.
+ */
+const char *home_dir(char *buf, size_t size, const char *sub);
+
 /* A whole decimal number, sign allowed: 0, or -EINVAL for anything else. */
 int	parse_long(const char *s, long *out);
 

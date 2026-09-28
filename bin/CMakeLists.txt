@@ -21,6 +21,7 @@ idf_component_register(
 		pick.c
 		regex.c
 		sed.c
+		setup.c
 		shellutils.c
 		sort.c
 		sums.c

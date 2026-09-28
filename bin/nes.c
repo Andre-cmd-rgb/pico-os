@@ -14,7 +14,6 @@
 #include "emu.h"
 #include "util.h"
 
-#define ROMS		"/home/" CONFIG_PT_USERNAME "/roms"
 
 #if CONFIG_PT_NES
 
@@ -60,12 +59,14 @@ PT_PROGRAM_STACK(nes, 16, "play a NES game\n"
 	/* No game named: show the shelf rather than asking for a path. */
 	if (i == argc) {
 		static const char *const roms[] = { ".nes", NULL };
+		char dir[64];
 
-		ret = pick_file(ROMS, roms, "games", rom, sizeof(rom));
+		home_dir(dir, sizeof(dir), "roms");
+		ret = pick_file(dir, roms, "games", rom, sizeof(rom));
 		if (ret == -ECANCELED)
 			return 0;
 		if (ret)
-			return fail("nes", ROMS, ret);
+			return fail("nes", dir, ret);
 	} else {
 		strlcpy(rom, argv[i], sizeof(rom));
 	}

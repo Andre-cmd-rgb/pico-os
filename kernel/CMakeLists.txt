@@ -15,6 +15,7 @@ idf_component_register(
 		proc.c
 		procfs.c
 		sys.c
+		user.c
 	INCLUDE_DIRS include
 	REQUIRES freertos log
 	PRIV_REQUIRES esp_app_format esp_hw_support esp_psram esp_timer heap mbedtls spi_flash vfs

@@ -35,7 +35,6 @@
 #include "pt/keys.h"
 #include "pt/kernel.h"
 
-#define PHOTOS		"/home/" CONFIG_PT_USERNAME "/photos"
 #define SAMPLE_RATE	16000
 #define SOUND_LATENCY_MS 50	/* three frames */
 #define FRAME_US	16639		/* 60.1 frames a second, as on the NES */
@@ -318,8 +317,11 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 			for (int n = 1; n < 1000; n++) {
 				struct pt_stat st;
 
-				snprintf(path, sizeof(path), "%s/nes-%d.bmp",
-					 sd_mounted() ? PHOTOS : "/tmp", n);
+				if (sd_mounted())
+					snprintf(path, sizeof(path), "%s/photos/nes-%d.bmp",
+						 user_home(), n);
+				else
+					snprintf(path, sizeof(path), "/tmp/nes-%d.bmp", n);
 				if (pt_stat(path, &st))
 					break;
 			}

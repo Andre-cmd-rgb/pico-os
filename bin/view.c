@@ -14,7 +14,6 @@
 
 #if CONFIG_PT_LCD
 
-#define PHOTOS		"/home/" CONFIG_PT_USERNAME "/photos"
 
 static bool is_jpeg(int fd)
 {
@@ -60,7 +59,7 @@ PT_PROGRAM_STACK(view, 8, "look at a picture\n"
 {
 	static const char *const exts[] = { ".bmp", ".jpg", ".jpeg", NULL };
 	struct canvas c = { 0 };
-	char chosen[PT_PATH_MAX], shot[PT_PATH_MAX];
+	char chosen[PT_PATH_MAX], shot[PT_PATH_MAX], photos[64];
 	char *picked[1] = { chosen };
 	char **files = argv + 1;
 	int n = argc - 1, at = 0, ret;
@@ -69,12 +68,13 @@ PT_PROGRAM_STACK(view, 8, "look at a picture\n"
 		pt_dprintf(PT_STDERR, "view: there is no screen\n");
 		return 1;
 	}
+	home_dir(photos, sizeof(photos), "photos");
 	if (!n) {
-		ret = pick_file(PHOTOS, exts, "pictures", chosen, sizeof(chosen));
+		ret = pick_file(photos, exts, "pictures", chosen, sizeof(chosen));
 		if (ret == -ECANCELED)
 			return 0;
 		if (ret)
-			return fail("view", PHOTOS, ret);
+			return fail("view", photos, ret);
 		files = picked;
 		n = 1;
 	}
@@ -103,7 +103,7 @@ PT_PROGRAM_STACK(view, 8, "look at a picture\n"
 			at--;
 		else if (key == 's') {
 			if (vt_screen_begin())
-				canvas_save(&c, sd_mounted() ? PHOTOS : "/tmp", shot, sizeof(shot));
+				canvas_save(&c, sd_mounted() ? photos : "/tmp", shot, sizeof(shot));
 			vt_screen_end();
 		}
 	}

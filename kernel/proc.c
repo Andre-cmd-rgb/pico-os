@@ -35,7 +35,6 @@
 #define PROC_CORE		1
 #define KILL_GRACE_US		500000
 #define LOADER_STACK_KB		12
-#define DEFAULT_PATH		"/bin:/home/" CONFIG_PT_USERNAME "/bin"
 #define SIGMASK(sig)		(1u << (sig))
 #define STACK_CAPS		(heap_caps_get_total_size(MALLOC_CAP_SPIRAM) ?		\
 				 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT :			\
@@ -205,10 +204,10 @@ static char *env_default(size_t *len)
 {
 	char buf[512];
 	int n = snprintf(buf, sizeof(buf),
-			 "HOME=/home/%s%cUSER=%s%cHOSTNAME=%s%cPATH=%s%c"
+			 "HOME=%s%cUSER=%s%cHOSTNAME=%s%cPATH=/bin:%s/bin%c"
 			 "SHELL=sh%cTERM=vt100%cTZ=%s%c",
-			 CONFIG_PT_USERNAME, 0, CONFIG_PT_USERNAME, 0, CONFIG_PT_HOSTNAME, 0,
-			 DEFAULT_PATH, 0, 0, 0, CONFIG_PT_TZ, 0);
+			 user_home(), 0, user_name(), 0, CONFIG_PT_HOSTNAME, 0,
+			 user_home(), 0, 0, 0, user_tz(), 0);
 	char *env = malloc(n + 1);
 
 	if (env) {
@@ -464,9 +463,14 @@ static int resolve(const char *cmd, const char *cwd, const char *env,
 		return 0;
 
 	const char *search = env_find(env, "PATH");
+	char fallback[USER_NAME_MAX + 16];	/* /bin, then ~/bin */
 	int err = -ENOENT;
 
-	for (const char *dir = search ? search : DEFAULT_PATH; *dir;) {
+	if (!search) {
+		snprintf(fallback, sizeof(fallback), "/bin:%s/bin", user_home());
+		search = fallback;
+	}
+	for (const char *dir = search; *dir;) {
 		size_t len = strcspn(dir, ":");
 		if (len && (size_t)snprintf(path, PT_PATH_MAX, "%.*s/%s", (int)len, dir, cmd) < PT_PATH_MAX) {
 			int e = try_exec(path, loader);
@@ -611,7 +615,7 @@ int proc_spawn_console(int argc, char **argv, struct pt_file *console)
 
 	if (!env)
 		return -ENOMEM;
-	snprintf(home, sizeof(home), "/home/%s", CONFIG_PT_USERNAME);
+	strlcpy(home, user_home(), sizeof(home));
 	const char *cwd = pt_stat(home, &st) == 0 && st.is_dir ? home : "/";
 	int pid = spawn(NULL, argv[0], argc, argv, files, 0, cwd, env, env_len);
 

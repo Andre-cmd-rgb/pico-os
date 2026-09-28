@@ -106,10 +106,11 @@ static const struct pt_mount sd_mount_entry = {
  * cable; the flash keeps the system, so the machine still boots with an
  * empty slot. With no card in, this mount is not present and
  * /home/<user> is the empty directory on the flash underneath it, which
- * is what a missing disk ought to look like.
+ * is what a missing disk ought to look like. No path: it is wherever the
+ * user's home is, which `setup` can move.
  */
 static const struct pt_mount sd_home_entry = {
-	.path = "/home/" CONFIG_PT_USERNAME,
+	.path = NULL,
 	.vfs = SD_BASE,
 	.type = "vfat",
 	.source = SD_PATH,
@@ -186,8 +187,8 @@ static int sd_mount_common(bool format)
 	char desc[80];
 	sd_describe(desc, sizeof(desc));
 	home_layout();
-	klog("sd: %s on %d-bit sdmmc, mounted on %s and /home/%s", desc, slot.width,
-	     SD_PATH, CONFIG_PT_USERNAME);
+	klog("sd: %s on %d-bit sdmmc, mounted on %s and %s", desc, slot.width,
+	     SD_PATH, user_home());
 	return 0;
 }
 
@@ -241,7 +242,7 @@ static int sd_mount_common(bool format)
 	char desc[80];
 	sd_describe(desc, sizeof(desc));
 	home_layout();
-	klog("sd: %s, mounted on %s and /home/%s", desc, SD_PATH, CONFIG_PT_USERNAME);
+	klog("sd: %s, mounted on %s and %s", desc, SD_PATH, user_home());
 	return 0;
 }
 

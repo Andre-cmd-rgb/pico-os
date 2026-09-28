@@ -129,7 +129,7 @@ static void root_layout(void)
 	for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++)
 		if (vfs(dirs[i], buf))
 			mkdir(buf, 0777);
-	snprintf(path, sizeof(path), "/home/%s", CONFIG_PT_USERNAME);
+	strlcpy(path, user_home(), sizeof(path));
 	if (vfs(path, buf))
 		mkdir(buf, 0777);
 
@@ -228,6 +228,7 @@ void app_main(void)
 	bool root = !rootfs_init();
 
 	if (root) {
+		user_restore();	/* the home directory's name, the time zone */
 		root_layout();	/* mount points must exist before mounting on them */
 		clock_restore();
 	}
@@ -264,6 +265,11 @@ void app_main(void)
 	led_set_mode(LED_CHARGE);
 
 	logo();
+	/* the first start: a name, the time zone, Wi-Fi, before any shell */
+	if (root && !user_configured()) {
+		char *setup[] = { "setup", "-f", NULL };
+		run_console(2, setup);
+	}
 	if (!pt_stat("/etc/rc", &st) && !st.is_dir) {
 		char *rc[] = { "sh", "/etc/rc", NULL };
 		run_console(2, rc);

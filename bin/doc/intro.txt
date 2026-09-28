@@ -63,8 +63,8 @@ WHERE THINGS ARE
   internal flash holds the system, so the machine
   boots and every command works with an empty card
   slot. The SD card holds everything you make: it IS
-  your home directory, mounted at /home/andre as well
-  as /mnt/sd. Take the card to a PC and your files
+  your home directory, mounted at /home/NAME (the
+  name setup asked for) as well as /mnt/sd. Take the card to a PC and your files
   are at the top of it; put a blank card in and it is
   laid out for you.
 
@@ -76,7 +76,7 @@ WHERE THINGS ARE
   ~/video      converted clips
 
   /            13 MB of the flash: the system
-  /home/andre  the SD card, FAT32, readable on a PC
+  /home/NAME   the SD card, FAT32, readable on a PC
   /tmp         2 MB of RAM, empty after every boot,
                and it only takes the memory it uses
   /mnt/sd      the same card, under its own name
@@ -86,7 +86,7 @@ WHERE THINGS ARE
   /proc        cpuinfo meminfo mounts uptime version
                net modem
 
-  With no card in, /home/andre is an empty directory
+  With no card in, /home/NAME is an empty directory
   on the flash and nothing else changes.
 
   At boot the system runs /etc/rc if it exists, then
@@ -118,7 +118,7 @@ MOVING FILES
 
   From the PC, over the serial line:
      make push FILE=thing.txt
-     make pull FILE=/home/andre/notes/todo.txt
+     make pull FILE=notes/todo.txt
   It goes beside the console: nothing is typed on
   the board and the shell stays free meanwhile. Each
   piece has a CRC, so anything binary survives and a

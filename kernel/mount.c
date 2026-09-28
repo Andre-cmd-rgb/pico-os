@@ -27,6 +27,12 @@ const struct pt_mount *mount_get(int index)
 	return index >= 0 && index < n_mounts ? mounts[index] : NULL;
 }
 
+/* Where it is mounted: a NULL path is the home directory, which moves with the user's name. */
+const char *mount_path(const struct pt_mount *m)
+{
+	return m->path ? m->path : user_home();
+}
+
 static bool present(const struct pt_mount *m)
 {
 	return !m->present || m->present();
@@ -50,7 +56,7 @@ const struct pt_mount *mount_resolve(const char *abs, char *vfs, size_t size)
 	int best_len = -1;
 
 	for (int i = 0; i < n_mounts; i++) {
-		int len = covers(mounts[i]->path, abs);
+		int len = covers(mount_path(mounts[i]), abs);
 		if (len > best_len && present(mounts[i])) {
 			best = mounts[i];
 			best_len = len;
@@ -70,7 +76,7 @@ const struct pt_mount *mount_resolve(const char *abs, char *vfs, size_t size)
 bool mount_is_point(const char *abs)
 {
 	for (int i = 0; i < n_mounts; i++)
-		if (!strcmp(mounts[i]->path, abs) && present(mounts[i]))
+		if (!strcmp(mount_path(mounts[i]), abs) && present(mounts[i]))
 			return true;
 	return false;
 }
