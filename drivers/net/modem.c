@@ -266,8 +266,9 @@ static void news(const char *line)
 		if (strcmp(sim_state, line + 7) && restarts_lately() < 2)
 			klog("modem: the SIM card: %s", line + 7);
 		strlcpy(sim_state, line + 7, sizeof(sim_state));
-		/* lost within a minute of the module starting to sleep */
-		if (sleepy && strcmp(line + 7, "READY") &&
+		/* lost within a minute of the module starting to sleep; with
+		 * its radio off the SIM is put away on purpose */
+		if (sleepy && !conf.radio_off && strcmp(line + 7, "READY") &&
 		    esp_timer_get_time() - slept_at < 60000000)
 			sleep_went_wrong = true;
 	} else if (!strncmp(line, "+CUSD:", 6)) {
@@ -902,10 +903,20 @@ int modem_network(const char *plmn)
 	return modem_at(cmd, NULL, 0, 90000);
 }
 
+/* Sleep mode 2: asleep whenever the port has been quiet for five seconds. */
+static void sleep_mode_on(void)
+{
+	if (!sleepy && !modem_at("AT+CSCLK=2", NULL, 0, 2000)) {
+		sleepy = true;
+		slept_at = esp_timer_get_time();
+	}
+}
+
 /*
- * The radio on or off (AT+CFUN=1 or 0): off, the module takes about
- * 0.7 mA and hears nothing. Kept in /etc/modem, and made so again when
- * the module restarts.
+ * The radio on or off (AT+CFUN=1 or 0): off, and asleep, the module
+ * takes under 1 mA (0.83 in SIMCom's sheet) and hears nothing. Kept in
+ * /etc/modem, and made so again when the module restarts. On, it is
+ * woken first, to find the network, and sleeps again once it has.
  */
 int modem_radio(bool on)
 {
@@ -913,8 +924,12 @@ int modem_radio(bool on)
 
 	/* kept even if the module is not answering: it is made so when it does */
 	conf.radio_off = !on;
+	if (present && on && sleepy && !modem_at("AT+CSCLK=0", NULL, 0, 2000))
+		sleepy = false;
 	if (present)
 		err = modem_at(on ? "AT+CFUN=1" : "AT+CFUN=0", NULL, 0, 10000);
+	if (present && !on && !err && !data_mode)
+		sleep_mode_on();
 	saved = conf_save();
 	return err ? err : saved;
 }
@@ -929,28 +944,34 @@ bool modem_radio_on(void)
  * module stays on the cell's wires whatever the board does, so its radio
  * goes off too, not to be drained for days by a board that is off. Not
  * kept: at the next start the driver puts it back as /etc/modem says.
+ * Asleep as well, or it would still draw 15 mA from a board that is off.
  */
 void modem_power_off(void)
 {
-	if (present && !data_mode && !conf.radio_off && !modem_at("AT+CFUN=0", NULL, 0, 5000))
+	if (present && !data_mode && !conf.radio_off && !modem_at("AT+CFUN=0", NULL, 0, 5000)) {
+		sleep_mode_on();
 		klog("modem: radio off while the board is");
+	}
 }
 
 /*
  * What the module draws from the cell, for the battery's estimate: it is
  * on the cell's wires, and nothing measures it. Figures from SIMCom's
  * SIM800 sheet, rounded up: asleep and registered about 1.5 mA, awake 20,
- * a data session 150 on average, the radio off 0.7.
+ * a data session 150 on average; the radio off, 1 asleep and 15 awake.
  */
 int modem_load_ma(void)
 {
+	bool asleep;
+
 	if (!present)
 		return 0;
 	if (data_mode)
 		return 150;
+	asleep = sleepy && esp_timer_get_time() - last_io_us > 5000000;
 	if (conf.radio_off)
-		return 1;
-	return sleepy && esp_timer_get_time() - last_io_us > 5000000 ? 2 : 20;
+		return asleep ? 1 : 15;
+	return asleep ? 2 : 20;
 }
 
 /* A USSD answer's text: GSM or 8859-1 as it is, UCS2 (scheme 72) from its hex. */
@@ -1199,7 +1220,13 @@ static void setup(void)
 		snprintf(cmd, sizeof(cmd), "AT+COPS=4,2,\"%s\"", conf.plmn);
 		modem_at(cmd, NULL, 0, 60000);
 	}
-	/* sleep mode goes on once it is registered: after_news() */
+	/*
+	 * Sleep mode goes on once it is registered (after_news()), or at
+	 * once with the radio off: awake it would draw 15 mA or so from the
+	 * cell for nothing, asleep under one.
+	 */
+	if (conf.radio_off)
+		sleep_mode_on();
 }
 
 /* What it is, once it answers. */
@@ -1409,10 +1436,7 @@ static void after_news(void)
 	}
 	if (present && want_sleep && !sleepy && !conf.no_sleep && !data_mode && !resetup) {
 		want_sleep = false;
-		if (!modem_at("AT+CSCLK=2", NULL, 0, 2000)) {
-			sleepy = true;
-			slept_at = esp_timer_get_time();
-		}
+		sleep_mode_on();
 	}
 	if (present && (index = new_sms) >= 0) {
 		new_sms = -1;

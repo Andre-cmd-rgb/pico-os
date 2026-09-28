@@ -279,8 +279,9 @@ ussd *123#` asks the network for the credit.
 On the cell's wires the module draws whatever the board is doing. The
 driver lets it sleep whenever the port is quiet (AT+CSCLK=2: about
 1.5 mA registered, and a message or a call still wakes it), `modem off`
-turns its radio off (0.7 mA) until `modem on`, and `poweroff` or a flat
-cell turn the radio off too. `battery` counts what it draws.
+turns its radio off and lets it sleep (under 1 mA; awake it would be
+about 15) until `modem on`, and `poweroff` or a flat cell do the same.
+`battery` counts what it draws.
 
 ### Wi-Fi
 
