@@ -61,6 +61,25 @@ def has_audio(path):
     return any(s["codec_type"] == "audio" for s in json.loads(out)["streams"])
 
 
+def audio_track(path, want):
+    """Which of the file's sound tracks to take: a number counts them from
+    0, a language (eng, ita) is matched against their tags. A film with
+    several dubs lists them in whatever order it was made in."""
+    if want is None:
+        return 0
+    if want.isdigit():
+        return int(want)
+    out = run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+               "stream_tags=language,title", "-of", "json", path]).stdout
+    tracks = json.loads(out)["streams"]
+    for i, st in enumerate(tracks):
+        tags = {k.lower(): v.lower() for k, v in st.get("tags", {}).items()}
+        if want.lower() in (tags.get("language", ""), tags.get("title", "").strip("[]")):
+            return i
+    have = ", ".join(st.get("tags", {}).get("language", "?") for st in tracks)
+    raise SystemExit(f"no {want} sound in {path}; it has: {have}")
+
+
 def sound_rate(fps, target=RATE):
     """A whole number of samples in every frame, as near RATE as that allows.
 
@@ -174,6 +193,9 @@ def main():
                     help="horizontal strips per frame, decoded one per core. "
                          "2 is the chip's core count; 1 makes an ordinary "
                          "single-picture file")
+    ap.add_argument("--audio", default=None,
+                    help="the sound track: a language (eng, ita) or a number "
+                         "from 0; the first if not given")
     ap.add_argument("--start", default=None, help="seek before converting, e.g. 0:30")
     ap.add_argument("--length", default=None, help="how much to take, e.g. 20")
     args = ap.parse_args()
@@ -190,6 +212,7 @@ def main():
                          f"{h} does not divide by {args.slices}")
 
     sound = has_audio(args.input)
+    track = audio_track(args.input, args.audio) if sound else 0
     if not args.fps:
         args.fps = pick_fps(source_fps(args.input))
     rate = sound_rate(args.fps, args.rate)
@@ -245,7 +268,7 @@ def main():
         for i, name in enumerate(names):
             cmd += ["-map", f"[v{i}]", "-q:v", str(args.quality), "-f", "mjpeg", name]
         if sound:
-            cmd += ["-map", "0:a:0", "-ac", "1", "-ar", str(rate), "-f", "s16le", audio]
+            cmd += ["-map", f"0:a:{track}", "-ac", "1", "-ar", str(rate), "-f", "s16le", audio]
         run(cmd)
         slices = []
         for name in names:

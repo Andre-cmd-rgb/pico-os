@@ -253,7 +253,14 @@ need to be on the PATH. A copy stays in `clips/`.
 make video FILE=film.mp4                 # convert and send to ~/video
 make yt URL=https://...                  # fetch, convert and send
 python3 tools/mkvideo.py film.mp4 film.ptv --fps 24   # just convert
+python3 tools/mkvideo.py ep.mkv ep.ptv --fill --audio eng  # full screen, the English track
 ```
+
+A 16:9 picture is letterboxed to 320x176 unless `--fill` covers the
+screen and cuts the sides; `--audio` picks one sound track of several
+(a language, or a number from 0). A long clip is big (a 45-minute
+episode is about a gigabyte): copying it onto the card on the PC is
+quicker than `make push`, which goes at about 100 KB/s.
 
 ## Speed and power
 
