@@ -239,6 +239,29 @@
 #define PULL_CHARGING	720		/* readings: an hour */
 #define SETTLE_US	(30 * 60 * 1000000LL)
 
+/*
+ * A charge that has finished is 100%, and stays near it: the cell's
+ * voltage falls for a couple of hours after a charger stops, 4.20 V to
+ * 4.13 on this 2500 mAh cell, and the table read that as 92% within the
+ * hour ("the charger's light is green but it never got to 100"). So for
+ * that long only the count moves it. At the top of the table a few
+ * millivolts are several points, and the voltage's word there is only
+ * ever a nudge.
+ */
+#define SETTLE_FULL_US	(2 * 60 * 60 * 1000000LL)
+#define TOP_PERMILLE	900
+
+/*
+ * A charger ends at a tenth of its current: a TP4056 turns its light
+ * green and stops there, and the board's own load moves onto the cell.
+ * That step is small next to a charger pulled out at full current, so a
+ * cell held full is watched for a smaller one; and a charger that stops
+ * without a step to see still leaves the cell falling away from where
+ * it was held.
+ */
+#define END_FRACTION	10
+#define FULL_FALL_MV	20
+
 /* The cell's life: see the top of the file. */
 #define MEASURE_AT	200	/* permille left */
 #define MEASURE_SPAN	500	/* or this much used, if the charger comes back first */
@@ -434,6 +457,19 @@ static void charger_found(void)
 {
 	bat.sure = false;
 	bat.lifted_min = bat.unlifted_min = 0;
+}
+
+/*
+ * The charger went while it held the cell full: it has finished (or was
+ * taken away at the very end, which is as good). The count is full, the
+ * level says so at once, and the voltage's fall that follows is let be.
+ */
+static void charge_finished(void)
+{
+	bat.charge = holds_mah() * 1000;
+	bat.shown = 1000;
+	bat.settle = esp_timer_get_time() + SETTLE_FULL_US;
+	klog("battery: charged: the charger has finished");
 }
 
 /* What this cell is and has been seen to do, across power cuts. */
@@ -663,9 +699,21 @@ int battery_calibrate(int meter_mv)
 	return 0;
 }
 
+/*
+ * Whole points, for the status line: rounded, so a cell just charged
+ * reads 100 for its first half point and not for a moment, but never
+ * 100 while a charge is still going in.
+ */
+static int whole_percent(int pm)
+{
+	int pc = (pm + 5) / 10;
+
+	return pc > 99 && bat.state == BATTERY_CHARGING ? 99 : pc;
+}
+
 int battery_percent(void)
 {
-	return bat.shown < 0 ? -ENODEV : bat.shown / 10;
+	return bat.shown < 0 ? -ENODEV : whole_percent(bat.shown);
 }
 
 static int charge_ma(int mv);
@@ -685,7 +733,7 @@ int battery_status(struct battery_status *out)
 	out->trend = bat.trend;
 	out->state = bat.state;
 	out->permille = bat.shown < 0 ? 0 : bat.shown;
-	out->percent = out->permille / 10;
+	out->percent = whole_percent(out->permille);
 	out->ma = bat.ma_avg;
 	out->capacity_mah = bat.capacity;
 	out->holds_mah = bat.holds_mah;
@@ -948,6 +996,9 @@ static void watch_charger(int mv, int load, bool usb)
 		thr = max2(STEP_NEAR_MV, (was_ma + l[3]) * bat.mohm / 3000);
 		bat.near--;
 	}
+	if (bat.state == BATTERY_FULL)
+		thr = min2(thr, max2(STEP_MIN_MV,
+				     (expect_ma() / END_FRACTION + l[3]) * bat.mohm / 2000));
 	/* the lift above what the load's change alone would give */
 	lifted = min2(v[2], v[3]) - (max2(v[0], v[1]) - dload * bat.mohm / 1000);
 	dropped = min2(v[0], v[1]) - max2(v[2], v[3]);
@@ -955,6 +1006,8 @@ static void watch_charger(int mv, int load, bool usb)
 		/* the board's load is on USB: only another charger moves the cell */
 		thr = max2(STEP_MIN_MV * 2, BOARD_CHARGES ? bat.mohm * 150 / 1000 :
 						    expect_ma() * bat.mohm / 2000);
+		if (bat.state == BATTERY_FULL && !BOARD_CHARGES)
+			thr = max2(STEP_MIN_MV, expect_ma() / END_FRACTION * bat.mohm / 1000);
 		if (!bat.extra_ma && lifted > thr && above_rest(min2(v[2], v[3]), LIFT_MIN_MV)) {
 			if (!BOARD_CHARGES && CONFIG_PT_BATTERY_MODULE_MA && bat.smooth < TAPER_MV)
 				learn_sample(lifted * 1000 / CONFIG_PT_BATTERY_MODULE_MA);
@@ -969,6 +1022,8 @@ static void watch_charger(int mv, int load, bool usb)
 		} else if (bat.extra_ma && dropped > thr) {
 			klog("battery: the %scharger is gone (-%d mV)", BOARD_CHARGES ? "second " : "",
 			     dropped);
+			if (bat.state == BATTERY_FULL && !BOARD_CHARGES)
+				charge_finished();
 			if (!BOARD_CHARGES && CONFIG_PT_BATTERY_MODULE_MA && bat.rest < TAPER_MV)
 				learn_sample(dropped * 1000 / CONFIG_PT_BATTERY_MODULE_MA);
 			bat.extra_ma = 0;
@@ -993,6 +1048,8 @@ static void watch_charger(int mv, int load, bool usb)
 	} else if (bat.charger && dropped > thr) {
 		bat.charger = false;
 		klog("battery: off the charger, by the step (-%d mV)", dropped);
+		if (bat.state == BATTERY_FULL)
+			charge_finished();
 		if (!BOARD_CHARGES && CONFIG_PT_BATTERY_MODULE_MA && bat.rest < TAPER_MV)
 			learn_sample(dropped * 1000 / CONFIG_PT_BATTERY_MODULE_MA);
 		if (bat.learnable && bat.rose && bat.state == BATTERY_CHARGING && bat.rest < TAPER_MV)
@@ -1152,6 +1209,8 @@ static void count_charge(void)
 		far = abs(target - bat.charge) > full / 1000 * FAR_PERMILLE;
 		if (bat.state != BATTERY_FULL && now < bat.settle)
 			pull = PULL_CHARGING;
+		else if (target > full / 1000 * TOP_PERMILLE && bat.charge > full / 1000 * TOP_PERMILLE)
+			pull = PULL_CHARGING;	/* the top of the table: see SETTLE_FULL_US */
 		else
 			pull = far ? PULL_FAST : PULL;
 		bat.charge += (target - bat.charge) / pull;
@@ -1184,8 +1243,8 @@ static void count_charge(void)
 		else if (abs(pm - bat.shown) > SLIDE)
 			pm = bat.shown + (pm > bat.shown ? SLIDE : -SLIDE);
 	}
-	if (pm >= 1000 && bat.state != BATTERY_FULL)
-		pm = 999;
+	if (pm >= 1000 && bat.state == BATTERY_CHARGING)
+		pm = 999;		/* 100 is for when the charger says so */
 	bat.shown = pm;
 	bat.reseed = false;
 }
@@ -1336,6 +1395,15 @@ static void update_trend(int mv)
 			klog("battery: not charging after all: the cell is not above rest");
 			return;
 		}
+	}
+	if (bat.charger && bat.state == BATTERY_FULL && !(bat.usb && BOARD_CHARGES) &&
+	    bat.smooth < DONE_MV - FULL_FALL_MV) {
+		charge_finished();
+		bat.charger = false;
+		bat.extra_ma = 0;
+		bat.rest = 0;
+		klog("battery: off the charger: the cell is falling from where it was held");
+		return;
 	}
 	if (bat.samples < TREND_SAMPLES || bat.state == BATTERY_FULL)
 		return;

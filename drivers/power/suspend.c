@@ -154,6 +154,14 @@ static int watch_button(void)
  */
 void power_quiesce(void)
 {
+	/*
+	 * Light sleep off first. While it is on, ESP-IDF keeps the timer
+	 * armed as a wake source for its own naps, and deep sleep takes that
+	 * over: the board, suspending with its screen dark, woke on "the
+	 * timer" the moment it slept, every time. Turning it off disarms the
+	 * timer; power_suspend() arms it again if it wants one.
+	 */
+	cpufreq_set_idle_sleep(false);
 	battery_note("going to sleep");
 	clock_save();		/* the reset button, after this, starts it at 1970 */
 	clock_sleeping();

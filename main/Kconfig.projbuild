@@ -70,8 +70,9 @@ config PT_IDLE_SUSPEND_MIN
 	default 15
 	help
 	  Only when nothing is running: every terminal at its shell prompt,
-	  no sound playing and no PC on the USB port. Deep sleep until a
-	  key, an alarm or the button. `power suspend` changes it.
+	  no sound playing, no PC on the USB port and no charger charging
+	  the cell. Deep sleep until a key, an alarm or the button.
+	  `power suspend` changes it.
 
 config PT_VT_COUNT
 	int "Virtual terminals"

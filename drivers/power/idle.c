@@ -204,9 +204,24 @@ static bool watched(void)
 	return keep && vt_screen_front();
 }
 
+/*
+ * A charger at work on the cell: the board stays up (dark, light-sleeping)
+ * to follow the charge and see it finish, which asleep it cannot -- it
+ * woke from a charge to a level read off the lifted voltage, and never
+ * saw the end that makes it 100%.
+ */
+static bool charging(void)
+{
+	struct battery_status b;
+
+	return !battery_status(&b) && b.charger &&
+	       (b.state == BATTERY_CHARGING || b.state == BATTERY_FULL);
+}
+
 static bool may_suspend(void)
 {
-	if (keep || audio_busy() || alarm_ringing(NULL) || usb_serial_jtag_is_connected())
+	if (keep || audio_busy() || alarm_ringing(NULL) || usb_serial_jtag_is_connected() ||
+	    charging())
 		return false;
 	return nothing_running();
 }
