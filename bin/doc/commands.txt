@@ -71,7 +71,15 @@ JOBS
   fg [%N] / bg [%N] bring one to the front / let it
                     go on behind; kill %N ends it
 
+CALCULATOR
+  calc 2^10/3       one answer; calc alone is a
+                    prompt with ans and names
+                    (r = 2.5), deg and rad
+  calc '(1+2)*3'    quote ( ) and *: the shell's
+  sqrt sin ln log round min max gcd, 5! and 15%
+
 SYSTEM
+  picofetch   the machine at a glance
   ps top kill free dmesg uptime uname date time
   whoami hostname
   sleep env which clear reboot chvt screenshot

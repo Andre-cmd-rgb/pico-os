@@ -173,7 +173,8 @@ as util-linux's does.
 | diary | `alarm todo calendar cal` |
 | checksums | `cksum md5sum sha1sum sha256sum sha512sum` |
 | scripts | `echo printf seq expr xargs basename dirname realpath yes` |
-| system | `ps top kill free dmesg uptime uname whoami hostname date time sleep env which clear reboot theme` |
+| system | `picofetch ps top kill free dmesg uptime uname whoami hostname date time sleep env which clear reboot theme` |
+| calculator | `calc` (`calc 2^10/3`, or a prompt with `ans`, names, `deg`) |
 | power | `cpufreq power suspend poweroff led battery` |
 | shell | `cd exit export unset set local read eval source type command alias unalias trap jobs fg bg history sh` |
 | sound | `play rec beep volume` |

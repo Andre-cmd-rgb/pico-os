@@ -35,8 +35,8 @@ SOURCES = [os.path.join(HERE, "host_pt.c")] + [
     os.path.join(ROOT, p) for p in (
         "bin/diff.c", "bin/filters.c", "bin/find.c", "bin/sums.c", "bin/regex.c", "bin/sed.c", "bin/shellutils.c", "bin/sort.c",
         "bin/textutils.c", "bin/util.c", "kernel/match.c", "bin/notes.c", "bin/pick.c",
-        "bin/dates.c", "bin/todo.c", "bin/calendar.c")]
-PROGRAMS = ("basename cal calendar cksum cmp cut diff dirname du echo expr find grep head notes "
+        "bin/dates.c", "bin/todo.c", "bin/calendar.c", "bin/calc.c")]
+PROGRAMS = ("basename cal calc calendar cksum cmp cut diff dirname du echo expr find grep head notes "
             "printf realpath sed seq sort tail tee todo tr uniq wc xargs yes").split()
 VERBOSE = "-v" in sys.argv
 
@@ -498,6 +498,36 @@ CASES = [
     ("cal 13 2026 2>&1; echo $?", "cal: 13: not a month (1-12)\n1\n"),
     # todo: our own; -d fixes "today". (The harness reads @ in an answer as
     # the directory, so the due dates go through tr.)
+    # calc has no GNU namesake: what it should say
+    ("calc 2+3", "5\n"),
+    ("calc '2^10/4'", "256\n"),
+    ("calc '2^10/3'", "341.3333333\n"),
+    ("calc '-2^2'", "-4\n"),
+    ("calc '2^3^2'", "512\n"),
+    ("calc '(1+2)*3'", "9\n"),
+    ("calc 7 % 3", "1\n"),
+    ("calc 50%", "0.5\n"),
+    ("calc '200*15%'", "30\n"),
+    ("calc '5!'", "120\n"),
+    ("calc 'sqrt(2)'", "1.414213562\n"),
+    ("calc 'sin(pi)'", "0\n"),
+    ("calc -d 'sin(30)'", "0.5\n"),
+    ("calc -d 'atan(1)'", "45\n"),
+    ("calc 0x1F + 0b101", "36\n"),
+    ("calc 'max(3, 8, 2)'", "8\n"),
+    ("calc 'min(3, 8, 2)'", "2\n"),
+    ("calc 'root(-27, 3)'", "-3\n"),
+    ("calc 'gcd(12, 18)'", "6\n"),
+    ("calc 0.1+0.2", "0.3\n"),
+    ("calc 1e20", "1e+20\n"),
+    ("calc 1/0 2>&1; echo $?", "calc: 1/0: division by zero\n1\n"),
+    ("calc '2+' 2>&1; echo $?", "calc: 2+: a number is missing at the end\n1\n"),
+    ("calc '(1+2' 2>&1; echo $?", "calc: (1+2: a ) is missing\n1\n"),
+    ("calc '1+2)' 2>&1; echo $?", "calc: 1+2): a ( is missing\n1\n"),
+    ("calc 'foo(2)' 2>&1; echo $?", "calc: foo(2): no such function\n1\n"),
+    ("calc 'sqrt(-1)' 2>&1; echo $?", "calc: sqrt(-1): outside what the function takes\n1\n"),
+    ("printf '2*3\\nans+1\\nx = 4\\nx^2\\n' | calc", "6\n7\n4\n16\n"),
+    ("printf 'deg\\ncos(60)\\nrad\\ncos(0)\\n' | calc", "0.5\n1\n"),
     ("todo -f todo.md -d 2026-09-24 ls",
      " 1  [ ] consegnare ricerca                                      late: Tue 22 Sep\n"
      " 2  [ ] studiare storia                                                 tomorrow\n"

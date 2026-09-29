@@ -4,11 +4,13 @@ idf_component_register(
 		alarm.c
 		audio.c
 		bench.c
+		calc.c
 		calendar.c
 		canvas.c
 		dates.c
 		diff.c
 		edit.c
+		fetch.c
 		fileutils.c
 		filters.c
 		find.c
