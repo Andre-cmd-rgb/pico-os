@@ -217,6 +217,29 @@ int wifi_save(const char *ssid, const char *pass)
 	return fclose(f) ? -EIO : 0;
 }
 
+struct saved_pass {
+	const char	*ssid;
+	char		*pass;
+	size_t		 size;
+};
+
+static bool find_saved(const char *ssid, const char *pass, void *arg)
+{
+	struct saved_pass *want = arg;
+
+	if (strcmp(ssid, want->ssid))
+		return false;
+	strlcpy(want->pass, pass, want->size);
+	return true;
+}
+
+bool wifi_saved(const char *ssid, char *pass, size_t size)
+{
+	struct saved_pass want = { ssid, pass, size };
+
+	return each_saved(find_saved, &want);
+}
+
 int wifi_forget(const char *ssid)
 {
 	char path[64], tmp[72], line[WIFI_LINE], copy[WIFI_LINE];
@@ -273,6 +296,7 @@ static int wait_for_ip(int timeout_ms)
 int wifi_connect(const char *ssid, const char *pass, int timeout_ms)
 {
 	wifi_config_t cfg = { 0 };
+	bool was_on;
 	int ret;
 
 	if (!started)
@@ -291,7 +315,16 @@ int wifi_connect(const char *ssid, const char *pass, int timeout_ms)
 	strlcpy(current, ssid, sizeof(current));
 	want_connection = true;
 	last_reason = 0;
-	esp_wifi_disconnect();
+	/*
+	 * Off the network we are on, and its going heard before listening
+	 * for the new one: otherwise the event for leaving it comes in late
+	 * and is taken for the new one refusing us -- joining the network
+	 * the board was already on said "is the password right?".
+	 */
+	was_on = xEventGroupGetBits(events) & BIT_GOT_IP;
+	xEventGroupClearBits(events, BIT_FAILED);
+	if (!esp_wifi_disconnect() && was_on)
+		xEventGroupWaitBits(events, BIT_FAILED, pdFALSE, pdFALSE, pdMS_TO_TICKS(1000));
 	xEventGroupClearBits(events, BIT_GOT_IP | BIT_FAILED);
 	if (esp_wifi_set_config(WIFI_IF_STA, &cfg) || esp_wifi_connect()) {
 		xSemaphoreGive(lock);
@@ -671,6 +704,7 @@ int  wifi_scan(struct wifi_ap *out, int max) { return -ENODEV; }
 int  wifi_state(struct wifi_info *out) { return -ENODEV; }
 int  wifi_save(const char *ssid, const char *pass) { return -ENODEV; }
 int  wifi_forget(const char *ssid) { return -ENODEV; }
+bool wifi_saved(const char *ssid, char *pass, size_t size) { return false; }
 int  wifi_ntp_sync(int timeout_ms) { return -ENODEV; }
 int  wifi_radio(bool on) { return -ENODEV; }
 

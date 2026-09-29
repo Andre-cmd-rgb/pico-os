@@ -70,6 +70,32 @@ int	for_each_input(const char *prog, int argc, char **argv, int first,
  */
 const char *home_dir(char *buf, size_t size, const char *sub);
 
+/* Where pictures of the screen go: ~/photos/screenshots, made if it is not
+ * there, or /tmp when there is no card. Also in sysutils.c. */
+const char *shots_dir(char *buf, size_t size);
+
+/*
+ * Questions at the prompt, for setup and wifi (sysutils.c, on the board).
+ * ask_text: a line, `dflt` offered in brackets and taken for an empty
+ * one; 0, or -ECANCELED for Ctrl-C, Esc or the end of input.
+ * ask_yes: y or n, Enter being `dflt`; 1, 0, or -ECANCELED.
+ * ask_secret: a line shown as a star for each character, for a password.
+ */
+int	ask_text(const char *prompt, const char *dflt, char *out, size_t size);
+int	ask_yes(const char *question, bool dflt);
+int	ask_secret(const char *prompt, char *buf, size_t size);
+
+/*
+ * Joining Wi-Fi, for wifi and setup (net.c). wifi_join: `ssid` with the
+ * password `given`, or the one saved for it, or one asked for when the
+ * network is locked, and saved in /etc/wifi once it connects.
+ * wifi_choose: the networks in range listed and the one picked joined --
+ * a number, a name (a typed ' finds a phone's ’), r to look again.
+ * Both: 1 joined, 0 not, -ECANCELED.
+ */
+int	wifi_join(const char *ssid, bool secure, const char *given);
+int	wifi_choose(void);
+
 /* A whole decimal number, sign allowed: 0, or -EINVAL for anything else. */
 int	parse_long(const char *s, long *out);
 

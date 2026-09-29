@@ -619,11 +619,11 @@ static void requeue(struct slot *slots, int ahead, int from, int to, const struc
 
 static void save_shot(struct canvas *c, char *shot, size_t size)
 {
-	char photos[64];
+	char dir[64];
 
-	home_dir(photos, sizeof(photos), "photos");
+	shots_dir(dir, sizeof(dir));
 	if (vt_screen_begin())
-		canvas_save(c, sd_mounted() ? photos : "/tmp", shot, size);
+		canvas_save(c, dir, shot, size);
 	vt_screen_end();
 }
 

@@ -284,6 +284,26 @@ int64_t pt_uptime_us(void)
 }
 
 const char *pt_getenv(const char *name) { return getenv(name); }
+
+/* kernel/sys.c's, over the PC's own calls: "$HOME/dir/name", dir made, "$HOME/old" moved in. */
+int pt_home_file(const char *dir, const char *name, const char *old, char *out, size_t size)
+{
+	const char *home = getenv("HOME");
+	char from[PT_PATH_MAX];
+	struct stat st;
+
+	if (!home || !*home)
+		return -ENOENT;
+	if ((size_t)snprintf(out, size, "%s/%s", home, dir) >= size)
+		return -ENAMETOOLONG;
+	mkdir(out, 0777);
+	if ((size_t)snprintf(out, size, "%s/%s/%s", home, dir, name) >= size)
+		return -ENAMETOOLONG;
+	if (old && (size_t)snprintf(from, sizeof(from), "%s/%s", home, old) < sizeof(from) &&
+	    !stat(from, &st) && S_ISREG(st.st_mode) && stat(out, &st))
+		rename(from, out);
+	return 0;
+}
 int pt_setenv(const char *name, const char *value) { return NEG(setenv(name, value, 1)); }
 int pt_unsetenv(const char *name) { return NEG(unsetenv(name)); }
 

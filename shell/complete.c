@@ -115,6 +115,26 @@ size_t word_scan(const char *line, size_t pos, char *word, size_t size, char *qu
 	return scan(line, pos, &w, word, size, quote);
 }
 
+bool line_has_secret(const char *line)
+{
+	size_t len = strlen(line);
+	char word[64], quote;
+	struct words w;
+
+	/* each command on the line: its end is a ; & | outside quotes */
+	for (size_t pos = 0; pos <= len; pos++) {
+		if (pos < len && !strchr(";&|", line[pos]))
+			continue;
+		scan(line, pos, &w, word, sizeof(word), &quote);
+		if (quote)
+			continue;
+		if (w.n + (*word != '\0') >= 4 && !strcmp(w.text[0], "wifi") &&
+		    !strcmp(w.text[1], "connect"))
+			return true;
+	}
+	return false;
+}
+
 static int add_candidate(struct candidates *c, const char *name, bool is_dir)
 {
 	for (int i = 0; i < c->count; i++)
@@ -188,6 +208,30 @@ static void add_paths(struct candidates *out, const char *word, bool files, cons
 	pt_closedir(d);
 }
 
+/* The files in the directories on $PATH: scripts and compiled pico
+ * programs in ~/bin, and whatever gets installed there. */
+static void add_path_files(struct candidates *out, const char *word)
+{
+	const char *path = pt_getenv("PATH");
+	size_t len = strlen(word);
+	char dir[PT_PATH_MAX];
+	struct pt_dirent ent;
+	pt_dir_t *d;
+
+	for (const char *p = path ? path : ""; *p;) {
+		size_t n = strcspn(p, ":");
+
+		snprintf(dir, sizeof(dir), "%.*s", (int)n, p);
+		p += n + (p[n] == ':');
+		if (!*dir || pt_opendir(dir, &d))
+			continue;
+		while (pt_readdir(d, &ent) == 1)
+			if (!ent.is_dir && ent.name[0] != '.' && !strncmp(ent.name, word, len))
+				add_candidate(out, ent.name, false);
+		pt_closedir(d);
+	}
+}
+
 static void add_commands(struct sh *sh, struct candidates *out, const char *word)
 {
 	size_t len = strlen(word);
@@ -199,6 +243,7 @@ static void add_commands(struct sh *sh, struct candidates *out, const char *word
 	for (struct function *f = sh->functions; f; f = f->next)
 		if (!strncmp(f->name, word, len))
 			add_candidate(out, f->name, false);
+	add_path_files(out, word);
 }
 
 struct more_ctx {

@@ -321,8 +321,7 @@ about 15) until `modem on`, and `poweroff` or a flat cell do the same.
 No wiring: the radio is in the chip and its antenna is on the board.
 
 ```
-$ wifi scan
-$ wifi connect mynetwork mypassword
+$ wifi connect           # pick from a list; the password is asked for
 $ wifi                   # signal, address, gateway
 $ ntp                    # the clock, which otherwise starts in 1970
 ```

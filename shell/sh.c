@@ -38,7 +38,6 @@
 #include "pt/program.h"
 #include "sh.h"
 
-#define HISTORY_FILE	".sh_history"
 #define STACK_RESERVE	3072	/* for the deepest leaf calls, printf among them */
 
 enum {
@@ -159,11 +158,11 @@ static void cat_file(const char *path)
 	pt_close(fd);
 }
 
+/* ~/.config/sh_history, which was ~/.sh_history */
 static void history_path(char *out, size_t size)
 {
-	const char *home = pt_getenv("HOME");
-
-	snprintf(out, size, "%s/%s", home ? home : "", HISTORY_FILE);
+	if (pt_home_file(".config", "sh_history", ".sh_history", out, size))
+		*out = '\0';
 }
 
 static void history_load(struct sh *sh)
@@ -306,7 +305,8 @@ static int interactive(struct sh *sh)
 			continue;
 		if (len > 0) {
 			history_add(&sh->history, line);
-			history_append(line);
+			if (!line_has_secret(line))
+				history_append(line);
 		}
 		sb_add(&text, line, len);
 		sb_putc(&text, '\n');

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -523,6 +524,102 @@ const char *home_dir(char *buf, size_t size, const char *sub)
 {
 	snprintf(buf, size, "%s/%s", user_home(), sub);
 	return buf;
+}
+
+const char *shots_dir(char *buf, size_t size)
+{
+	if (!sd_mounted()) {
+		strlcpy(buf, "/tmp", size);
+		return buf;
+	}
+	pt_mkdir(home_dir(buf, size, "photos"));
+	pt_mkdir(home_dir(buf, size, "photos/screenshots"));
+	return buf;
+}
+
+int ask_text(const char *prompt, const char *dflt, char *out, size_t size)
+{
+	char line[96];
+	char *s, *e;
+	ssize_t n;
+
+	if (dflt && *dflt)
+		pt_printf("%s [%s]: ", prompt, dflt);
+	else
+		pt_printf("%s: ", prompt);
+	n = pt_read(PT_STDIN, line, sizeof(line) - 1);
+	if (n <= 0 || pt_interrupted()) {
+		if (!n)
+			pt_puts("\n");	/* Ctrl-D: Ctrl-C has had its ^C */
+		return -ECANCELED;
+	}
+	line[n] = '\0';
+	while (!strchr(line, '\n')) {		/* the rest of a long line */
+		char rest[32];
+
+		n = pt_read(PT_STDIN, rest, sizeof(rest) - 1);
+		if (n <= 0)
+			return -ECANCELED;
+		rest[n] = '\0';
+		if (strchr(rest, '\n'))
+			break;
+	}
+	for (s = line; *s == ' ' || *s == '\t'; s++)
+		;
+	e = s + strcspn(s, "\r\n");
+	while (e > s && (e[-1] == ' ' || e[-1] == '\t'))
+		e--;
+	*e = '\0';
+	strlcpy(out, *s ? s : dflt ? dflt : "", size);
+	return 0;
+}
+
+int ask_yes(const char *question, bool dflt)
+{
+	char prompt[96], a[8];
+
+	snprintf(prompt, sizeof(prompt), "%s [%s]", question, dflt ? "Y/n" : "y/N");
+	for (;;) {
+		if (ask_text(prompt, NULL, a, sizeof(a)))
+			return -ECANCELED;
+		if (!*a)
+			return dflt;
+		if (!strcasecmp(a, "y") || !strcasecmp(a, "yes"))
+			return 1;
+		if (!strcasecmp(a, "n") || !strcasecmp(a, "no"))
+			return 0;
+	}
+}
+
+int ask_secret(const char *prompt, char *buf, size_t size)
+{
+	size_t n = 0;
+	int ret = 0, k;
+
+	pt_printf("%s: ", prompt);
+	pt_tty_raw(PT_STDIN, true);
+	for (;;) {
+		k = pt_readkey(PT_STDIN);
+		if (k < 0 || k == PT_KEY_ESC || k == PT_CTRL('c') || (k == PT_CTRL('d') && !n)) {
+			ret = -ECANCELED;
+			break;
+		}
+		if (k == '\r' || k == '\n')
+			break;
+		if (k == 0x7f || k == '\b') {
+			if (n) {
+				n--;
+				pt_puts("\b \b");
+			}
+		} else if (k >= ' ' && k < 0x100 && n < size - 1) {
+			buf[n++] = (char)k;
+			pt_puts("*");
+		}
+	}
+	buf[n] = '\0';
+	pt_tty_raw(PT_STDIN, false);
+	pt_puts("\n");
+	return ret;
 }
 
 PT_PROGRAM(whoami, "print the user's name")
@@ -1562,8 +1659,8 @@ PT_PROGRAM_NAMED(factory_reset, "factory-reset", 0,
  */
 PT_PROGRAM(screenshot, "save a picture of the screen\n"
 	   "usage: screenshot [file.bmp]\n"
-	   "Default is the next free ~/photos/shot-N.bmp, or /tmp when there\n"
-	   "is no card.")
+	   "Default is the next free ~/photos/screenshots/shot-N.bmp, or /tmp\n"
+	   "when there is no card.")
 {
 	char path[PT_PATH_MAX];
 	struct pt_stat st;
@@ -1580,12 +1677,10 @@ PT_PROGRAM(screenshot, "save a picture of the screen\n"
 	if (argc == 2) {
 		strlcpy(path, argv[1], sizeof(path));
 	} else {
-		char photos[64];
-		const char *dir = sd_mounted() ? home_dir(photos, sizeof(photos), "photos") : "/tmp";
+		char dir[64];
 		int n = 1;
 
-		if (sd_mounted())
-			pt_mkdir(dir);
+		shots_dir(dir, sizeof(dir));
 		do {
 			snprintf(path, sizeof(path), "%s/shot-%d.bmp", dir, n++);
 		} while (n < 1000 && !pt_stat(path, &st));

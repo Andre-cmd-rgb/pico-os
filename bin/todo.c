@@ -1,7 +1,7 @@
 /*
  * todo - a to-do list.
  *
- * The list is ~/todo.md, a Markdown checklist, so it can be written on a
+ * The list is ~/agenda/todo.md, a Markdown checklist, so it can be written on a
  * PC too, `notes` shows it, and whatever else is in the file (headings,
  * lines of notes) is left as it was:
  *
@@ -36,11 +36,9 @@ struct list {
 
 bool pda_file(const char *given, const char *name, char *out, size_t size)
 {
-	const char *home = pt_getenv("HOME");
-
 	if (given)
 		return strlcpy(out, given, size) < size;
-	return home && join_path(home, name, out, size);
+	return !pt_home_file("agenda", name, name, out, size);	/* it was ~/name */
 }
 
 /* "- [ ] text @2026-09-30": an item, or false for any other line. */
@@ -540,7 +538,7 @@ static int by_line(struct list *l, int line)
 
 PT_COMPLETE(todo, ": ls add done undo rm clear -f -d\n-f: <file:.md>\n")
 
-PT_PROGRAM(todo, "a to-do list, in ~/todo.md\n"
+PT_PROGRAM(todo, "a to-do list, in ~/agenda/todo.md\n"
 	   "usage: todo                 the list, to work on\n"
 	   "       todo ls              print it\n"
 	   "       todo add TEXT [@DAY] @tomorrow, @fri, @30/9\n"
@@ -568,7 +566,7 @@ PT_PROGRAM(todo, "a to-do list, in ~/todo.md\n"
 		}
 	}
 	if (!pda_file(file, "todo.md", path, sizeof(path)))
-		return fail("todo", "~/todo.md", -ENAMETOOLONG);
+		return fail("todo", "~/agenda/todo.md", -ENAMETOOLONG);
 	if ((err = load(&l, path))) {
 		list_free(&l);
 		return fail("todo", path, err);

@@ -62,3 +62,14 @@ void	wav_header(uint8_t *out, int rate, int channels, uint32_t bytes);
 int	wav_open(int fd, const uint8_t *head, size_t n, struct codec **out);
 int	flac_open(int fd, const uint8_t *head, size_t n, struct codec **out);
 int	mp3_open(int fd, const uint8_t *head, size_t n, struct codec **out);
+
+/*
+ * A recorded voice cleaned as it comes in (voice.c): rumble, hiss, level
+ * and peaks. `reduce_db` is how far the hiss may be taken down, 15 being
+ * about right; `target_db` the speech's level, -20 being loud. voice_run
+ * works in place on 16-bit mono and hands the sound back 16 ms late.
+ */
+struct voice;
+struct voice *voice_new(int rate, float reduce_db, float target_db);
+void	voice_run(struct voice *v, int16_t *pcm, size_t n);
+void	voice_free(struct voice *v);

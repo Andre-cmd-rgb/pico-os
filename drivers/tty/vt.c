@@ -576,7 +576,8 @@ static void draw_cell(uint8_t *px, int span_w, int cell_x, uint8_t glyph, uint16
 
 		for (int x = 0; x < CELL_W; x++) {
 			int gx = x / SCALE;
-			bool on = block || (gx < FONT_W && ((rowbits >> (FONT_W - 1 - gx)) & 1));
+			bool on = block || (gx < FONT_W ? (rowbits >> (FONT_W - 1 - gx)) & 1 :
+					    rowbits & 0x20);	/* an icon's sixth column */
 			const uint8_t *c = on ? fg : bg;
 
 			if (cursor && ((cursor_shape == VT_CURSOR_UNDERLINE && py >= CELL_H - thick) ||
@@ -687,8 +688,6 @@ static void draw_status(uint8_t *pixels)
 		else if (screens[active].view)	/* looking back: how far */
 			snprintf(text + strlen(text), sizeof(text) - strlen(text), "  \u2191%d",
 				 screens[active].view);
-		else if (!wifi_state(&net) && net.up)
-			snprintf(text + strlen(text), sizeof(text) - strlen(text), "  %s", net.ssid);
 		n = to_glyphs(text, bar, cols / 2 - 3);
 		mid_at = (cols - 5) / 2;
 		snprintf(text, sizeof(text), "%02d:%02d", tm.tm_hour, tm.tm_min);
@@ -704,6 +703,12 @@ static void draw_status(uint8_t *pixels)
 			right[n++] = FONT_ALARM;
 			snprintf(text, sizeof(text), "%02d:%02d  ", at.tm_hour, at.tm_min);
 			n += to_glyphs(text, right + n, sizeof(right) - n);
+		}
+		/* on a network: its sign, as a phone shows it; `wifi` names it */
+		if (!wifi_state(&net) && net.up) {
+			right[n++] = FONT_WIFI;		/* two cells wide */
+			right[n++] = FONT_WIFI + 1;
+			right[n++] = ' ' - FONT_FIRST;
 		}
 		/* no cell fitted: nothing to show */
 		if (!battery_status(&bat) && bat.state != BATTERY_NONE && bat.state != BATTERY_USB) {

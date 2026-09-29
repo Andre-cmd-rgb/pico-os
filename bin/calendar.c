@@ -5,7 +5,7 @@
  * -s says Sunday, and a narrow screen gets two months to a row instead of
  * three. `calendar` is the diary: a month to move about in with the
  * arrows, and under it the day's events and what is due on it from
- * ~/todo.md. The events are in ~/calendar.txt, a line each, so they can
+ * ~/agenda/todo.md. The events are in ~/agenda/calendar.txt, a line each, so they can
  * be typed on a PC as well:
  *
  *	2026-09-30 10:00 Verifica di storia !15
@@ -51,7 +51,7 @@ struct diary {
 	int		 nlines, cap;
 	struct event	*ev;
 	int		 n;
-	bool		 no_reminders;	/* not ~/calendar.txt: leave the alarms be */
+	bool		 no_reminders;	/* not ~/agenda/calendar.txt: leave the alarms be */
 };
 
 /* ------------------------------------------------------------ cal */
@@ -833,7 +833,7 @@ usage:
 
 PT_COMPLETE(calendar, ": agenda add rm -f -d\nadd: every yearly tomorrow\n-f: <file:.txt>\n")
 
-PT_PROGRAM(calendar, "the diary: events in ~/calendar.txt\n"
+PT_PROGRAM(calendar, "the diary: events in ~/agenda/calendar.txt\n"
 	   "usage: calendar            the month, to browse\n"
 	   "       calendar agenda [N] the next N days (7)\n"
 	   "       calendar add DAY [10:00[-11:00]] what [!15]\n"
@@ -841,7 +841,7 @@ PT_PROGRAM(calendar, "the diary: events in ~/calendar.txt\n"
 	   "       calendar rm DAY [N] the Nth event that day\n"
 	   "  -f FILE another diary, -d DAY as if today\n"
 	   "!15 chimes 15 minutes before; what is due in\n"
-	   "~/todo.md shows up on its day.")
+	   "~/agenda/todo.md shows up on its day.")
 {
 	struct opt o = { .ind = 1 };
 	struct diary d;
@@ -863,13 +863,13 @@ PT_PROGRAM(calendar, "the diary: events in ~/calendar.txt\n"
 		}
 	}
 	if (!pda_file(file, "calendar.txt", path, sizeof(path)))
-		return fail("calendar", "~/calendar.txt", -ENAMETOOLONG);
+		return fail("calendar", "~/agenda/calendar.txt", -ENAMETOOLONG);
 	if ((err = load(&d, path))) {
 		diary_free(&d);
 		return fail("calendar", path, err);
 	}
 	cmd = o.ind < argc ? argv[o.ind] : NULL;
-	/* the reminders are ~/calendar.txt's: another diary does not touch them */
+	/* the reminders are ~/agenda/calendar.txt's: another diary does not touch them */
 	if (file)
 		d.no_reminders = true;
 	sync_reminders(&d, today);

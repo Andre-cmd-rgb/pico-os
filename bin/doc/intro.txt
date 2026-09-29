@@ -64,16 +64,19 @@ WHERE THINGS ARE
   boots and every command works with an empty card
   slot. The SD card holds everything you make: it IS
   your home directory, mounted at /home/NAME (the
-  name setup asked for) as well as /mnt/sd. Take the card to a PC and your files
-  are at the top of it; put a blank card in and it is
-  laid out for you.
+  name setup asked for) as well as /mnt/sd. Take
+  the card to a PC and your files are at the top of
+  it; put a blank card in and it is laid out for you.
 
+  ~/agenda     the calendar and the to-do list
   ~/bin        your scripts, on PATH
   ~/music      .wav .flac .mp3
   ~/notes      text
-  ~/photos     .bmp .jpg, and screenshots
+  ~/photos     .bmp .jpg, and screenshots/
+  ~/recordings what rec records
   ~/roms       .nes
   ~/video      converted clips
+  ~/.config    what programs remember (hidden)
 
   /            13 MB of the flash: the system
   /home/NAME   the SD card, FAT32, readable on a PC

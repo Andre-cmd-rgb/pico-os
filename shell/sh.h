@@ -42,6 +42,9 @@ struct history *sh_history(struct sh *sh);
 int	sh_candidates(struct sh *sh, const char *line, size_t word_start, const char *word,
 		      struct candidates *out);
 size_t	word_scan(const char *line, size_t pos, char *word, size_t size, char *quote);
+/* A password on the line (`wifi connect ssid password`): kept out of the
+ * history file, which is on the card, where any PC can read it. */
+bool	line_has_secret(const char *line);
 void	candidates_free(struct candidates *c);
 int	run_file(struct sh *sh, const char *path);
 

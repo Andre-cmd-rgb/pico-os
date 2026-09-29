@@ -96,6 +96,7 @@ static int			alc_max;
  * microphone never gets a clock and every read times out.
  */
 static volatile bool		tx_on, rx_on, amp_on, alc_on, codec_on = true;
+static int			alc_held;	/* audio_mic_alc_hold()s */
 static TaskHandle_t		owner;		/* an alarm ringing */
 static int			tx_rate = CONFIG_PT_AUDIO_RATE;	/* the codec's clock */
 
@@ -176,7 +177,7 @@ static void codec_wake(void)
 	es8311_power(true);
 	es8311_set_volume(volume);
 	es8311_set_mic_gain(mic_gain);
-	if (alc_on)
+	if (alc_on && !alc_held)
 		es8311_set_alc(true, alc_max);
 	codec_on = true;
 }
@@ -890,7 +891,23 @@ int audio_set_mic_alc(bool on, int max_db)
 {
 	alc_on = on;
 	alc_max = max_db;
-	return codec_on ? es8311_set_alc(on, max_db) : 0;
+	return codec_on ? es8311_set_alc(on && !alc_held, max_db) : 0;
+}
+
+/*
+ * The codec's own gain riding held off, counted: rec's voice cleaning
+ * levels the sound itself, and the codec's control ramping the hiss up
+ * 15 to 20 dB in a recording's first seconds was taken for speech.
+ */
+void audio_mic_alc_hold(bool hold)
+{
+	if (!lock)
+		return;
+	xSemaphoreTake(lock, portMAX_DELAY);
+	alc_held += hold ? 1 : -1;
+	if (codec_on && alc_on && alc_held == (hold ? 1 : 0))
+		es8311_set_alc(!alc_held, alc_max);
+	xSemaphoreGive(lock);
 }
 
 bool audio_mic_alc(void)
@@ -942,9 +959,12 @@ ssize_t audio_write(const void *pcm, size_t bytes, int channels)
 }
 
 /*
- * Record 16-bit mono samples, at the rate on the wire: the caller's, if
- * nothing else is playing. The mixer keeps the transmitter's clock
- * running while a recording is on.
+ * Record 16-bit mono samples at the caller's rate (audio_set_rate), or the
+ * wire's if it set none. The recording has the clock: whatever else plays
+ * meanwhile is brought to its rate by the mixer, which keeps the
+ * transmitter's clock running while a recording is on. Taking the wire's
+ * rate instead would make a recording started during a song say 16 kHz
+ * in its header and hold 44.1.
  */
 ssize_t audio_read(void *pcm, size_t bytes)
 {
@@ -961,7 +981,7 @@ ssize_t audio_read(void *pcm, size_t bytes)
 		struct stream *s = find(xTaskGetCurrentTaskHandle());
 
 		/* the transmitter makes the clock the microphone is read with */
-		if (clock_at(tx_on || !s ? rate : s->rate) || i2s_channel_enable(rx)) {
+		if (clock_at(s ? s->rate : rate) || i2s_channel_enable(rx)) {
 			xSemaphoreGive(lock);
 			free(scratch);
 			return -EIO;
@@ -1063,6 +1083,7 @@ int audio_set_volume(int percent) { return -ENODEV; }
 int audio_volume(void) { return 0; }
 int audio_set_mic_gain(int db) { return -ENODEV; }
 int audio_set_mic_alc(bool on, int max_db) { return -ENODEV; }
+void audio_mic_alc_hold(bool hold) { }
 bool audio_mic_alc(void) { return false; }
 ssize_t audio_write(const void *pcm, size_t bytes, int channels) { return -ENODEV; }
 ssize_t audio_read(void *pcm, size_t bytes) { return -ENODEV; }

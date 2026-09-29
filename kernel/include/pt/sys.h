@@ -117,6 +117,8 @@ int	pt_sleep_ms(uint32_t ms);	/* -EINTR if interrupted */
 int64_t	pt_uptime_us(void);
 
 const char *pt_getenv(const char *name);
+/* "$HOME/dir/name", dir made, a file at "$HOME/old" moved in: see sys.c */
+int	pt_home_file(const char *dir, const char *name, const char *old, char *out, size_t size);
 int	pt_setenv(const char *name, const char *value);
 int	pt_unsetenv(const char *name);
 int	pt_environ(int index, const char **entry);		/* "NAME=value" */

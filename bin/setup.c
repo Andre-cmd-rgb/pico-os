@@ -22,9 +22,6 @@
 #include "util.h"
 
 #define ANSWER_MAX	96
-#define SCAN_MAX	20
-#define SCAN_SHOWN	9
-#define CONNECT_MS	20000
 #define PLAUSIBLE	1704067200	/* 2024: a clock before it was never set */
 
 /*
@@ -139,97 +136,6 @@ static bool looks_like_tz(const char *s)
 	       !strchr(s, ' ') && strcspn(s, "/") >= head;
 }
 
-/*
- * A line typed at the prompt, `dflt` offered in brackets and taken for
- * an empty line: 0, or -ECANCELED for Ctrl-C, Esc or the end of input.
- */
-static int ask(const char *prompt, const char *dflt, char *out, size_t size)
-{
-	char line[ANSWER_MAX];
-	char *s, *e;
-	ssize_t n;
-
-	if (dflt && *dflt)
-		pt_printf("%s [%s]: ", prompt, dflt);
-	else
-		pt_printf("%s: ", prompt);
-	n = pt_read(PT_STDIN, line, sizeof(line) - 1);
-	if (n <= 0 || pt_interrupted()) {
-		if (!n)
-			pt_puts("\n");	/* Ctrl-D: Ctrl-C has had its ^C */
-		return -ECANCELED;
-	}
-	line[n] = '\0';
-	while (!strchr(line, '\n')) {		/* the rest of a long line */
-		char rest[32];
-
-		n = pt_read(PT_STDIN, rest, sizeof(rest) - 1);
-		if (n <= 0)
-			return -ECANCELED;
-		rest[n] = '\0';
-		if (strchr(rest, '\n'))
-			break;
-	}
-	for (s = line; *s == ' ' || *s == '\t'; s++)
-		;
-	e = s + strcspn(s, "\r\n");
-	while (e > s && (e[-1] == ' ' || e[-1] == '\t'))
-		e--;
-	*e = '\0';
-	strlcpy(out, *s ? s : dflt ? dflt : "", size);
-	return 0;
-}
-
-/* y or n, Enter being `dflt`: 1, 0, or -ECANCELED. */
-static int yes(const char *question, bool dflt)
-{
-	char prompt[ANSWER_MAX], a[8];
-
-	snprintf(prompt, sizeof(prompt), "%s [%s]", question, dflt ? "Y/n" : "y/N");
-	for (;;) {
-		if (ask(prompt, NULL, a, sizeof(a)))
-			return -ECANCELED;
-		if (!*a)
-			return dflt;
-		if (!strcasecmp(a, "y") || !strcasecmp(a, "yes"))
-			return 1;
-		if (!strcasecmp(a, "n") || !strcasecmp(a, "no"))
-			return 0;
-	}
-}
-
-/* A line typed with a star for each character: 0, or -ECANCELED. */
-static int ask_secret(const char *prompt, char *buf, size_t size)
-{
-	size_t n = 0;
-	int ret = 0, k;
-
-	pt_printf("%s: ", prompt);
-	pt_tty_raw(PT_STDIN, true);
-	for (;;) {
-		k = pt_readkey(PT_STDIN);
-		if (k < 0 || k == PT_KEY_ESC || k == PT_CTRL('c') || (k == PT_CTRL('d') && !n)) {
-			ret = -ECANCELED;
-			break;
-		}
-		if (k == '\r' || k == '\n')
-			break;
-		if (k == 0x7f || k == '\b') {
-			if (n) {
-				n--;
-				pt_puts("\b \b");
-			}
-		} else if (k >= ' ' && k < 0x100 && n < size - 1) {
-			buf[n++] = (char)k;
-			pt_puts("*");
-		}
-	}
-	buf[n] = '\0';
-	pt_tty_raw(PT_STDIN, false);
-	pt_puts("\n");
-	return ret;
-}
-
 static void heading(const char *title)
 {
 	pt_printf("\n\x1b[1m%s\x1b[0m\n", title);
@@ -246,7 +152,7 @@ static int step_name(bool first)
 	pt_puts("For the prompt, and your home directory: /home/NAME.\n");
 	strlcpy(old, user_name(), sizeof(old));
 	for (;;) {
-		if (ask("Name", old, name, sizeof(name)))
+		if (ask_text("Name", old, name, sizeof(name)))
 			return -ECANCELED;
 		for (char *p = name; *p; p++)
 			*p = (char)tolower((unsigned char)*p);
@@ -315,7 +221,7 @@ static int step_timezone(void)
 		if (*p == '_')
 			*p = ' ';
 	for (;;) {
-		if (ask("Time zone", dflt, typed, sizeof(typed)))
+		if (ask_text("Time zone", dflt, typed, sizeof(typed)))
 			return -ECANCELED;
 		if (!strcmp(typed, "?")) {
 			list_zones();
@@ -336,53 +242,18 @@ static int step_timezone(void)
 	return 0;
 }
 
-static const char *bars(int rssi)
-{
-	return rssi >= -55 ? "####" : rssi >= -67 ? "### " : rssi >= -78 ? "##  " : "#   ";
-}
-
-/* Join one network: 1 joined, 0 not, -ECANCELED. */
-static int join(const char *ssid, bool secure)
-{
-	char pass[65];
-	time_t now;
-	int err;
-
-	*pass = '\0';
-	if (secure && ask_secret("Password", pass, sizeof(pass)))
-		return -ECANCELED;
-	pt_printf("connecting to %s...\n", ssid);
-	err = wifi_connect(ssid, *pass ? pass : NULL, CONNECT_MS);
-	if (err) {
-		memset(pass, 0, sizeof(pass));
-		pt_printf("could not join: %s\n", err == -ETIMEDOUT ? "no answer" :
-			  secure ? "is the password right?" : "it would not have us");
-		return 0;
-	}
-	if ((err = wifi_save(ssid, *pass ? pass : NULL)))
-		pt_printf("setup: cannot save the network: %s\n", pt_strerror(err));
-	memset(pass, 0, sizeof(pass));
-	pt_printf("joined %s; it is joined again at every start\n", ssid);
-	if (!wifi_ntp_sync(10000)) {
-		now = time(NULL);
-		pt_printf("the clock is set from the network: %s", ctime(&now));
-	}
-	return 1;
-}
-
 static int step_wifi(void)
 {
 	struct wifi_info info;
-	struct wifi_ap *aps;
-	char pick[ANSWER_MAX];
-	int n, r, i;
+	time_t now;
+	int r;
 
 	heading("Wi-Fi");
 	if (!wifi_state(&info) && info.up) {
 		pt_printf("On %s already.\n", info.ssid);
-		r = yes("Join another?", false);
+		r = ask_yes("Join another?", false);
 	} else {
-		r = yes("Join a network now?", true);
+		r = ask_yes("Join a network now?", true);
 	}
 	if (r <= 0)
 		return r;
@@ -391,41 +262,15 @@ static int step_wifi(void)
 			  pt_strerror(r));
 		return 0;
 	}
-	if (!(aps = pt_malloc(sizeof(*aps) * SCAN_MAX)))
-		return 0;
-	for (r = 0; !r;) {
-		pt_puts("looking...\n");
-		n = wifi_scan(aps, SCAN_MAX);
-		if (n < 0) {
-			pt_printf("cannot look: %s\n", pt_strerror(n));
-			break;
-		}
-		for (i = 0; i < n && i < SCAN_SHOWN; i++)
-			pt_printf("%d %-32s %s %s\n", i + 1, aps[i].ssid, bars(aps[i].rssi),
-				  aps[i].secure ? "locked" : "open");
-		if (!n)
-			pt_puts("no networks in range\n");
-		if (ask("A number, a name, r to look again,\nor Enter for none", NULL, pick,
-			sizeof(pick))) {
-			r = -ECANCELED;
-			break;
-		}
-		if (!*pick)
-			break;
-		if (!strcasecmp(pick, "r"))
-			continue;
-		i = atoi(pick);
-		if (i >= 1 && i <= n && i <= SCAN_SHOWN && strspn(pick, "0123456789") == strlen(pick))
-			r = join(aps[i - 1].ssid, aps[i - 1].secure);
-		else
-			r = join(pick, true);	/* one out of range, or hidden */
-		if (!r && (r = yes("Try again?", true)) == 1)
-			r = 0;
-		else if (!r)
-			break;
+	if ((r = wifi_choose()) != 1)
+		return r < 0 ? r : 0;
+	wifi_state(&info);
+	pt_printf("joined %s; it is joined again at every start\n", info.ssid);
+	if (!wifi_ntp_sync(10000)) {
+		now = time(NULL);
+		pt_printf("the clock is set from the network: %s", ctime(&now));
 	}
-	pt_free(aps);
-	return r < 0 ? r : 0;
+	return 0;
 }
 
 static int step_clock(bool asked)
@@ -448,7 +293,7 @@ static int step_clock(bool asked)
 	}
 	pt_puts("as 2026-09-28 14:30.\n");
 	for (;;) {
-		if (ask("Now", NULL, typed, sizeof(typed)))
+		if (ask_text("Now", NULL, typed, sizeof(typed)))
 			return -ECANCELED;
 		if (!*typed)
 			return 0;
@@ -487,7 +332,7 @@ static int step_theme(void)
 	pt_puts("A number shows that theme; Enter keeps it.\n");
 	for (;;) {
 		theme_get(&st);
-		if (ask("Theme", st.name, typed, sizeof(typed)))
+		if (ask_text("Theme", st.name, typed, sizeof(typed)))
 			return -ECANCELED;
 		if (!strcmp(typed, st.name))
 			break;

@@ -8,7 +8,7 @@
  * become cards -- and the arrows and the space bar move through it. `o`
  * lists the headings to jump to, `/` searches, `+` and `-` turn the
  * backlight up and down for reading in the dark, and the place you stopped
- * in each note is remembered in ~/.notes_pos for next time.
+ * in each note is remembered in ~/.config/notes_pos for next time.
  *
  * The screen has one hue at several strengths, so the styles are
  * brightnesses: headings and bold brightest, italics and bullets a paler
@@ -29,7 +29,6 @@
 #endif
 
 #define MAX_FILE	(1 << 20)	/* a megabyte of notes is a lot of notes */
-#define POS_FILE	".notes_pos"
 #define POS_KEEP	200		/* notes whose place is remembered */
 #define TAB_WIDTH	4
 
@@ -1343,11 +1342,10 @@ static void search(struct view *v, int dir)
 
 /* ------------------------------------------------------------ places */
 
+/* ~/.config/notes_pos, which was ~/.notes_pos */
 static bool pos_path(char *out, size_t size)
 {
-	const char *home = pt_getenv("HOME");
-
-	return home && join_path(home, POS_FILE, out, size);
+	return !pt_home_file(".config", "notes_pos", ".notes_pos", out, size);
 }
 
 /* The source line this note was left at, or 0. */

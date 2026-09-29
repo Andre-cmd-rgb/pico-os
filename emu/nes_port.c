@@ -314,11 +314,17 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 		if (want_shot) {
 			char path[64];
 
+			if (sd_mounted()) {	/* bin's shots_dir(), which emu cannot reach */
+				snprintf(path, sizeof(path), "%s/photos", user_home());
+				pt_mkdir(path);
+				strlcat(path, "/screenshots", sizeof(path));
+				pt_mkdir(path);
+			}
 			for (int n = 1; n < 1000; n++) {
 				struct pt_stat st;
 
 				if (sd_mounted())
-					snprintf(path, sizeof(path), "%s/photos/nes-%d.bmp",
+					snprintf(path, sizeof(path), "%s/photos/screenshots/nes-%d.bmp",
 						 user_home(), n);
 				else
 					snprintf(path, sizeof(path), "/tmp/nes-%d.bmp", n);

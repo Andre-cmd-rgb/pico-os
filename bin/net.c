@@ -3,7 +3,7 @@
  *
  *	wifi                    what the radio is doing
  *	wifi scan               what is in range
- *	wifi connect ssid pass  join it, and remember it in /etc/wifi
+ *	wifi connect            pick one, and remember it in /etc/wifi
  *	wifi forget ssid        stop remembering it
  *	wifi off / wifi on      the radio itself
  *	ntp                     set the clock from the network
@@ -14,6 +14,7 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 #include "sdkconfig.h"
@@ -27,6 +28,8 @@
 #include "ping/ping_sock.h"
 
 #define SCAN_MAX	20
+#define SCAN_SHOWN	9		/* the list fits above the question */
+#define NAME_COLS	24		/* of a network's name in a list */
 #define CONNECT_MS	20000
 
 static int no_radio(const char *prog)
@@ -85,6 +88,20 @@ static int show_status(void)
 	return 0;
 }
 
+/*
+ * One network on a line of the 53 columns: names are padded by what they
+ * take on the screen, so a phone's "Andrea’s iPhone" (three bytes for the
+ * ’) lines up with the rest.
+ */
+static void show_ap(int number, const struct wifi_ap *ap)
+{
+	size_t len = utf8_prefix(ap->ssid, strlen(ap->ssid), NAME_COLS);
+	int pad = NAME_COLS - utf8_width(ap->ssid, len);
+
+	pt_printf("%2d %.*s%*s %s %4d ch%-3d %s\n", number, (int)len, ap->ssid, pad, "",
+		  bars(ap->rssi), ap->rssi, ap->channel, ap->secure ? "locked" : "open");
+}
+
 static int do_scan(void)
 {
 	struct wifi_ap *aps = pt_malloc(sizeof(*aps) * SCAN_MAX);
@@ -103,71 +120,217 @@ static int do_scan(void)
 		return n == -ENODEV ? no_radio("wifi") : fail("wifi", "scan", n);
 	}
 	for (int i = 0; i < n; i++)
-		pt_printf("%2d  %-28s %s %4d dBm  ch %-3d %s\n", i + 1, aps[i].ssid,
-			  bars(aps[i].rssi), aps[i].rssi, aps[i].channel,
-			  aps[i].secure ? "locked" : "open");
+		show_ap(i + 1, &aps[i]);
 	pt_printf("%d network%s\n", n, n == 1 ? "" : "s");
 	pt_free(aps);
 	return 0;
 }
 
+/* The next character of a name, with a phone's curly quotes made straight
+ * and capitals small: what a keyboard would have typed for it. */
+static int typed_as(const char **s)
+{
+	const unsigned char *p = (const unsigned char *)*s;
+
+	if (p[0] == 0xe2 && p[1] == 0x80 && p[2] >= 0x98 && p[2] <= 0x9f) {
+		*s += 3;
+		return p[2] <= 0x9b ? '\'' : '"';	/* ‘ ’ ‚ ‛, then “ ” „ ‟ */
+	}
+	(*s)++;
+	return p[0] >= 'A' && p[0] <= 'Z' ? p[0] - 'A' + 'a' : p[0];
+}
+
+static bool same_typed(const char *a, const char *b)
+{
+	while (*a && *b)
+		if (typed_as(&a) != typed_as(&b))
+			return false;
+	return !*a && !*b;
+}
+
+/*
+ * The network among `aps` that `typed` means: its line number (up to
+ * `numbered`), its name, or its name as a keyboard types it -- an iPhone
+ * calls its hotspot "Andrea’s iPhone", and the CardKB has no ’. A name
+ * that is spelt exactly wins over one that is only typed alike.
+ */
+static const struct wifi_ap *find_ap(const char *typed, const struct wifi_ap *aps, int n,
+				     int numbered)
+{
+	int line = atoi(typed);
+
+	for (int i = 0; i < n; i++)
+		if (!strcmp(aps[i].ssid, typed))
+			return &aps[i];
+	if (*typed && strspn(typed, "0123456789") == strlen(typed) && line >= 1 &&
+	    line <= numbered)
+		return &aps[line - 1];
+	for (int i = 0; i < n; i++)
+		if (same_typed(aps[i].ssid, typed))
+			return &aps[i];
+	return NULL;
+}
+
+int wifi_join(const char *ssid, bool secure, const char *given)
+{
+	char pass[65];
+	bool saved = false;
+	int err;
+
+	*pass = '\0';
+	if (given)
+		strlcpy(pass, given, sizeof(pass));
+	else if (wifi_saved(ssid, pass, sizeof(pass)))
+		saved = true;
+	else if (secure && ask_secret("Password", pass, sizeof(pass)))
+		return -ECANCELED;
+	pt_printf("connecting to %s...\n", ssid);
+	err = wifi_connect(ssid, *pass ? pass : NULL, CONNECT_MS);
+	if (err && saved && err != -ETIMEDOUT && err != -ENODEV) {
+		/* the network's password has changed since it was saved */
+		pt_printf("wifi: the saved password did not work\n");
+		if (ask_secret("Password", pass, sizeof(pass)))
+			return -ECANCELED;
+		pt_printf("connecting to %s...\n", ssid);
+		err = wifi_connect(ssid, *pass ? pass : NULL, CONNECT_MS);
+	}
+	if (err) {
+		memset(pass, 0, sizeof(pass));
+		if (err == -ENODEV) {
+			no_radio("wifi");
+			return 0;
+		}
+		pt_dprintf(PT_STDERR, "wifi: %s: %s\n", ssid, err == -ETIMEDOUT ? "no answer" :
+			   secure ? "is the password right?" : "it would not have us");
+		return 0;
+	}
+	if ((err = wifi_save(ssid, *pass ? pass : NULL)))
+		pt_dprintf(PT_STDERR, "wifi: cannot save the network: %s\n", pt_strerror(err));
+	memset(pass, 0, sizeof(pass));
+	return 1;
+}
+
+int wifi_choose(void)
+{
+	struct wifi_ap *aps;
+	const struct wifi_ap *ap;
+	char pick[96];
+	int n = 0, r;
+
+	if (radio_wanted())
+		return 0;
+	if (!(aps = pt_malloc(sizeof(*aps) * SCAN_MAX)))
+		return 0;
+	for (r = 0; !r;) {
+		pt_puts("looking...\n");
+		n = wifi_scan(aps, SCAN_MAX);
+		if (n < 0) {
+			pt_dprintf(PT_STDERR, "wifi: cannot look: %s\n", pt_strerror(n));
+			break;
+		}
+		for (int i = 0; i < n && i < SCAN_SHOWN; i++)
+			show_ap(i + 1, &aps[i]);
+		if (!n)
+			pt_puts("no networks in range\n");
+		if (ask_text("A number, a name, r to look again,\nor Enter for none", NULL, pick,
+			     sizeof(pick))) {
+			r = -ECANCELED;
+			break;
+		}
+		if (!*pick)
+			break;
+		if (!strcasecmp(pick, "r"))
+			continue;
+		if ((ap = find_ap(pick, aps, n, n < SCAN_SHOWN ? n : SCAN_SHOWN)))
+			r = wifi_join(ap->ssid, ap->secure, NULL);
+		else
+			r = wifi_join(pick, true, NULL);	/* one out of range, or hidden */
+		if (!r && (r = ask_yes("Try again?", true)) == 1)
+			r = 0;
+		else if (!r)
+			break;
+	}
+	pt_free(aps);
+	return r;
+}
+
 static int do_connect(int argc, char **argv)
 {
-	const char *ssid = argv[2], *pass = argc > 3 ? argv[3] : NULL;
-	struct wifi_ap ap;
-	int ret;
+	const char *typed = argv[2], *pass = argc > 3 ? argv[3] : NULL;
+	const struct wifi_ap *found;
+	struct wifi_ap *aps;
+	char ssid[33];
+	bool secure = true, line = false;
+	int n, ret;
 
 	if (argc > 4) {
-		pt_dprintf(PT_STDERR, "usage: wifi connect ssid|#n [password]\n");
+		pt_dprintf(PT_STDERR, "usage: wifi connect [ssid|n [password]]\n");
 		return 2;
-	}
-	/* "#3" is the third line of the last scan: names with spaces,
-	 * quotes or emoji in them never have to be typed. */
-	if (ssid[0] == '#') {
-		if (wifi_scan_get(atoi(ssid + 1), &ap)) {
-			pt_dprintf(PT_STDERR, "wifi: %s: no such line in the last scan"
-					      " (run `wifi scan` first)\n", ssid);
-			return 1;
-		}
-		ssid = ap.ssid;
 	}
 	if (radio_wanted())
 		return 1;
-	pt_printf("connecting to %s...\n", ssid);
-	ret = wifi_connect(ssid, pass, CONNECT_MS);
-	if (ret == -ENODEV)
-		return no_radio("wifi");
-	if (ret) {
-		pt_dprintf(PT_STDERR, "wifi: %s: %s\n", ssid,
-			   ret == -ETIMEDOUT ? "no answer" : "could not join");
+	if (!(aps = pt_malloc(sizeof(*aps) * SCAN_MAX)))
+		return fail("wifi", NULL, -ENOMEM);
+	for (n = 0; n < SCAN_MAX && !wifi_scan_get(n + 1, &aps[n]); n++)
+		;
+	/* "3", or "#3" (quoted: a bare # starts a comment), is the third
+	 * line of the last scan: names with spaces, quotes or emoji never
+	 * have to be typed. A name not in the last scan is looked for in a
+	 * new one, whose numbers are not the ones that were shown. */
+	if (typed[0] == '#' && typed[1]) {
+		typed++;
+		line = true;
+		found = find_ap(typed, aps, 0, n);
+	} else {
+		line = strspn(typed, "0123456789") == strlen(typed);
+		found = find_ap(typed, aps, n, n);
+		if (!found && (n = wifi_scan(aps, SCAN_MAX)) > 0)
+			found = find_ap(typed, aps, n, 0);
+	}
+	if (found) {
+		strlcpy(ssid, found->ssid, sizeof(ssid));
+		secure = found->secure;
+	} else {
+		strlcpy(ssid, typed, sizeof(ssid));	/* out of range, or hidden */
+	}
+	pt_free(aps);
+	if (!found && line) {
+		pt_dprintf(PT_STDERR, "wifi: %s: no such line in the last scan"
+				      " (run `wifi scan` first)\n", typed);
 		return 1;
 	}
-	if ((ret = wifi_save(ssid, pass)))
-		pt_dprintf(PT_STDERR, "wifi: cannot save the network (%s)\n", strerror(-ret));
-	return show_status();		/* the clock sets itself: see dmesg */
+	ret = wifi_join(ssid, secure, pass);
+	if (ret == -ECANCELED)
+		return 130;
+	return ret == 1 ? show_status() : 1;	/* the clock sets itself: see dmesg */
 }
 
 PT_COMPLETE(wifi, ": scan connect forget disconnect on off\n")
 
 PT_PROGRAM(wifi, "join a wireless network\n"
-	   "usage: wifi [scan | connect ssid|#n [password] | forget ssid |\n"
+	   "usage: wifi [scan | connect [ssid|n [password]] | forget ssid |\n"
 	   "             disconnect | on | off]\n"
-	   "With no arguments, says what the radio is doing. Networks that\n"
-	   "connect are saved in /etc/wifi and tried again at every boot.\n"
-	   "`wifi connect #3 pass` joins the third network the last scan\n"
-	   "found, which saves typing a name full of spaces or symbols.")
+	   "With no arguments, says what the radio is doing. `wifi connect`\n"
+	   "alone lists the networks in range to pick one from; a number\n"
+	   "is a line of the last scan, and a typed ' finds a phone's ’.\n"
+	   "A password not given is asked for, shown as stars. Networks\n"
+	   "that connect are saved in /etc/wifi and joined at every boot.")
 {
 	const char *cmd = argc > 1 ? argv[1] : "";
+	int ret;
 
 	if (argc == 1)
 		return show_status();
 	if (!strcmp(cmd, "scan") && argc == 2)
 		return do_scan();
-	if (!strcmp(cmd, "connect") && argc >= 3)
+	if (!strcmp(cmd, "connect") && argc == 2) {
+		ret = wifi_choose();
+		return ret == 1 ? show_status() : ret ? 130 : 1;
+	}
+	if (!strcmp(cmd, "connect"))
 		return do_connect(argc, argv);
 	if (!strcmp(cmd, "forget") && argc == 3) {
-		int ret = wifi_forget(argv[2]);
-
+		ret = wifi_forget(argv[2]);
 		if (ret)
 			pt_dprintf(PT_STDERR, "wifi: %s: not saved\n", argv[2]);
 		return ret ? 1 : 0;
@@ -175,14 +338,12 @@ PT_PROGRAM(wifi, "join a wireless network\n"
 	if (!strcmp(cmd, "disconnect") && argc == 2)
 		return wifi_disconnect() ? no_radio("wifi") : 0;
 	if ((!strcmp(cmd, "on") || !strcmp(cmd, "off")) && argc == 2) {
-		int ret = wifi_radio(cmd[1] == 'n');
-
-		if (ret)
+		if ((ret = wifi_radio(cmd[1] == 'n')))
 			return fail("wifi", cmd, ret);
 		pt_printf("wifi: radio %s\n", cmd);
 		return 0;
 	}
-	pt_dprintf(PT_STDERR, "usage: wifi [scan | connect ssid [password] | forget ssid |"
+	pt_dprintf(PT_STDERR, "usage: wifi [scan | connect [ssid|n [password]] | forget ssid |"
 			      " disconnect | on | off]\n");
 	return 2;
 }
@@ -353,6 +514,11 @@ PT_PROGRAM(ping, "see whether a host answers\n"
 	vSemaphoreDelete(run.done);
 	return run.received ? 0 : 1;
 }
+
+#else
+
+int wifi_join(const char *ssid, bool secure, const char *given) { return 0; }
+int wifi_choose(void) { return 0; }
 
 #endif /* CONFIG_PT_WIFI */
 

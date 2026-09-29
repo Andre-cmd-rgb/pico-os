@@ -395,6 +395,32 @@ int pt_rename(const char *from, const char *to)
 	return rename(va, vb) ? -errno : 0;
 }
 
+/*
+ * A file the system keeps for the user in a folder of their home,
+ * "$HOME/dir/name", the folder made if it is not there: the card's top
+ * level is left to what the user put there. One left where an older
+ * system kept it, "$HOME/old", is moved in on the way, so a card from
+ * before keeps its history, its calendar and its place in a note.
+ */
+int pt_home_file(const char *dir, const char *name, const char *old, char *out, size_t size)
+{
+	const char *home = pt_getenv("HOME");
+	char from[PT_PATH_MAX];
+	struct pt_stat st;
+
+	if (!home || !*home)
+		return -ENOENT;
+	if ((size_t)snprintf(out, size, "%s/%s", home, dir) >= size)
+		return -ENAMETOOLONG;
+	pt_mkdir(out);
+	if ((size_t)snprintf(out, size, "%s/%s/%s", home, dir, name) >= size)
+		return -ENAMETOOLONG;
+	if (old && (size_t)snprintf(from, sizeof(from), "%s/%s", home, old) < sizeof(from) &&
+	    !pt_stat(from, &st) && !st.is_dir && pt_stat(out, &st))
+		pt_rename(from, out);
+	return 0;
+}
+
 int pt_utime(const char *path, time_t mtime)
 {
 	proc_check_signals();

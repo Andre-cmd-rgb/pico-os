@@ -52,13 +52,13 @@ static int sd_mount_format(void);
 /*
  * The card is the home directory, so a card that has just been mounted
  * gets the directories a home directory has. Making them every time
- * costs six failed mkdirs on a card that already has them, and means a
+ * costs eight failed mkdirs on a card that already has them, and means a
  * blank card bought this afternoon is laid out the moment it goes in.
  */
 static void home_layout(void)
 {
 	static const char *const dirs[] = {
-		"bin", "music", "notes", "photos", "roms", "video",
+		"agenda", "bin", "music", "notes", "photos", "recordings", "roms", "video",
 	};
 	char path[64];
 

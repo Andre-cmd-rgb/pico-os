@@ -7,13 +7,15 @@
 #define FONT_H		8
 #define FONT_FIRST	0x20
 #define FONT_ASCII	95
-#define FONT_GLYPHS	183
+#define FONT_GLYPHS	185
 #define FONT_BLOCK	177
 #define FONT_BOLT	181
 #define FONT_ALARM	176
+#define FONT_WIFI	183
 #define FONT_UNKNOWN	('?' - FONT_FIRST)
 
-/* one byte per row, bit 4 is the leftmost column */
+/* one byte per row, bit 4 is the leftmost column; bit 5 is a sixth, the
+ * gap to the next cell, set only by icons two cells wide */
 static const uint8_t font5x8[FONT_GLYPHS][FONT_H] = {
 	{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },	/*   */
 	{ 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04, 0x00 },	/* ! */
@@ -198,6 +200,8 @@ static const uint8_t font5x8[FONT_GLYPHS][FONT_H] = {
 	{ 0x06, 0x05, 0x04, 0x04, 0x0c, 0x1c, 0x18, 0x00 },	/* ♪ */
 	{ 0x06, 0x0c, 0x18, 0x1f, 0x06, 0x0c, 0x08, 0x00 },	/* ⚡ */
 	{ 0x00, 0x1f, 0x1b, 0x15, 0x11, 0x1f, 0x00, 0x00 },	/* ✉ */
+	{ 0x27, 0x08, 0x33, 0x04, 0x21, 0x02, 0x20, 0x00 },	/*  */
+	{ 0x1c, 0x02, 0x19, 0x04, 0x10, 0x08, 0x00, 0x00 },	/*  */
 };
 
 /* sorted by code point, for a binary search */
@@ -269,6 +273,11 @@ static const struct {
 	{ 0x03c3, 154 },	/* σ */
 	{ 0x03c6, 155 },	/* φ */
 	{ 0x03c9, 156 },	/* ω */
+	{ 0x2007, 0 },	/*   */
+	{ 0x2009, 0 },	/*   */
+	{ 0x200a, 0 },	/*   */
+	{ 0x2010, 13 },	/* ‐ */
+	{ 0x2011, 13 },	/* ‑ */
 	{ 0x2013, 157 },	/* – */
 	{ 0x2014, 158 },	/* — */
 	{ 0x2018, 159 },	/* ‘ */
@@ -277,6 +286,7 @@ static const struct {
 	{ 0x201d, 162 },	/* ” */
 	{ 0x2022, 163 },	/* • */
 	{ 0x2026, 164 },	/* … */
+	{ 0x202f, 0 },	/*   */
 	{ 0x20ac, 165 },	/* € */
 	{ 0x2126, 144 },	/* Ω */
 	{ 0x2190, 166 },	/* ← */
@@ -298,4 +308,8 @@ static const struct {
 	{ 0x266a, 180 },	/* ♪ */
 	{ 0x26a1, 181 },	/* ⚡ */
 	{ 0x2709, 182 },	/* ✉ */
+	{ 0x3010, 59 },	/* 【 */
+	{ 0x3011, 61 },	/* 】 */
+	{ 0xe000, 183 },	/*  */
+	{ 0xe001, 184 },	/*  */
 };

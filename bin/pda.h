@@ -14,10 +14,10 @@ struct todo_item {
 	char	text[160];		/* without the box and the date */
 };
 
-/* The items of a list (~/todo.md unless `path`), in the order they are
+/* The items of a list (~/agenda/todo.md unless `path`), in the order they are
  * shown: open ones by due date, then the rest, then what is done. The
  * array is pt_malloc'd; the count, or <0 if the file cannot be read. */
 int	todo_items(const char *path, struct todo_item **out);
 
-/* ~/NAME, or `given` if there is one. */
+/* ~/agenda/NAME, or `given` if there is one. */
 bool	pda_file(const char *given, const char *name, char *out, size_t size);

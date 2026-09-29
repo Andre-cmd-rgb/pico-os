@@ -128,6 +128,11 @@ EXTRA = {
     '♪': '00110 00101 00100 00100 01100 11100 11000 00000',   # volume
     '✉': '00000 11111 11011 10101 10001 11111 00000 00000',   # a text message
     '☎': '00000 01110 11111 10101 01110 11111 11111 00000',   # a call
+    # Wi-Fi, two cells wide: at five pixels it was squashed. Private use:
+    # Unicode has no sign for it. Six columns each, the sixth being the
+    # gap to the next cell, so the arcs run across it.
+    '\ue000': '001111 010000 100111 001000 000011 000100 000001 000000',
+    '\ue001': '111000 000100 110010 001000 100000 010000 000000 000000',
     'Ç': '01110 10001 10000 10000 10000 10001 01110 00100',
     'ß': '01100 10010 10010 10100 10010 10001 10110 00000',
 
@@ -223,15 +228,21 @@ for ch, (accent, body) in COMPOSED.items():
     EXTRA[ch] = f"{ACCENTS[accent]} {BODIES[body]} 00000"
 
 # The same glyph under a second code point, for what text pasted from a
-# PC is full of: a no-break space, a minus sign that is not a hyphen, and
-# the micro, ohm and increment signs that are not Greek letters.
-ALIASES = {'\u00a0': ' ', '−': '–', 'µ': 'μ', '\u2126': 'Ω', '∆': 'Δ'}
+# PC is full of: a no-break space, a minus sign that is not a hyphen, the
+# micro, ohm and increment signs that are not Greek letters.
+ALIASES = {'\u00a0': ' ', '−': '–', 'µ': 'μ', '\u2126': 'Ω', '∆': 'Δ',
+           # what language models write between numbers and words: a hyphen
+           # that does not break, and the thin and narrow spaces
+           '\u2010': '-', '\u2011': '-', '\u2007': ' ', '\u2009': ' ', '\u200a': ' ',
+           '\u202f': ' ', '【': '[', '】': ']'}
 
 
 def rows(bitmap):
+    """Five columns to a row, bit 4 the leftmost; an icon's sixth, the gap
+    to the next cell, is bit 5."""
     parts = bitmap.split()
-    assert len(parts) == 8 and all(len(p) == 5 for p in parts), bitmap
-    return [int(p, 2) for p in parts]
+    assert len(parts) == 8 and all(len(p) in (5, 6) for p in parts), bitmap
+    return [int(p[:5], 2) | (0x20 if p[5:] == '1' else 0) for p in parts]
 
 
 def main():
@@ -252,8 +263,10 @@ def main():
     print(f"#define FONT_BLOCK\t{len(chars) + extra.index('█')}")
     print(f"#define FONT_BOLT\t{len(chars) + extra.index('⚡')}")
     print(f"#define FONT_ALARM\t{len(chars) + extra.index('⏰')}")
+    print(f"#define FONT_WIFI\t{len(chars) + extra.index(chr(0xe000))}")
     print("#define FONT_UNKNOWN\t('?' - FONT_FIRST)\n")
-    print("/* one byte per row, bit 4 is the leftmost column */")
+    print("/* one byte per row, bit 4 is the leftmost column; bit 5 is a sixth, the\n"
+          " * gap to the next cell, set only by icons two cells wide */")
     print("static const uint8_t font5x8[FONT_GLYPHS][FONT_H] = {")
     for c, r in glyphs:
         label = "\\\\" if c == "\\" else c

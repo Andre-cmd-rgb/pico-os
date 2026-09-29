@@ -181,6 +181,7 @@ int	audio_volume(void);
 int	audio_set_mic_gain(int db);	/* the analogue scale, 0-42 dB */
 int	audio_set_mic_alc(bool on, int max_db);	/* let the codec ride the gain */
 bool	audio_mic_alc(void);
+void	audio_mic_alc_hold(bool hold);	/* counted: the codec's riding off meanwhile */
 ssize_t	audio_write(const void *pcm, size_t bytes, int channels);	/* 16-bit */
 ssize_t	audio_read(void *pcm, size_t bytes);				/* 16-bit mono */
 
@@ -223,6 +224,7 @@ int	wifi_scan_get(int index, struct wifi_ap *out);	/* from the last scan, 1-base
 int	wifi_state(struct wifi_info *out);
 int	wifi_save(const char *ssid, const char *pass);	/* into /etc/wifi */
 int	wifi_forget(const char *ssid);
+bool	wifi_saved(const char *ssid, char *pass, size_t size);	/* its password, if saved */
 int	wifi_ntp_sync(int timeout_ms);
 
 /* net/netconsole.c: a shell over the network, so the USB port is free */

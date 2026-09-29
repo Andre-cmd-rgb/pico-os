@@ -102,8 +102,11 @@ PT_PROGRAM_STACK(view, 8, "look at a picture\n"
 		else if (key == PT_KEY_LEFT && at > 0)
 			at--;
 		else if (key == 's') {
+			char dir[64];
+
+			shots_dir(dir, sizeof(dir));
 			if (vt_screen_begin())
-				canvas_save(&c, sd_mounted() ? photos : "/tmp", shot, sizeof(shot));
+				canvas_save(&c, dir, shot, sizeof(shot));
 			vt_screen_end();
 		}
 	}

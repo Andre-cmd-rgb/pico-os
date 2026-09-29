@@ -9,16 +9,20 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "sdkconfig.h"
 
 #include "codec.h"
 #include "drivers/drivers.h"
+#include "pt/kernel.h"
 #include "util.h"
 
 #if CONFIG_PT_AUDIO
 
 #define DEFAULT_SECONDS	5
+#define VOICE_REDUCE_DB	15		/* how far rec takes the hiss down */
+#define VOICE_TARGET_DB	-20		/* and where it keeps the speech */
 #define TONE_AMPLITUDE	8000		/* a third of full scale: no clipping */
 
 static const int16_t sine64[64] = {
@@ -223,24 +227,77 @@ PT_PROGRAM_ANYCORE(play, PLAY_STACK_KB, "play a sound file\n"
 
 /* ------------------------------------------------------------ rec */
 
-PT_COMPLETE(rec, ": -t -r -g <file:.wav>\n*: <file:.wav>\n")
+/*
+ * Where a recording goes. A name with a directory in it goes where it
+ * says; a bare name, or none (the date and time then), goes in
+ * ~/recordings, so that a term's lessons end up in one place and not
+ * wherever the shell happened to be. Without a card: the name as given,
+ * or /tmp.
+ */
+static void rec_path(const char *name, char *out, size_t size)
+{
+	char dir[64];
+	struct pt_stat st;
+	struct tm tm;
+	time_t now = time(NULL);
+	int len;
+
+	if (name && (strchr(name, '/') || !sd_mounted())) {
+		strlcpy(out, name, size);
+		return;
+	}
+	if (sd_mounted())
+		pt_mkdir(home_dir(dir, sizeof(dir), "recordings"));
+	else
+		strlcpy(dir, "/tmp", sizeof(dir));
+	if (name) {
+		snprintf(out, size, "%s/%s", dir, name);
+		return;
+	}
+	localtime_r(&now, &tm);
+	len = snprintf(out, size, "%s/%04d-%02d-%02d-%02d%02d", dir, tm.tm_year + 1900,
+		       tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
+	for (int n = 1; n < 100 && len > 0 && (size_t)len < size; n++) {
+		snprintf(out + len, size - len, n == 1 ? ".wav" : "-%d.wav", n);
+		if (pt_stat(out, &st))
+			break;
+	}
+}
+
+#define REC_USAGE	"usage: rec [-n] [-t seconds] [-r rate] [-g gain_db] [file]\n"
+
+PT_COMPLETE(rec, ": -n -t -r -g <file:.wav>\n*: <file:.wav>\n")
 
 PT_PROGRAM(rec, "record from the microphone into a WAV file\n"
-	   "usage: rec [-t seconds] [-r rate] [-g gain_db] file\n"
-	   "Records 5 seconds by default; Ctrl-C stops early and keeps what it has.")
+	   REC_USAGE
+	   "Records 5 seconds at 16 kHz by default; Ctrl-C stops early and\n"
+	   "keeps what it has. The voice is cleaned as it comes in -- rumble\n"
+	   "and hiss out, the level evened, no clipping -- unless -n asks for\n"
+	   "the sound as the microphone heard it. Unlike sox's rec, a name\n"
+	   "without a / goes in ~/recordings, and with no name the date and\n"
+	   "time are the name.")
 {
 	int seconds = DEFAULT_SECONDS, rate = 0, gain = -1, i = 1;
-	const char *name = NULL;
+	const char *given;
+	char name[PT_PATH_MAX];
 	uint8_t header[WAV_HEADER_BYTES], *buf;
 	uint32_t written = 0, want;
+	struct voice *voice = NULL;
+	int64_t cleaning = 0;		/* µs spent in voice_run */
+	bool raw = false;
 	int fd, ret = 0;
 
 	for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
 		char opt = argv[i][1];
-		const char *val = argv[i][2] ? argv[i] + 2 : (i + 1 < argc ? argv[++i] : NULL);
+		const char *val;
 
+		if (opt == 'n' && !argv[i][2]) {
+			raw = true;
+			continue;
+		}
+		val = argv[i][2] ? argv[i] + 2 : (i + 1 < argc ? argv[++i] : NULL);
 		if (!val || !strchr("trg", opt)) {
-			pt_dprintf(PT_STDERR, "usage: rec [-t seconds] [-r rate] [-g gain_db] file\n");
+			pt_dprintf(PT_STDERR, REC_USAGE);
 			return 2;
 		}
 		if (opt == 't')
@@ -250,15 +307,20 @@ PT_PROGRAM(rec, "record from the microphone into a WAV file\n"
 		else
 			gain = atoi(val);
 	}
-	name = i < argc ? argv[i] : NULL;
-	if (!name || i + 1 != argc || seconds <= 0) {
-		pt_dprintf(PT_STDERR, "usage: rec [-t seconds] [-r rate] [-g gain_db] file\n");
+	given = i < argc ? argv[i] : NULL;
+	if (i + 1 < argc || seconds <= 0) {
+		pt_dprintf(PT_STDERR, REC_USAGE);
 		return 2;
 	}
 	if (!audio_present())
 		return no_codec("rec");
-	if (rate && (ret = audio_set_rate(rate)))
+	/* the codec's own rate, which is plenty for speech; left alone, the
+	 * recording would take whatever rate the last song played at */
+	if (!rate)
+		rate = CONFIG_PT_AUDIO_RATE;
+	if ((ret = audio_set_rate(rate)))
 		return fail("rec", "sample rate", ret);
+	rec_path(given, name, sizeof(name));
 	if (gain >= 0)
 		audio_set_mic_gain(gain);
 	rate = audio_rate();
@@ -269,15 +331,21 @@ PT_PROGRAM(rec, "record from the microphone into a WAV file\n"
 	/* Ctrl-C ends the loop below, so the header gets its length */
 	pt_sigcatch(true);
 	buf = pt_malloc(BUF_SIZE);
-	if (!buf) {
+	if (!raw)
+		voice = voice_new(rate, VOICE_REDUCE_DB, VOICE_TARGET_DB);
+	if (!buf || (!raw && !voice)) {
+		pt_free(buf);
 		pt_close(fd);
 		return fail("rec", name, -ENOMEM);
 	}
+	if (voice)
+		audio_mic_alc_hold(true);	/* two levellers fight: voice_run's is the one */
 	wav_header(header, rate, 1, 0);
 	pt_write(fd, header, sizeof(header));
 
 	want = (uint32_t)rate * 2 * seconds;
-	pt_printf("recording %d s at %d Hz, Ctrl-C to stop\n", seconds, rate);
+	pt_printf("recording %d s at %d Hz%s, Ctrl-C to stop\n", seconds, rate,
+		  raw ? ", as it comes" : "");
 	while (written < want && !pt_interrupted()) {
 		size_t n = want - written < BUF_SIZE ? want - written : BUF_SIZE;
 		ssize_t got = audio_read(buf, n);
@@ -285,6 +353,12 @@ PT_PROGRAM(rec, "record from the microphone into a WAV file\n"
 		if (got < 0) {
 			ret = fail("rec", name, got);
 			break;
+		}
+		if (voice) {
+			int64_t t = pt_uptime_us();
+
+			voice_run(voice, (int16_t *)buf, got / 2);
+			cleaning += pt_uptime_us() - t;
 		}
 		if (write_all(fd, (char *)buf, got)) {
 			ret = 1;
@@ -294,6 +368,14 @@ PT_PROGRAM(rec, "record from the microphone into a WAV file\n"
 	}
 	audio_stop();
 	pt_free(buf);
+	if (voice)
+		audio_mic_alc_hold(false);
+	voice_free(voice);
+	if (voice && written >= 2) {
+		int permille = (int)(cleaning * 1000 / ((int64_t)written / 2 * 1000000 / rate));
+
+		klog("rec: cleaning the voice took %d.%d%% of a core", permille / 10, permille % 10);
+	}
 
 	wav_header(header, rate, 1, written);	/* now we know how long it is */
 	if (pt_lseek(fd, 0, SEEK_SET) == 0)
