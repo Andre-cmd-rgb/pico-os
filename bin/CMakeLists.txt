@@ -1,5 +1,6 @@
 idf_component_register(
 	SRCS
+		ai.c
 		alarm.c
 		audio.c
 		bench.c
@@ -12,6 +13,7 @@ idf_component_register(
 		filters.c
 		find.c
 		http.c
+		json.c
 		jpeg.c
 		man.c
 		nes.c
@@ -41,4 +43,7 @@ idf_component_register(
 		doc/commands.txt
 		doc/pico.txt
 		doc/hardware.txt
+		ai/study.txt
+		ai/code.txt
+		ai/search.txt
 )

@@ -44,12 +44,12 @@ DIARY
                     Ringing, any key snoozes it for
                     9 minutes and Esc stops it;
                     suspend wakes up for it
-  todo              the to-do list, ~/todo.md
+  todo              the to-do list, ~/agenda/todo.md
   todo add TEXT @fri  also @today, @30/9, @+3;
                     todo done N, todo clear
   calendar          the month: arrows, a adds, d
                     deletes; the day's events and
-                    what is due from ~/todo.md
+                    what is due from ~/agenda/todo.md
   calendar agenda   the week ahead
   calendar add 30/9 10:00 verifica !15
                     !15 chimes 15 minutes before;
@@ -121,7 +121,8 @@ POWER
               charges, green when full
   No key for 3 minutes dims the screen, 4 turn it
   off (the key that lights it does nothing else);
-  15 with nothing running suspends.
+  15 with nothing running suspends (not while a
+  charger is charging the cell).
 
 SOUND
   play FILE   WAV, FLAC, MP3, or raw 16-bit mono;
@@ -129,15 +130,34 @@ SOUND
               another terminal makes its own sound
   play -n F   decode without playing: speed and a
               checksum, for testing
-  rec FILE    record from the microphone
+  rec [FILE]  record from the microphone, into
+              ~/recordings (no FILE: named by
+              the date and time)
   beep [hz] [ms]
   volume [0-100] [speaker|jack|auto]
               auto: the jack while a plug is in
 
+ASSISTANT
+  ai                a chat; study mode is a tutor
+                    that answers in Italian
+  ai code [DIR]     a coding assistant: it reads,
+                    writes and runs the files in
+                    DIR, asking before each change
+  ai web            answers from a web search, with
+                    numbered sources
+  ai study QUESTION one answer, then the shell
+  In the chat: /voice says the question aloud,
+  /model changes the model (paid ones too), /save
+  keeps the answer in ~/notes/ai, /cost shows the
+  account, /help the rest. The key is
+  ~/.config/openrouter; the models ~/.config/ai.
+
 NETWORK
   wifi              what the radio is doing
   wifi scan         what is in range, numbered
-  wifi connect #2 PASSWORD
+  wifi connect      pick a network from a list; the
+                    password is asked for (stars)
+  wifi connect 2    the 2nd line of `wifi scan`
   wifi forget NAME / disconnect / on / off
   ntp               set the clock now (Wi-Fi also
                     sets it whenever it connects;
@@ -150,7 +170,8 @@ NETWORK
                     follows, -I headers, -d posts
   modem             the SIM module, if one is wired
   modem on, off     its radio (off: under 1 mA,
-                    nothing heard), kept across restarts
+                    nothing heard), kept across
+                    restarts
   modem restart     start it over (reads its SIM)
   modem scan        the networks it can hear
   modem network tim try that network first (auto:

@@ -107,7 +107,7 @@ There are **four terminals**, as on a Linux console: Ctrl-A then a digit
 switches, or `chvt 2`. Each keeps its own screen and its own shell, and a
 shell only starts when you first switch to its terminal. The status line
 (at the top, or the bottom: `theme bar bottom`) says which one you are
-on, the time, the next alarm, the battery and the network. Programs on
+on, the time, the next alarm, the Wi-Fi sign and the battery. Programs on
 different terminals run at the same time: music keeps playing while a
 game or a clip on another terminal makes its own sound, and the two are
 mixed. A game or a clip draws only while its own terminal is showing (a
@@ -134,7 +134,7 @@ and applied before the first line of the boot log.
 | Fn 5 / Fn 6 | brightness down / up (CardKB) |
 | Fn 7 / Fn 8, Fn 9 | volume down / up; mute (CardKB). Both are remembered in `/etc/power` |
 | Tab | complete commands, their subcommands and options, and file names of the kind the command takes (quoted when they have spaces) |
-| Up / Down | history (saved in `~/.sh_history`) |
+| Up / Down | history (saved in `~/.config/sh_history`) |
 | Esc | clear the line; stops a running command |
 | Ctrl-C | stop a running command |
 | Ctrl-L | clear the screen |
@@ -147,16 +147,16 @@ in `edit`.
 code and tables are laid out for the 53-column screen; Space and `b` turn the
 page, `o` lists the headings to jump to, `/` searches, `+` and `-` set the
 backlight for reading in the dark, and each note reopens where you left it
-(`~/.notes_pos`). `notes -p FILE` prints the laid-out text instead.
+(`~/.config/notes_pos`). `notes -p FILE` prints the laid-out text instead.
 
 **The diary**: `alarm 7:00 mo-fr wake up` sets an alarm and `alarm 25m tea`
 a timer. When one comes due it rings whatever is running: beeps that grow
 louder, the backlight pulsing and the status bar showing what it is; any key
 snoozes it for nine minutes and Esc stops it, and `suspend` wakes the board
 for it. The status bar shows the next alarm within a day. `todo` keeps a
-checklist in `~/todo.md` (`todo add studiare storia @fri`), open things
+checklist in `~/agenda/todo.md` (`todo add studiare storia @fri`), open things
 first and the soonest due at the top. `calendar` is a month to move about
-in, with each day's events from `~/calendar.txt` and what is due from the
+in, with each day's events from `~/agenda/calendar.txt` and what is due from the
 to-do list; `calendar add 30/9 10:00 verifica !15` adds an event with a
 reminder chime 15 minutes before, and `every mo,we` and `yearly 2/10` repeat.
 All three files are plain text, to edit on a PC as well. `cal` prints months
@@ -181,6 +181,7 @@ as util-linux's does.
 | hardware | `bench lcdtest keytest backlight rotate i2cdetect mkfs screenshot chvt` |
 | pictures | `view video` |
 | games | `nes pad` |
+| assistant | `ai` |
 
 The shell is a POSIX sh: pipes (`|`), redirection (`<`, `>`, `>>`, `2>`,
 `2>&1`) and here-documents (`<<EOF`), lists (`;`, `&&`, `||`), background
@@ -222,6 +223,41 @@ to learn it from the start.
 make push FILE=hello.pico    # send a source file to the board
 picoc hello.pico && ./hello  # compile it there and run it
 ```
+
+### The AI assistant
+
+`ai` talks to language models over [OpenRouter](https://openrouter.ai):
+put your key on one line in `~/.config/openrouter` and it is ready.
+
+```sh
+ai                        # a chat, in study mode: a tutor, in Italian
+ai code ~/pico/snake      # a coding assistant working in that folder
+ai web                    # answers from a web search, with their sources
+ai study chi era Guicciardini    # one answer, then back to the shell
+```
+
+- **study** explains, summarises (*riassunto*, *schema*), links topics
+  (*collegamenti*) and tests you like an oral exam (*interrogami*: one
+  question at a time, then a mark).
+- **code** has tools, like a small Claude Code: it lists, reads, writes and
+  edits the files of the project folder and runs commands there (`pico
+  file.pico`), reads the errors and fixes them. Every change and every
+  command is shown and asked for first (y, n, or a for all of them), and
+  nothing outside the folder can be touched.
+- **web** has the model search the web and answer from the results,
+  numbering its sources ($0.005 a search with the default engine).
+- `/voice` records the question (cleaned as `rec` cleans it), has a model
+  that hears write it down, and sends it once you have read it.
+  OpenRouter only takes audio with $0.50 or more in the account.
+
+Each mode's models are in `~/.config/ai`, the one wanted first and the others
+tried when it is busy; the free ones (`:free`) often are. `/model` changes
+them for the session, paid ones included; after every answer a dim line
+says which model answered and what it cost, and `/cost` what the account has
+left. Free models allow 50 requests a day, or 1000 once $10 has been bought
+in all. What each mode tells its model is `bin/ai/*.txt`, or your own
+`~/.config/ai-study.txt` (and so on). `/save` adds the last answer to
+`~/notes/ai/` as Markdown, for `notes`.
 
 ### Moving files on and off
 
@@ -285,8 +321,10 @@ dims to a quarter, after 4 it goes dark with the panel asleep (the key
 that lights it again does nothing else, since nobody could see what it
 would do). Dark, the chip light-sleeps between the keyboard's polls, as
 a phone does, with everything kept; what must not sleep keeps it awake
-for as long as it runs -- sound playing, a PC or a keyboard on USB. After 15 minutes with nothing running -- every terminal at its
-prompt, no sound playing, no PC on USB -- it suspends. A program left
+for as long as it runs -- sound playing, a PC or a keyboard on USB.
+After 15 minutes with nothing running -- every terminal at its prompt,
+no sound playing, no PC on USB, no charger charging the cell -- it
+suspends; while a charger works it stays up to see the charge finish. A program left
 open, a note being read or a file being edited, keeps it awake with the
 screen dark instead, since waking from deep sleep is a fresh boot. A clip
 playing in front holds the screen lit. **Ctrl-A z dozes**: the screen goes
@@ -418,7 +456,8 @@ kernel/     processes, files, pipes, signals, /proc, kernel log, system calls
 boards/     one defconfig per board: which drivers it has, and on which pins
 drivers/    ILI9341 (SPI or parallel), terminal, keyboards, storage, sound,
             battery, LED, Wi-Fi, modem, power and suspend
-codec/      sound file decoders: WAV, FLAC (ours), MP3
+codec/      sound file decoders: WAV, FLAC (ours), MP3; and the voice
+            cleaning rec records through
 emu/        the port layer for emulators: screen, sound, joypad
 third_party/ the two things here somebody else wrote: an MP3 decoder and
             a NES emulator core

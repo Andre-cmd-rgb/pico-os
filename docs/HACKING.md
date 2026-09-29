@@ -241,6 +241,19 @@ per draw; idle, one pointer test.
 the stack rather than merely stopping it, because those buffers are 30 KB
 of internal RAM.
 
+`bin/ai.c` is a client for OpenRouter's chat API: a POST through
+esp_http_client with the answer streamed back as server-sent events,
+laid out as it comes (words wrapped to the screen, Markdown turned into
+SGR, links into numbered sources). Each mode sends a list of models and
+OpenRouter moves down it when one is busy. In code mode the request
+carries five tools; the program loops, running what the model asks for
+(each change and command confirmed by the user, every path held inside
+the project by `inside()`) and sending the results back, until it
+answers in words. The conversation is kept as JSON text and trimmed from
+the front a question at a time. `bin/json.c` is the JSON it needs: a
+value found by its path over the text, with no tree and no allocation,
+and a builder that escapes strings.
+
 `drivers/net/modem.c` is a serial modem: an AT command reader and writer,
 SMS in text mode, and a PPP link over lwip's pppos for mobile data. While
 PPP has the port, AT commands return -EBUSY. The module is probed on a
@@ -268,6 +281,19 @@ no clock and every read times out. That one only showed up on real
 hardware: with no codec fitted, `rec` fails earlier for a different
 reason.
 
+`rec` records at 16 kHz, and the recording takes the codec's clock at
+its own rate: whatever plays meanwhile is resampled to it by the mixer.
+(It used to take the wire's rate, so a lesson recorded after a song was
+44.1 kHz.) What it records goes through `codec/voice.c` on the way to the
+card: a 90 Hz high-pass, then a 256-point FFT every 8 ms whose bands are
+scaled down by how little they stand above the noise (Martin's minimum
+statistics for the noise, Ephraim and Malah's decision-directed gain,
+never below -15 dB), then a leveller that follows the speech's level in
+decibels, and a limiter at -1 dB. The codec's own gain riding is held off
+meanwhile (`audio_mic_alc_hold`, counted): two levellers in a row fight,
+and its ramp up in the first seconds was taken for speech. About 9% of a
+core. `rec -n` records as before.
+
 ## Power
 
 - `drivers/power/battery.c`: the cell voltage through the board's divider,
@@ -283,8 +309,13 @@ reason.
   takes, looked for closely just after the PC goes quiet (a PC that
   suspends the port has not been unplugged), and failing that from the
   trend. The level is kept in permille, follows the current at once and
-  walks against it (`STILL`, `CREEP`); 100% only once the charger is done
-  (at 4.17 V and no longer rising). A restart carries everything over in
+  walks against it (`STILL`, `CREEP`). While a charge goes in it stops at
+  99%; the charger going away while it held the cell full (a TP4056 turns
+  its light green and stops at a tenth of its current, a small step that
+  is watched for, or the cell falling from where it was held) is 100%
+  (`charge_finished`), and for two hours after, the cell's voltage settling
+  back is left to only nudge the level. A charger at work also keeps the
+  board from suspending, so that it sees the end. A restart carries everything over in
   RTC memory (`kept`); a power-on or a wake from sleep starts from the
   voltage. Cycles are the charge counted out over the capacity; health
   is what a discharge from full to 20% says it holds, over what the first
@@ -304,7 +335,10 @@ reason.
   `poweroff` on Enter (`ulp_want`). A flat cell's sleep wakes every 15
   minutes on the timer and goes straight back unless the cell has risen
   past 3.65 V, before the screen lights. `power_boot_reason()` logs why
-  the chip started.
+  the chip started. `power_quiesce()` turns idle light sleep off first:
+  while it is on, esp_pm keeps the timer armed as a wake source for its
+  naps, and deep sleep inherited it -- a suspend with the screen dark woke
+  "on the timer" the moment it slept.
 - `kernel/user.c`: the user's name, and so `/home/NAME`, and the time
   zone, from `/etc/user` and `/etc/timezone` (`bin/setup.c` asks for
   them). The SD card's second mount has no path of its own
@@ -312,7 +346,11 @@ reason.
   the directory on the flash and moves the mount at once. The mount table
   reads the path on every lookup, from any task, so a change is made in a
   second copy and switched in with one store. Programs ask `user_home()`
-  (`home_dir()` in `bin/`), never a name built in.
+  (`home_dir()` in `bin/`), never a name built in. What the system keeps
+  for the user goes in folders of the home, not its top: `pt_home_file()`
+  gives `~/.config/sh_history`, `~/.config/notes_pos`,
+  `~/agenda/calendar.txt` and `~/agenda/todo.md`, and moves a file an
+  older system left at the top (`~/.sh_history`) into its place.
 - `kernel/clock.c`: the time saved to `/etc/clock` hourly and before sleep,
   put back at boot after a power cut; `wifi.c` starts SNTP on every new
   address and hourly after. Going to sleep marks the moment in RTC memory
@@ -413,7 +451,12 @@ than 8 KB of stack. Full-screen programs use `pt/keys.h`: `pt_tty_raw`,
 
 SGR supports bold, dim, inverse, and colors 30–37, 90–97, 40–47 and 100–107.
 All 16 colors map to shades of the theme; see `theme[]`. Text is UTF-8. The
-font covers ASCII plus à è é ì ò ù ç £ € ° § and █; anything else shows as `?`.
+font covers ASCII, the letters of the Western European languages, Greek,
+the common signs of maths and money, arrows, and the status line's icons;
+look-alikes that text is full of (a non-breaking hyphen, thin spaces, a
+minus sign) are drawn as the plain character, and anything else shows as
+`?`. A glyph is five columns; an icon two cells wide (the Wi-Fi sign) also
+sets bit 5 of its rows, the gap column, which `draw_cell()` then fills.
 
 Regenerate the font after editing `tools/mkfont.py` with `make font`.
 
