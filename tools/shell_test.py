@@ -203,6 +203,7 @@ def run_tests(b):
     step("picofetch", ["OS: PocketType", "CPU:", "Memory:", "Disk (/):"])
     step("calc '2^10/4'; calc 50%", ["256", "0.5"])
     step("HOME=/tmp/work ai study x 2>&1; echo $?", ["no key", "1"])
+    step("pkg frobnicate 2>&1; echo $?", ["usage: pkg", "2"])
     step("wifi scan", any_of=[missing, "networks", "network", "radio is off"], timeout=20)
     step("ntp", any_of=[missing, "no network", ":"], timeout=15)
     step("modem", any_of=[missing, "no modem", "module"])

@@ -23,6 +23,7 @@ idf_component_register(
 		notes.c
 		passwd.c
 		pick.c
+		pkg.c
 		regex.c
 		sed.c
 		setup.c

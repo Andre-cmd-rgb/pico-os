@@ -254,6 +254,12 @@ the front a question at a time. `bin/json.c` is the JSON it needs: a
 value found by its path over the text, with no tree and no allocation,
 and a builder that escapes strings.
 
+`bin/pkg.c` installs programs from the pico-os-packages repository: its
+`index.txt` (name, version, size, SHA-256, about) and each package's
+source, fetched with `wget` (or copied, when `~/.config/pkg/repo` names a
+folder), checked with PSA's SHA-256, and compiled by `picoc` into `~/bin`.
+The index, what is installed and the sources are in `~/.config/pkg`.
+
 `drivers/net/modem.c` is a serial modem: an AT command reader and writer,
 SMS in text mode, and a PPP link over lwip's pppos for mobile data. While
 PPP has the port, AT commands return -EBUSY. The module is probed on a

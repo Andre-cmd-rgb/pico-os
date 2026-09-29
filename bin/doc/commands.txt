@@ -145,6 +145,14 @@ SOUND
   volume [0-100] [speaker|jack|auto]
               auto: the jack while a plug is in
 
+PACKAGES
+  pkg update        what the package repository has
+  pkg list          it, * for what is installed
+  pkg install NAME  fetched, checked and compiled
+                    into ~/bin: then just NAME
+  pkg upgrade       the ones with a new version
+  pkg remove NAME   pkg search WORD, pkg info NAME
+
 ASSISTANT
   ai                a chat; study mode is a tutor
                     that answers in Italian

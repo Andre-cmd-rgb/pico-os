@@ -183,6 +183,7 @@ as util-linux's does.
 | pictures | `view video` |
 | games | `nes pad` |
 | assistant | `ai` |
+| packages | `pkg` |
 
 The shell is a POSIX sh: pipes (`|`), redirection (`<`, `>`, `>>`, `2>`,
 `2>&1`) and here-documents (`<<EOF`), lists (`;`, `&&`, `||`), background
@@ -224,6 +225,27 @@ to learn it from the start.
 make push FILE=hello.pico    # send a source file to the board
 picoc hello.pico && ./hello  # compile it there and run it
 ```
+
+### Packages
+
+More programs come from the
+[pico-os-packages](https://github.com/Andre-cmd-rgb/pico-os-packages)
+repository, written in pico:
+
+```sh
+pkg update                # what there is
+pkg install snake weather # then just: snake, weather Tokyo
+pkg list                  # * for what is installed
+pkg upgrade               # the ones with a new version
+pkg remove snake
+```
+
+A package is its pico source: `pkg` fetches it, checks it against the
+SHA-256 in the repository's index, and compiles it here with `picoc` into
+`~/bin`, so it always matches the language this board speaks. A name that
+is one of the board's own commands is refused (it could never be run).
+`~/.config/pkg/repo` can name another repository, an address or a folder
+on the board, which is how a package is tried before it is published.
 
 ### The AI assistant
 
