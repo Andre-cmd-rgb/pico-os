@@ -266,8 +266,11 @@ config PT_LCD_SPI_HZ
 	range 1000000 80000000
 	default 40000000
 	help
-	  40 MHz works on a board with the panel soldered on. Lower it if the
-	  picture shows noise.
+	  40 MHz works on a board with the panel soldered on. The ILI9341 is
+	  rated for far less: past 40 MHz it now and then writes a pixel twice
+	  in a long run, and the rest of the run lands one place on (`lcdtest
+	  verify` reads the panel back to show it). Video is sent at 40 MHz at
+	  most whatever this says. Lower it if the picture shows noise.
 
 endmenu
 

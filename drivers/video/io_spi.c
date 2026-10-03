@@ -28,7 +28,16 @@
 #define MAX_TRANSFER	32768
 
 #define READ_HZ		4000000		/* the panel's reads are slow */
-#define STREAM_MAX	56		/* transactions in one stream: a frame's 12 bands */
+/*
+ * Video goes out no faster than this, whatever the bus is set to. Past
+ * it the panel now and then writes a pixel twice early in a long run,
+ * and every pixel after it in that run lands one place on: half the
+ * frames sent at 80 MHz came back so (`lcdtest verify`), none at 40,
+ * from PSRAM or internal RAM alike, with the SPI controller reporting
+ * nothing amiss.
+ */
+#define STREAM_MAX_HZ	40000000
+#define STREAM_MAX	64		/* transactions in one stream: a frame's 14 bands */
 /*
  * The board file says "2" or "3" for the controller's name; ESP-IDF numbers
  * them from SPI1, so SPI2 is 1. Passed straight through, a 2 was SPI3,
@@ -61,7 +70,7 @@ static void IRAM_ATTR stream_pre(spi_transaction_t *t)
 static void stream_add(void)
 {
 	const spi_device_interface_config_t dev = {
-		.clock_speed_hz = clock_hz,
+		.clock_speed_hz = clock_hz < STREAM_MAX_HZ ? clock_hz : STREAM_MAX_HZ,
 		.mode = 0,
 		.spics_io_num = -1,
 		.queue_size = STREAM_MAX,
@@ -101,6 +110,11 @@ int lcd_io_set_clock(esp_lcd_panel_io_handle_t *io, int hz)
 int lcd_io_clock(void)
 {
 	return clock_hz;
+}
+
+int lcd_io_stream_clock(void)
+{
+	return clock_hz < STREAM_MAX_HZ ? clock_hz : STREAM_MAX_HZ;
 }
 
 int lcd_io_open(esp_lcd_panel_io_handle_t *io, esp_lcd_panel_io_color_trans_done_cb_t done)
@@ -270,6 +284,39 @@ static void cs_give(void)
 	else
 		gpio_matrix_output(CONFIG_PT_LCD_SPI_CS, spi_periph_signal[HOST].spics_out[0], false,
 				   false);
+}
+
+/*
+ * A long read after a command -- the panel's memory, for checking what
+ * reached it -- in pieces, chip select held low throughout so the panel
+ * carries on where it was. Slow (the reader's 4 MHz); the caller holds
+ * the bus.
+ */
+int lcd_io_read_long(uint8_t cmd, uint8_t *out, size_t n)
+{
+	spi_transaction_t t = { .length = 8, .flags = SPI_TRANS_USE_TXDATA, .tx_data = { cmd } };
+	esp_err_t err;
+
+	if (!reader)
+		return -ENOTSUP;
+	if (spi_device_acquire_bus(reader, portMAX_DELAY))
+		return -EIO;
+	cs_take();
+	gpio_set_direction(CONFIG_PT_LCD_SPI_DC, GPIO_MODE_OUTPUT);
+	gpio_set_level(CONFIG_PT_LCD_SPI_DC, 0);
+	err = spi_device_polling_transmit(reader, &t);
+	gpio_set_level(CONFIG_PT_LCD_SPI_DC, 1);
+	while (!err && n) {
+		size_t k = n < 4092 ? n : 4092;
+		spi_transaction_t r = { .rxlength = k * 8, .rx_buffer = out };
+
+		err = spi_device_polling_transmit(reader, &r);
+		out += k;
+		n -= k;
+	}
+	cs_give();
+	spi_device_release_bus(reader);
+	return err ? -EIO : 0;
 }
 
 static int stream_fill(spi_transaction_t *t, const uint8_t *data, size_t len, bool dc)

@@ -16,6 +16,9 @@ int	lcd_width(void);
 int	lcd_height(void);
 uint8_t	*lcd_alloc_buffer(size_t bytes);
 void	lcd_draw(int x, int y, int w, int h, const uint8_t *rgb565be);
+/* the same without waiting: the buffer is kept until lcd_draw_wait() is true */
+void	lcd_draw_start(int x, int y, int w, int h, const uint8_t *rgb565be);
+bool	lcd_draw_wait(int ms);
 void	lcd_fill(int x, int y, int w, int h, uint16_t rgb565);
 /* Screenshots: arm the capture, draw, then read the pixels back. */
 int	lcd_capture_begin(void);
@@ -38,12 +41,20 @@ int	lcd_clock(void);
 int	lcd_read_reg(uint8_t cmd, uint8_t *out, int n);	/* the panel's registers */
 /*
  * Moving pictures without tearing: a whole screen in the panel's own
- * portrait order (240 wide, 320 high), sent behind its refresh.
+ * portrait order (240 wide, 320 high), sent behind its refresh. Begin
+ * says whether frames cw x ph from row p0 can be, slows the refresh as
+ * they need (in step with frame_us, the clip's, where it can); every
+ * says how often they can go at most, as things are. Each yes is ended,
+ * which puts the refresh back. End without `wait` is false while the bus is busy.
  */
-bool	lcd_native_ok(void);
+bool	lcd_native_begin(int cw, int p0, int ph, int frame_us);
+int	lcd_native_every(void);
+bool	lcd_native_end(bool wait);
 /* columns c0..c0+cw-1 of rows p0..p0+ph-1, portrait, the buffer row by row */
 /* -EAGAIN means a complete frame sent after its refresh window. */
 int	lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph);
+/* the same rectangle read back from the panel: a dummy byte, then RGB666 */
+int	lcd_read_native(uint8_t *raw, size_t n, int c0, int cw, int p0, int ph);
 void	lcd_native_order(bool upwards);	/* which way the refresh runs */
 bool	lcd_native_upwards(void);
 

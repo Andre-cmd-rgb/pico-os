@@ -213,44 +213,68 @@ that music on another terminal left no room for.
 
 The ILI9341 refreshes from its memory a row at a time along its own
 portrait rows, whatever orientation is sent: 324 lines (four of porch) in
-14 ms on this panel, while a landscape frame takes 15.4 ms to send, so
-every refresh during a send showed parts of two frames, cut along a seam.
-The TE pin is not wired on the Freenove board, but the panel's SDO is
-(GPIO13), so `io_spi.c` adds a 4 MHz SPI device for reads -- chip select
-taken by hand for the moment, D/C driven (ESP-IDF's colour callback
-leaves it undriven) -- and the panel can be asked which line it is
-refreshing (0x45, Get Scanline; a dummy bit first, so the count arrives
-shifted by one).
+14 ms on this panel. A frame sent while a refresh passes shows parts of
+two frames, cut along a seam. The TE pin is not wired on the Freenove
+board, but the panel's SDO is (GPIO13), so `io_spi.c` adds a 4 MHz SPI
+device for reads -- chip select taken by hand for the moment, D/C driven
+(ESP-IDF's colour callback leaves it undriven) -- and the panel can be
+asked which line it is refreshing (0x45, Get Scanline; a dummy bit
+first, so the count arrives shifted by one).
 
 The clip player turns each frame into the panel's own order
-(`canvas_blit_native`, 16-pixel tiles) and `lcd_draw_native()` sends it in
-bands of 32 rows (64 for odd widths, so that each band's PSRAM address
-stays on a cache line), in the order the refresh meets them. With MY set
-the refresh runs from the last row to the first while writing runs from
-the first, so a frame cannot go in one piece: each band has its own row
-command. ESP-IDF sends a command only once what it queued has finished,
-so the sender used to wait on a task between every two bands -- behind a
-decoder of the same priority, Wi-Fi, a tick -- and a frame took 31 ms on
-average and was often caught by the refresh. Now `lcd_io_stream()` queues
-the whole frame, commands and bands, on an SPI device of its own and the
-bus's interrupt sends them back to back: about 15.8 ms, whatever the
-tasks do. `scanout.h` works out the lines the frame may start at: every
-band written after one refresh has read it and finished before the next
-reads it, checked with the quickest the frame can go against the refresh
-it must follow and the slowest it has gone against the one it must not
-meet. That is most of a refresh (lines 40 to about 230), so a frame
-rarely waits. The refresh is measured when a clip starts, the frame's
-overhead learned as it plays, and a frame that took longer than its
-window allowed is counted as late (`video -v`).
+(`canvas_turn`, 16-pixel tiles) and `lcd_draw_native()` sends it in
+bands, in the order the refresh meets them. With MY set the refresh runs
+from the last row to the first while writing runs from the first, so a
+frame cannot go in one piece: each band has its own row command.
+`lcd_io_stream()` queues the whole frame, commands and bands, on an SPI
+device of its own, and the bus's interrupt sends them back to back; from
+the line read to the first band queued the sender runs above the
+decoders that share its core. `scanout.h` works out the lines the frame
+may start at: every band written after one refresh has read it and
+finished before the next reads it, checked with the quickest the frame
+can go against the refresh it must follow and the slowest it has gone
+against the one it must not meet.
+
+The bus runs at 40 MHz. At 80 the panel now and then wrote a pixel
+twice early in a long run -- every pixel after it in that run one place
+on, a column of the picture askew -- in half the frames, from PSRAM or
+internal RAM alike, with the SPI controller reporting nothing amiss; at
+40, never. `lcdtest verify` is how it showed: frames of noise sent as
+video sends them, read back from the panel's memory (Memory Read,
+RGB666 at 4 MHz, half a second a frame) and compared pixel for pixel.
+
+At 40 MHz a whole screen takes 31 ms and the refresh sweeps the panel in
+14: no start keeps every refresh off a frame. So while video is sent
+(`lcd_native_begin()` to `_end()`) the refresh is slowed with blank lines
+(Blanking Porch Control, 0xB5): the front porch, after the last row,
+first, up to 127 lines, then the back porch, which moves row 0 down the
+count as far. Each row is driven as long as before; halving the panel's
+clock instead (0xB1) faded the picture. A frame may start once the
+refresh has left its first band and must finish its last before the
+next refresh comes to it, and the refresh, quicker than the bus, gains
+on it band by band; so the bands grow from 8 rows to 32 and shrink to 8
+again, which lets a frame start sooner and finish later. A whole screen
+then needs about 467 lines (20.3 ms). Begin sets the refresh to a whole
+number of them a frame where it can -- two for a 24 fps clip, 483 lines,
+48 Hz -- so that every frame is up as long as the last; a quicker clip
+is shown as if it had 24, the player leaving the rest out evenly, before
+decoding them (`lcd_native_every()`). The refresh is measured when a
+clip starts and not again while it plays: a measurement taken while
+both cores decode missed a refresh and came out double. The frame's
+overhead is learned as it plays, the refresh slowed further if it
+needs, and a frame that took longer than its window allowed is counted
+as late (`video -v`).
+
 `tools/video_scanout_test.py` runs the real function against a simulated
-panel and bus -- every start, both directions, four shapes, three refresh
-rates, the porch off by three lines either way, stalls mid-frame -- and
-fails if a frame it calls clean was torn or a torn one is not reported.
-Two things only the panel could show: its row order bit
-(MY) turns the refresh round too, so it is never changed between frames;
-and with MY set the refresh runs from the last row to the first.
-`lcdtest tear up|down|land` flashes red and blue frames sent each way:
-all at once is right, a seam is tearing.
+panel and bus -- every start, both directions, four shapes, three
+refresh rates, the porch off by three lines either way, stalls
+mid-frame, and at 40 MHz the porches slowing the simulated refresh and
+24 and 30 fps clips -- and fails if a frame it calls clean was torn or a
+torn one is not reported. Two things only the panel could show: its row
+order bit (MY) turns the refresh round too, so it is never changed
+between frames; and with MY set the refresh runs from the last row to
+the first. `lcdtest tear up|down|land` flashes red and blue frames sent
+each way: all at once is right, a seam is tearing.
 
 The panel also sat on the wrong SPI controller until 1.0: the board file
 says `SPI_HOST=2` for SPI2, and ESP-IDF numbers from SPI1, so 2 was SPI3,

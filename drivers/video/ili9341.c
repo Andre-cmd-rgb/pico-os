@@ -118,17 +118,39 @@ uint8_t ili9341_madctl(void)
 	return mode;
 }
 
-void lcd_bus_lock(bool take)
-{
-	if (take)
-		xSemaphoreTake(bus_lock, portMAX_DELAY);
-	else
-		xSemaphoreGive(bus_lock);
-}
+static bool drawing;		/* lcd_draw_start()'s pixels still going out; bus lock */
 
 void lcd_wait_done(int ms)
 {
 	xSemaphoreTake(done, pdMS_TO_TICKS(ms));
+}
+
+/* Whatever lcd_draw_start() left going, out: the bus's next user has it to itself. */
+static void draw_settle(void)
+{
+	if (drawing) {
+		lcd_wait_done(1000);
+		drawing = false;
+	}
+}
+
+void lcd_bus_lock(bool take)
+{
+	if (take) {
+		xSemaphoreTake(bus_lock, portMAX_DELAY);
+		draw_settle();
+	} else {
+		xSemaphoreGive(bus_lock);
+	}
+}
+
+/* The bus, waiting for it or only if it is free; given back by lcd_bus_lock(false). */
+static bool bus_take(bool wait)
+{
+	if (!xSemaphoreTake(bus_lock, wait ? portMAX_DELAY : 0))
+		return false;
+	draw_settle();
+	return true;
 }
 
 static bool IRAM_ATTR on_color_done(esp_lcd_panel_io_handle_t panel_io,
@@ -428,9 +450,10 @@ int lcd_rotation(void)
 }
 
 /*
- * The bus clock. The panel is rated for far less than the 80 MHz this
- * board runs it at; if pictures come out with streaks or wrong colours,
- * a slower clock tells whether the wires are why.
+ * The bus clock. The panel is rated for far less than the 40 MHz this
+ * board runs it at, and past 40 it writes pixels twice now and then; if
+ * pictures come out with streaks or wrong colours, a slower clock tells
+ * whether the wires are why.
  */
 int lcd_set_clock(int hz)
 {
@@ -480,14 +503,36 @@ int lcd_clock(void)
  * changed between frames, only the row/column exchange is; and with MY
  * set the refresh runs from the last row of the frame to the first. A
  * band's rows go in from its first, so each band has its own row command.
+ *
+ * Frames go out at 40 MHz at most (io_spi.c says why), and a whole
+ * screen then takes 31 ms: longer than two refreshes, so no start would
+ * keep every refresh off it. While video is being sent, then, the
+ * refresh is slowed as far as a frame needs, by blank lines: after the
+ * last row (the front porch) and, past the most it takes, before the
+ * first (the back porch, which moves row 0 down the count as far). That
+ * leaves each row driven as long as before, unlike halving the panel's
+ * clock, which faded the picture.
  */
 #define NATIVE_W	240		/* the panel as it is built */
 #define NATIVE_H	320
 #define CMD_SCANLINE	0x45
+#define CMD_PORCH	0xb5		/* blanking porch control */
 #define PORCH_LINES	4		/* sync and back porch, before row 0 */
 #define MARGIN_LINES	6		/* kept clear of the refresh: a read's length, and more */
 #define SLEEP_US	1500		/* a longer wait sleeps; a shorter one reads the line again */
-#define MEASURE_US	60000		/* two refreshes, and some */
+#define MEASURE_US	100000		/* three of the slowest refreshes, and some */
+#define PORCH_MAX	127		/* the most lines the panel takes in either porch */
+#define SLOW_MAX	500		/* lines a refresh at most: 46 Hz, before it flickers */
+#define SLOW_SPARE	6		/* lines added beyond what a frame needs */
+#define SLOW_OVERHEAD	2500		/* a frame's overhead counted at most when slowing, us */
+#define WINDOW_MIN	3		/* lines: a narrower window can fall between two reads */
+#define SLOWEST_GOAL_US	41667		/* a frame time the refresh is kept in step with: 24 fps */
+
+/* The panel's own porches: front, back (lines), then its two in pixels. */
+static const uint8_t porches[4] = { 0x02, 0x02, 0x0a, 0x14 };
+static int slowed;			/* lines added to the porches */
+static int native_users;		/* lcd_native_begin()s not yet ended */
+static float native_px_us;		/* the last begun frame's bands, without the overhead */
 
 static bool scan_down = true;		/* with MY set; `lcdtest dir` turns it */
 static struct scanout_panel refresh = {
@@ -498,7 +543,8 @@ static struct scanout_panel refresh = {
 };
 /* What a frame costs besides its pixels -- queueing, commands, the bus's
  * interrupts -- as frames have gone: up at once, down slowly. */
-static float overhead_us = 600;
+#define OVERHEAD_US	1500		/* what 13 bands at 40 MHz have cost */
+static float overhead_us = OVERHEAD_US;
 
 void lcd_native_order(bool upwards)
 {
@@ -532,7 +578,7 @@ static int scan_line(void)
 static int measure_refresh(void)
 {
 	int64_t began = esp_timer_get_time(), first = 0, last_wrap = 0;
-	int prev = -1, top = 0, wraps = 0, line;
+	int prev = -1, top = 0, wraps = 0, line, lines;
 
 	while (wraps < 3 && esp_timer_get_time() - began < MEASURE_US) {
 		if ((line = scan_line()) < 0)
@@ -549,24 +595,190 @@ static int measure_refresh(void)
 	}
 	if (wraps < 3 || top < NATIVE_H)
 		return -EIO;
-	refresh.lines = top + 1 > NATIVE_H + PORCH_LINES ? top + 1 : NATIVE_H + PORCH_LINES;
+	/* the reads are two lines apart, and may miss the last */
+	lines = NATIVE_H + PORCH_LINES + slowed;
+	refresh.lines = top + 1 > lines ? top + 1 : lines;
 	refresh.lines_per_us = (float)refresh.lines * (wraps - 1) / (float)(last_wrap - first);
 	return 0;
 }
 
-bool lcd_native_ok(void)
+/* The refresh `extra` lines longer than the panel's own: the front porch first. Bus held. */
+static int slow_by(int extra)
 {
+	int front = extra < PORCH_MAX - porches[0] ? extra : PORCH_MAX - porches[0];
+	uint8_t p[4] = { porches[0] + front, porches[1] + extra - front, porches[2], porches[3] };
+
+	if (esp_lcd_panel_io_tx_param(io, CMD_PORCH, p, 4))
+		return -EIO;
+	slowed = extra;
+	refresh.porch = PORCH_LINES + extra - front;
+	return 0;
+}
+
+static void paces(int clock, float overhead, struct scanout_pace *fast,
+		  struct scanout_pace *slow);
+
+/* The windows wide enough to be found by reading the line; how many. */
+static int wide(int nw, float lo[2], float hi[2])
+{
+	int n = 0;
+
+	for (int i = 0; i < nw; i++)
+		if (hi[i] - lo[i] >= WINDOW_MIN) {
+			lo[n] = lo[i];
+			hi[n] = hi[i];
+			n++;
+		}
+	return n;
+}
+
+/* A frame's bands, in the order the refresh meets them; their number, -1 if too many. */
+static int frame_bands(int cw, int p0, int ph, struct scanout_band *band)
+{
+	return scanout_bands(cw, scan_down ? NATIVE_H - p0 - ph : p0, ph, scan_down, band);
+}
+
+/*
+ * The fewest lines a refresh can count and leave frames of these bands,
+ * costing `overhead` besides their pixels, a window wide enough to find;
+ * -1 if not even the slowest refresh allowed does.
+ */
+static int lines_for(const struct scanout_band *band, int nb, int cw, float overhead)
+{
+	struct scanout_panel want = refresh;
+	struct scanout_pace fast, slow;
+	int front = PORCH_MAX - porches[0];
+	float lo[2], hi[2];
+
+	paces(lcd_io_stream_clock(), overhead * 1.25f + 100, &fast, &slow);
+	for (int lines = NATIVE_H + PORCH_LINES; lines <= SLOW_MAX; lines++) {
+		int extra = lines - NATIVE_H - PORCH_LINES;
+
+		want.lines = lines;
+		want.porch = PORCH_LINES + (extra > front ? extra - front : 0);
+		if (wide(scanout_window(band, nb, cw, &want, &fast, &slow, lo, hi), lo, hi))
+			return lines;
+	}
+	return -1;
+}
+
+/*
+ * The refresh `lines` long. Not measured again: blank lines leave each
+ * line as long as it was, and a measurement made while a clip is being
+ * decoded can miss a refresh between two reads and come out double.
+ * Bus held.
+ */
+static int slow_to(int lines)
+{
+	int extra = lines - NATIVE_H - PORCH_LINES, was = slowed;
+
+	extra = extra < 0 ? 0 : extra > SLOW_MAX - NATIVE_H - PORCH_LINES ?
+		SLOW_MAX - NATIVE_H - PORCH_LINES : extra;
+	if (extra == was)
+		return 0;
+	if (slow_by(extra))
+		return -EIO;
+	refresh.lines += extra - was;
+	klog("lcd: refresh slowed to %d lines in %d us for video (%d us a frame besides pixels)",
+	     refresh.lines, (int)(refresh.lines / refresh.lines_per_us), (int)overhead_us);
+	return 0;
+}
+
+/*
+ * Before video is sent: whether frames of cw x ph, from row p0, can be
+ * sent in step with the refresh. The refresh is measured, then slowed as
+ * far as such a frame needs; and, when `frame_us` says how often the
+ * clip has one, to a whole number of refreshes a frame where that is
+ * slow enough, so that every frame is up as long as the last (48 Hz for
+ * 24 frames a second). lcd_native_every() then says how often such
+ * frames can go at most. Each yes is ended with lcd_native_end(), which
+ * puts the refresh back once the last has; cw 0 asks only whether.
+ */
+bool lcd_native_begin(int cw, int p0, int ph, int frame_us)
+{
+	struct scanout_band band[SCANOUT_MAX_BANDS];
+	struct scanout_pace fast, slow;
+	int nb, lines = 0;
+	float line_us, start, span;
 	bool ok;
 
+	native_px_us = 0;
 	if (!width || !io || lcd_io_stream(NULL, 0))
 		return false;
 	lcd_bus_lock(true);
 	ok = width == NATIVE_H && height == NATIVE_W && !measure_refresh();
-	lcd_bus_lock(false);
+	native_users += ok;
+	overhead_us = OVERHEAD_US;	/* not what the last clip's stalls left */
 	if (ok)
 		klog("lcd: refresh %d lines in %d us", refresh.lines,
 		     (int)(refresh.lines / refresh.lines_per_us));
+	else
+		klog("lcd: video not in step with the refresh (%dx%d, refresh unread)", width, height);
+	nb = ok && cw > 0 ? frame_bands(cw, p0, ph, band) : -1;
+	if (nb > 0 && (lines = lines_for(band, nb, cw, overhead_us)) > 0) {
+		line_us = 1 / refresh.lines_per_us;
+		paces(lcd_io_stream_clock(), overhead_us * 1.25f + 100, &fast, &slow);
+		scanout_band_times(band, nb - 1, cw, &slow, &start, &span);
+		native_px_us = span - slow.start_us;
+		if (lines > NATIVE_H + PORCH_LINES)
+			lines += SLOW_SPARE;
+		/*
+		 * As many refreshes a frame as are slow enough, each as long.
+		 * A clip quicker than that is shown as if it had 24 frames a
+		 * second, every frame two refreshes: the player leaves the
+		 * rest out (lcd_native_every()).
+		 */
+		for (int goal = frame_us, m = 4; goal > 0 && m >= 1; m--) {
+			int l = (int)(goal / m / line_us + 0.5f);
+
+			if (l >= lines && l <= SLOW_MAX && span < m * l * line_us) {
+				lines = l;
+				break;
+			}
+			if (m == 1 && goal < SLOWEST_GOAL_US) {
+				goal = SLOWEST_GOAL_US;
+				m = 5;
+			}
+		}
+		/* never faster than another clip being sent needs */
+		if (lines < NATIVE_H + PORCH_LINES + slowed && native_users > 1)
+			lines = NATIVE_H + PORCH_LINES + slowed;
+		slow_to(lines);
+	}
+	lcd_bus_lock(false);
 	return ok;
+}
+
+/*
+ * How often frames of the shape last begun can go at most, as the
+ * refresh and their cost are now: the whole refreshes one takes, from
+ * one start to the next. 0 if no shape was given.
+ */
+int lcd_native_every(void)
+{
+	float period = refresh.lines / refresh.lines_per_us;
+	float span = native_px_us + overhead_us * 1.25f + 100;
+	int n = (int)(span / period);
+
+	return native_px_us > 0 ? (int)((n + (n * period < span)) * period) : 0;
+}
+
+/*
+ * A frame that no start keeps clear of the refresh, as the refresh is,
+ * may be if it is slower: the fewest lines that leave it a window, and a
+ * few more for the frames' pace to vary. Only while video is being sent.
+ * Bus held.
+ */
+static bool slow_refresh(const struct scanout_band *band, int nb, int cw)
+{
+	int now = NATIVE_H + PORCH_LINES + slowed;
+	/* not for one frame held up -- the refresh is not sped up again */
+	int lines = native_users ? lines_for(band, nb, cw, overhead_us < SLOW_OVERHEAD ?
+					       overhead_us : SLOW_OVERHEAD) : -1;
+
+	if (lines <= now)
+		return false;
+	return !slow_to(lines + SLOW_SPARE);
 }
 
 /*
@@ -601,9 +813,8 @@ int lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph)
 	static struct lcd_io_step step[3 + 2 * SCANOUT_MAX_BANDS];
 	static uint8_t rows[SCANOUT_MAX_BANDS][4];
 	struct scanout_pace fast, slow;
-	/* the rectangle's rows, counted in the order the refresh meets them */
-	int first = scan_down ? NATIVE_H - p0 - ph : p0;
-	int nb, ns = 0, line, ret = 0, nw;
+	int nb, ns = 0, line, ret = 0, nw, err;
+	UBaseType_t prio;
 	float lo[2], hi[2], wait;
 	int64_t read_at, took;
 
@@ -612,7 +823,7 @@ int lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph)
 	if (c0 < 0 || cw < 1 || c0 + cw > NATIVE_W || p0 < 0 || ph < 1 || p0 + ph > NATIVE_H)
 		return -EINVAL;
 	lcd_bus_lock(true);
-	nb = scanout_bands(cw, first, ph, scan_down, band);
+	nb = frame_bands(cw, p0, ph, band);
 	if (nb < 0) {
 		lcd_bus_lock(false);
 		return -EINVAL;
@@ -634,8 +845,10 @@ int lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph)
 	}
 	step[ns++] = (struct lcd_io_step){ CMD_MADCTL, &back, 1 };
 
-	paces(lcd_io_clock(), overhead_us * 1.25f + 100, &fast, &slow);
-	nw = scanout_window(band, nb, cw, &refresh, &fast, &slow, lo, hi);
+	paces(lcd_io_stream_clock(), overhead_us * 1.25f + 100, &fast, &slow);
+	nw = wide(scanout_window(band, nb, cw, &refresh, &fast, &slow, lo, hi), lo, hi);
+	if (!nw && slow_refresh(band, nb, cw))
+		nw = wide(scanout_window(band, nb, cw, &refresh, &fast, &slow, lo, hi), lo, hi);
 	if (!nw) {
 		/* Slower than the refresh allows at all: go when the refresh
 		 * has left the first band, and count it. */
@@ -646,29 +859,39 @@ int lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph)
 		nw = 1;
 		ret = -EAGAIN;
 	}
+	/*
+	 * From the line read to the first band queued nothing else on this
+	 * core may come in: a decoder sharing it at the same priority took a
+	 * tick there now and then, and the frame went out late. Above the
+	 * programs' tasks, then, till the frame is on its way; it sleeps
+	 * through most of the wait.
+	 */
+	prio = uxTaskPriorityGet(NULL);
+	vTaskPrioritySet(NULL, configMAX_PRIORITIES - 4);
 	for (int64_t give_up = esp_timer_get_time() + 100000;;) {
 		if ((line = scan_line()) < 0) {
-			lcd_bus_lock(false);
-			return -EIO;
+			err = -EIO;
+			break;
 		}
 		read_at = esp_timer_get_time();
 		wait = scanout_wait(line, &refresh, nw, lo, hi);
-		if (wait <= 0)
+		if (wait <= 0) {
+			err = lcd_io_stream(step, ns) ? -EIO : 0;
 			break;
+		}
 		if (read_at > give_up) {
-			lcd_bus_lock(false);
-			return -ETIMEDOUT;
+			err = -ETIMEDOUT;
+			break;
 		}
 		/* Asleep for most of the way, then the line read until it is time. */
 		if (wait / refresh.lines_per_us > SLEEP_US)
 			vTaskDelay(pdMS_TO_TICKS((int)(wait / refresh.lines_per_us - 1000) / 1000) ?: 1);
 	}
-	if (lcd_io_stream(step, ns)) {
-		lcd_bus_lock(false);
-		return -EIO;
-	}
+	vTaskPrioritySet(NULL, prio);
 	took = esp_timer_get_time() - read_at;
 	lcd_bus_lock(false);
+	if (err)
+		return err;
 
 	/*
 	 * What it cost besides the pixels, for the next frame; and whether
@@ -682,13 +905,32 @@ int lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph)
 			extra = 0;
 		overhead_us = extra > overhead_us ? extra : overhead_us * 0.95f + extra * 0.05f;
 		if (!ret) {
-			paces(lcd_io_clock(), extra, &fast, &slow);
+			paces(lcd_io_stream_clock(), extra, &fast, &slow);
 			nw = scanout_window(band, nb, cw, &refresh, &fast, &slow, lo, hi);
 			if (scanout_wait(line, &refresh, nw, lo, hi) != 0)
 				ret = -EAGAIN;
 		}
 	}
 	return ret;
+}
+
+/*
+ * One lcd_native_begin() over; when it was the last, the refresh as the
+ * panel had it. Without `wait`, false if the bus is busy (a kill's
+ * cleanup, which must not block): try again.
+ */
+bool lcd_native_end(bool wait)
+{
+	if (!bus_take(wait))
+		return false;
+	if (native_users && !--native_users && slowed && io) {
+		if (slow_by(0))
+			klog("lcd: the refresh could not be put back");
+		else
+			refresh.lines = NATIVE_H + PORCH_LINES;	/* each line as long */
+	}
+	lcd_bus_lock(false);
+	return true;
 }
 
 /* A register read back from the panel, for probing. */
@@ -700,6 +942,37 @@ int lcd_read_reg(uint8_t cmd, uint8_t *out, int n)
 		return -ENODEV;
 	lcd_bus_lock(true);
 	ret = lcd_io_read(cmd, out, n);
+	lcd_bus_lock(false);
+	return ret;
+}
+
+/*
+ * The panel's memory read back, for checking what reached it: the
+ * rectangle as lcd_draw_native() writes it, the reply to Memory Read as
+ * it comes (a dummy first, then three bytes a pixel). Slow: a frame takes
+ * half a second.
+ */
+#define CMD_RAMRD	0x2e
+
+int lcd_read_native(uint8_t *raw, size_t n, int c0, int cw, int p0, int ph)
+{
+	const uint8_t col[4] = { c0 >> 8, c0, (c0 + cw - 1) >> 8, c0 + cw - 1 };
+	const uint8_t row[4] = { p0 >> 8, p0, (p0 + ph - 1) >> 8, p0 + ph - 1 };
+	uint8_t back = ili9341_madctl(), mode = back & (MADCTL_MY | MADCTL_BGR);
+	int ret;
+
+	if (!width || !io)
+		return -ENODEV;
+	if (c0 < 0 || cw < 1 || c0 + cw > NATIVE_W || p0 < 0 || ph < 1 || p0 + ph > NATIVE_H)
+		return -EINVAL;
+	lcd_bus_lock(true);
+	ret = esp_lcd_panel_io_tx_param(io, CMD_MADCTL, &mode, 1) ||
+	      esp_lcd_panel_io_tx_param(io, CMD_CASET, col, 4) ||
+	      esp_lcd_panel_io_tx_param(io, CMD_RASET, row, 4) ? -EIO : 0;
+	if (!ret)
+		ret = lcd_io_read_long(CMD_RAMRD, raw, n);
+	if (esp_lcd_panel_io_tx_param(io, CMD_MADCTL, &back, 1) && !ret)
+		ret = -EIO;
 	lcd_bus_lock(false);
 	return ret;
 }
@@ -800,22 +1073,60 @@ static void capture_rect(int x, int y, int w, int h, const uint8_t *rgb565be)
 	}
 }
 
-void lcd_draw(int x, int y, int w, int h, const uint8_t *rgb565be)
+/* A rectangle's commands, and its pixels queued to follow. Bus held. */
+static void draw_queue(int x, int y, int w, int h, const uint8_t *rgb565be)
 {
 	const uint8_t col[4] = { x >> 8, x, (x + w - 1) >> 8, x + w - 1 };
 	const uint8_t row[4] = { y >> 8, y, (y + h - 1) >> 8, y + h - 1 };
 
-	if (!width || !io)
-		return;
-	lcd_bus_lock(true);
 	if (capture)
 		capture_rect(x, y, w, h, rgb565be);
 	esp_lcd_panel_io_tx_param(io, CMD_CASET, col, 4);
 	esp_lcd_panel_io_tx_param(io, CMD_RASET, row, 4);
 	lcd_wait_done(0);			/* clear a stale completion */
 	esp_lcd_panel_io_tx_color(io, CMD_RAMWR, rgb565be, (size_t)w * h * 2);
-	lcd_wait_done(1000);
+	drawing = true;
+}
+
+void lcd_draw(int x, int y, int w, int h, const uint8_t *rgb565be)
+{
+	if (!width || !io)
+		return;
+	lcd_bus_lock(true);
+	draw_queue(x, y, w, h, rgb565be);
+	draw_settle();
 	lcd_bus_lock(false);
+}
+
+/*
+ * lcd_draw() that returns as soon as the pixels are on their way: the
+ * caller gets on with the next picture meanwhile, and keeps this one's
+ * buffer as it is until lcd_draw_wait() says they are out. Anything
+ * else that uses the panel waits for them first.
+ */
+void lcd_draw_start(int x, int y, int w, int h, const uint8_t *rgb565be)
+{
+	if (!width || !io)
+		return;
+	lcd_bus_lock(true);
+	draw_queue(x, y, w, h, rgb565be);
+	lcd_bus_lock(false);
+}
+
+/* Whether lcd_draw_start()'s pixels are out, waiting up to `ms` for them. */
+bool lcd_draw_wait(int ms)
+{
+	bool out;
+
+	if (!bus_lock)
+		return true;
+	if (!xSemaphoreTake(bus_lock, pdMS_TO_TICKS(ms)))
+		return false;			/* someone else is drawing */
+	if (drawing && xSemaphoreTake(done, pdMS_TO_TICKS(ms)))
+		drawing = false;
+	out = !drawing;
+	xSemaphoreGive(bus_lock);
+	return out;
 }
 
 /*
@@ -861,6 +1172,8 @@ int lcd_width(void) { return 0; }
 int lcd_height(void) { return 0; }
 uint8_t *lcd_alloc_buffer(size_t bytes) { return NULL; }
 void lcd_draw(int x, int y, int w, int h, const uint8_t *rgb565be) { }
+void lcd_draw_start(int x, int y, int w, int h, const uint8_t *rgb565be) { }
+bool lcd_draw_wait(int ms) { return true; }
 void lcd_fill(int x, int y, int w, int h, uint16_t rgb565) { }
 void lcd_backlight_set(int percent) { }
 int lcd_backlight_get(void) { return 0; }
@@ -874,10 +1187,13 @@ int lcd_rotation(void) { return 0; }
 int lcd_set_clock(int hz) { return -ENODEV; }
 int lcd_clock(void) { return 0; }
 int lcd_read_reg(uint8_t cmd, uint8_t *out, int n) { return -ENODEV; }
-bool lcd_native_ok(void) { return false; }
+bool lcd_native_begin(int cw, int p0, int ph, int frame_us) { return false; }
+int lcd_native_every(void) { return 0; }
+bool lcd_native_end(bool wait) { return true; }
 void lcd_native_order(bool upwards) { }
 bool lcd_native_upwards(void) { return false; }
 int lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph) { return -ENODEV; }
+int lcd_read_native(uint8_t *raw, size_t n, int c0, int cw, int p0, int ph) { return -ENODEV; }
 int lcd_capture_begin(void) { return -ENODEV; }
 const uint8_t *lcd_capture_pixels(int *w, int *h) { *w = *h = 0; return NULL; }
 void lcd_capture_end(void) { }

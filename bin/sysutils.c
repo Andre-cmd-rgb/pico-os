@@ -1180,11 +1180,138 @@ static void lcdtest_picture(int which, const uint16_t bars[8])
 	vt_screen_end();
 }
 
-PT_COMPLETE(lcdtest, ": clock tear read scan dir\ntear: up down land\ndir: up down\n")
+PT_COMPLETE(lcdtest, ": clock tear read scan dir verify\ntear: up down land\ndir: up down\n")
+
+/* ------------------------------------------------------------ lcdtest verify */
+
+/*
+ * Frames of noise sent the way video sends them, each read back from
+ * the panel's own memory and compared pixel for pixel: whether what
+ * reached the panel is what was sent. A band that went wrong is
+ * reported with how far its pixels moved, which is how pixels written
+ * twice at 80 MHz showed themselves.
+ */
+static uint16_t noise(int i)
+{
+	return (uint16_t)(((uint32_t)i * 2654435761u) >> 13);
+}
+
+/* A byte of the reply starting `bit` bits in: it arrives a bit late. */
+static int raw_byte(const uint8_t *raw, size_t bit)
+{
+	size_t k = bit / 8;
+	int s = bit % 8;
+
+	return s ? ((raw[k] << s) | (raw[k + 1] >> (8 - s))) & 0xff : raw[k];
+}
+
+/* Whether the RGB666 pixel `bit` bits into the reply is `px` (RGB565). */
+static bool pixel_is(const uint8_t *raw, size_t bit, uint16_t px)
+{
+	return raw_byte(raw, bit) >> 3 == px >> 11 && raw_byte(raw, bit + 8) >> 2 == (px >> 5 & 63) &&
+	       raw_byte(raw, bit + 16) >> 3 == (px & 31);
+}
+
+static int lcd_verify(int frames)
+{
+	const int cw = 240, ph = 320, n = cw * ph, band_px = 32 * cw;
+	size_t rawn = (size_t)n * 3 + 8, bit = 0;
+	uint8_t *mem = pt_malloc((size_t)n * 2 + 63), *raw = pt_malloc(rawn), *px;
+	int bad = 0, ret = 0;
+
+	if (!mem || !raw) {
+		ret = fail("lcdtest", "verify", -ENOMEM);
+		goto out;
+	}
+	px = (uint8_t *)(((uintptr_t)mem + 63) & ~(uintptr_t)63);
+	pt_sigcatch(true);
+	power_screen_wake();
+	vt_hold_screen(true);
+	cpufreq_boost(true);		/* as video runs */
+	if (!lcd_native_begin(cw, 0, ph, 0)) {
+		ret = fail("lcdtest", "verify", -ENOTSUP);
+		goto held;
+	}
+	for (int f = 0; f < frames && !pt_interrupted(); f++) {
+		int base = f * 7919, wrong = 0, first = -1, sent;
+		int64_t took;
+
+		for (int i = 0; i < n; i++) {
+			px[2 * i] = noise(base + i) >> 8;
+			px[2 * i + 1] = noise(base + i);
+		}
+		took = pt_uptime_us();
+		sent = lcd_draw_native(px, 0, cw, 0, ph);
+		took = pt_uptime_us() - took;
+		if (sent && sent != -EAGAIN) {
+			ret = fail("lcdtest", "verify", sent);
+			break;
+		}
+		if ((ret = lcd_read_native(raw, rawn, 0, cw, 0, ph))) {
+			ret = fail("lcdtest", "verify", ret);
+			break;
+		}
+		/* where the pixels begin: after a dummy byte, a bit or so late */
+		while (!f && bit < 24) {
+			int ok = 0;
+
+			while (ok < 16 && pixel_is(raw, bit + (size_t)ok * 24, noise(ok)))
+				ok++;
+			if (ok == 16)
+				break;
+			bit++;
+		}
+		if (bit == 24) {
+			ret = fail("lcdtest", "verify", -EIO);	/* nothing like what was sent */
+			break;
+		}
+		for (int i = 0; i < n; i++)
+			if (!pixel_is(raw, bit + (size_t)i * 24, noise(base + i))) {
+				wrong++;
+				first = first < 0 ? i : first;
+			}
+		bad += wrong > 0;
+		pt_printf("frame %2d: %s in %lld us, %d pixels wrong\n", f, sent ? "late" : "sent",
+			  (long long)took, wrong);
+		/* each band that went wrong: where, and how far its pixels moved */
+		for (int b = first < 0 ? ph / 32 : first / band_px; b < ph / 32; b++) {
+			int lo = b * band_px, at = -1, shift = 0, best = 0;
+
+			for (int i = lo; i < lo + band_px && at < 0; i++)
+				if (!pixel_is(raw, bit + (size_t)i * 24, noise(base + i)))
+					at = i - lo;
+			if (at < 0)
+				continue;
+			for (int sh = -128; sh <= 128; sh++) {
+				int ok = 0;
+
+				for (int i = lo + 256; i < lo + band_px - 256; i += 7)
+					ok += pixel_is(raw, bit + (size_t)i * 24, noise(base + i + sh));
+				if (ok > best) {
+					best = ok;
+					shift = sh;
+				}
+			}
+			pt_printf("  rows %d-%d: wrong from column %d, then moved %+d px\n", b * 32,
+				  b * 32 + 31, at, -shift);
+		}
+	}
+	pt_printf("%d of %d frames reached the panel damaged\n", bad, frames);
+	lcd_native_end(true);
+held:
+	cpufreq_boost(false);
+	vt_hold_screen(false);
+	vt_redraw();
+out:
+	pt_free(mem);
+	pt_free(raw);
+	return ret ? 1 : bad ? 1 : 0;
+}
 
 PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 	   "usage: lcdtest [clock [MHZ] | tear up|down|land |\n"
-	   "               read HEX | scan | dir up|down]\n"
+	   "               read HEX | scan | dir up|down |\n"
+	   "               verify [FRAMES]]\n"
 	   "Shows 8 color bars, then a border. Wrong colors or garbage\n"
 	   "mean a data line is swapped or loose; see docs/WIRING.md.\n"
 	   "  clock  the panel's bus clock, until the next boot\n"
@@ -1192,7 +1319,9 @@ PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 	   "         all at once is good, a seam is tearing\n"
 	   "  read   a register of the panel (its SDO is wired)\n"
 	   "  scan   where its refresh is, sampled over 25 ms\n"
-	   "  dir    which way video assumes the refresh runs")
+	   "  dir    which way video assumes the refresh runs\n"
+	   "  verify frames sent as video sends them, read back\n"
+	   "         from the panel and compared (10 by default)")
 {
 	if (!vt_has_display()) {
 		pt_dprintf(PT_STDERR, "lcdtest: display disabled in menuconfig\n");
@@ -1200,6 +1329,8 @@ PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 	}
 	if (argc >= 2 && (!strcmp(argv[1], "scan") || !strcmp(argv[1], "read")))
 		power_screen_wake();
+	if (argc <= 3 && argc >= 2 && !strcmp(argv[1], "verify"))
+		return lcd_verify(argc == 3 && atoi(argv[2]) > 0 ? atoi(argv[2]) : 10);
 	if (argc == 3 && !strcmp(argv[1], "tear")) {
 		/*
 		 * Three seconds of the screen changing colour as fast as it can,
@@ -1212,16 +1343,22 @@ PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 		size_t bytes = (size_t)lcd_width() * lcd_height() * 2;
 		uint8_t *mem = pt_malloc(bytes + 63);
 		uint8_t *px = mem ? (uint8_t *)(((uintptr_t)mem + 63) & ~(uintptr_t)63) : NULL;
-		bool land = !strcmp(argv[2], "land");
+		bool land = !strcmp(argv[2], "land"), native = false;
 		int64_t end = pt_uptime_us() + 3000000;
+		int frames = 0, late = 0;
 
 		if (!px)
 			return fail("lcdtest", "tear", -ENOMEM);
+		pt_sigcatch(true);
 		power_screen_wake();
 		vt_hold_screen(true);
-		if (!land)
+		/* as video does: the CPU at full speed, the refresh slowed if a frame needs it */
+		cpufreq_boost(true);
+		if (!land && (native = lcd_native_begin(lcd_height(), 0, lcd_width(), 0)))
 			lcd_native_order(!strcmp(argv[2], "up"));
-		for (int n = 0; pt_uptime_us() < end; n++) {
+		else
+			land = true;
+		for (int n = 0; pt_uptime_us() < end && !pt_interrupted(); n++) {
 			uint16_t c = colors[n & 1];
 
 			for (size_t i = 0; i < bytes / 2; i++) {
@@ -1232,13 +1369,19 @@ PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 				if (land)
 					lcd_draw(0, 0, lcd_width(), lcd_height(), px);
 				else
-					lcd_draw_native(px, 0, lcd_height(), 0, lcd_width());
+					late += lcd_draw_native(px, 0, lcd_height(), 0, lcd_width()) == -EAGAIN;
+				frames++;
 			}
 			vt_screen_end();
 		}
 		lcd_native_order(true);
+		if (native)
+			lcd_native_end(true);
+		cpufreq_boost(false);
 		vt_hold_screen(false);
 		pt_free(mem);
+		if (!land)
+			pt_printf("%d frames, %d late (a late one may show a seam)\n", frames, late);
 		return 0;
 	}
 	if (argc == 3 && !strcmp(argv[1], "dir")) {

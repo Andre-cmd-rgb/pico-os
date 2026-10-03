@@ -17,7 +17,7 @@ drawn in PIXELTAPE's amber CRT colors on an ILI9341 screen.
 [0.09] serial: console on native USB
 [0.09] proc: 16 process slots, programs on core 1, stacks in PSRAM
 [0.09] cpufreq: ondemand, 80-240 MHz, idle sleep off
-[0.43] lcd: ili9341 (alt init) on SPI2 at 80 MHz, 320x240
+[0.43] lcd: ili9341 (alt init) on SPI2 at 40 MHz, 320x240
 [0.43] vt: 53x23 console
 [0.48] es8311: codec at 0x18, 16000 Hz
 [0.49] audio: 16000 Hz mono, speaker and microphone
@@ -454,7 +454,7 @@ from 1970.
 | `/` create / delete a small file | 104 ms / 11 ms |
 | `/` write, a line at a time | 1,290 lines/s |
 | `/tmp` write, a line at a time | 49,300 lines/s |
-| display bus, full frames | 53 fps (7.8 MB/s) on the Freenove panel at 80 MHz |
+| display bus, full frames | 30 fps (4.4 MB/s) on the Freenove panel at 40 MHz |
 
 The NES runs at 37 frames a second drawing every one (`nes -f 0`), and at
 full speed drawing every other one, the default. The panel refreshes at

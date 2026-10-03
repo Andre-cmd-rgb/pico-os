@@ -76,6 +76,16 @@ static int xTaskCreatePinnedToCore(TaskFunction_t fn, const char *name, uint32_t
 static void vTaskDelete(TaskHandle_t task) { assert(task); deleted++; resources--; free(task); }
 static void cpufreq_boost(bool on) { boosts += on ? 1 : -1; }
 static void power_keep_screen(bool on) { keeps += on ? 1 : -1; }
+static int natives;		/* lcd_native_begin()s not ended */
+static bool bus_busy;
+static bool lcd_native_end(bool wait)
+{
+	assert(!wait);			/* a kill's cleanup must not block */
+	if (bus_busy)
+		return false;
+	natives--;
+	return true;
+}
 static bool cpufreq_try_boost(bool on)
 {
 	if (policy_busy)
@@ -129,18 +139,18 @@ int main(void)
 {
 	struct helper h = { 0 };
 	struct blitter b = { 0 };
-	bool boosted = true, kept = true, screen = true;
+	bool boosted = true, kept = true, screen = true, native = true;
 	const struct pt_file_ops ops = { .read = tty_read, .ioctl = tty_ioctl };
 	const struct pt_file_ops no_ioctl = { 0 };
 	struct pt_file tty = { .ops = &ops };
 	struct pt_file other = { .ops = &no_ioctl };
 	struct video_cleanup c = { .helpers = &h, .blit = &b, .tty = &tty,
-		.boosted = &boosted, .kept = &kept, .screen = &screen };
+		.boosted = &boosted, .kept = &kept, .screen = &screen, .native = &native };
 	int old_calls;
 
 	c.guard = &c.guard_storage;
 	c.guard->value = 1;
-	boosts = keeps = 1;
+	boosts = keeps = natives = 1;
 	assert(!task_start(NULL, "decode", 4096, &h, &h.task, &h.go, &h.done, &h.exited));
 	assert(!task_start(NULL, "blit", 3072, &b, &b.task, &b.go, &b.done, &b.exited));
 	/* A completed frame is not an exited task. Keep all borrowed memory. */
@@ -149,7 +159,13 @@ int main(void)
 	assert(!video_cleanup_step(&c) && h.quit && b.quit && !deleted && resources == 8);
 	xSemaphoreGive(h.exited);
 	assert(!video_cleanup_step(&c) && deleted == 1 && boosts == 1 && keeps == 1);
+	/* The refresh is put back only once the blitter is gone, and retried
+	 * while the bus is busy. */
+	assert(native && natives == 1);
+	bus_busy = true;
 	xSemaphoreGive(b.exited);
+	assert(!video_cleanup_step(&c) && deleted == 2 && native && natives == 1);
+	bus_busy = false;
 	/* Retry a busy policy without blocking or retiring resources twice. */
 	policy_busy = true;
 	assert(!video_cleanup_step(&c) && deleted == 2 && !resources);
@@ -161,6 +177,7 @@ int main(void)
 	tty_error = -EAGAIN;
 	assert(!video_cleanup_step(&c) && !boosts && !keeps && !cooked);
 	assert(!boosted && !kept && tty_calls == 1 && read_timeout == 200);
+	assert(!native && !natives);
 	assert(!video_cleanup_step(&c) && !boosts && !keeps && !cooked);
 	assert(tty_calls == 2 && deleted == 2 && !resources);
 	tty_error = 0;

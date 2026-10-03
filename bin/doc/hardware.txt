@@ -48,10 +48,13 @@ THINGS WORTH KNOWING
   for a key every 100 ms on its own pins, so a board
   in a case needs neither button.
 
-  The panel is driven at 80 MHz, which is faster than
-  its datasheet allows. It is reliable on this board;
-  if a screen ever shows noise, drop PT_LCD_SPI_HZ
-  back to 40000000.
+  The panel is driven at 40 MHz, faster than its
+  datasheet allows but reliable here. At 80 it now
+  and then writes a pixel twice in a long run, and
+  the rest of that run lands one place on: `lcdtest
+  verify` reads the panel back to check. While a clip
+  plays it refreshes at 48 Hz instead of 71, so that
+  a frame, 31 ms on the bus, fits between two.
 
   A CardKB on the I2C header shares those wires with
   the codec, so power it from 3V3, never 5 V.

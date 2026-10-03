@@ -24,7 +24,9 @@ CONFIG_PT_LCD_SPI_DC=46
 # video player reads the refresh line off it to send frames without tearing
 CONFIG_PT_LCD_MISO=13
 CONFIG_PT_LCD_SPI_RST=-1
-CONFIG_PT_LCD_SPI_HZ=80000000
+# 40, not the 80 the SPI controller can do: past 40 MHz this panel now and
+# then writes a pixel twice in a long run (`lcdtest verify` shows it)
+CONFIG_PT_LCD_SPI_HZ=40000000
 CONFIG_PT_LCD_BACKLIGHT=45
 CONFIG_PT_LCD_BRIGHTNESS=80
 CONFIG_PT_LCD_INVERT=y

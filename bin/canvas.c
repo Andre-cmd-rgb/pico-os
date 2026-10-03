@@ -166,6 +166,13 @@ static bool native_rect(const struct canvas *c, int *c0, int *cw, int *p0, int *
 	return c->w == 320 && c->h == 240 && (lcd_rotation() & 1) && *ph >= 1 && *cw >= 1;
 }
 
+bool canvas_native_shape(const struct canvas *c, int *cw, int *p0, int *ph)
+{
+	int c0;
+
+	return native_rect(c, &c0, cw, p0, ph);
+}
+
 int canvas_turn(const struct canvas *c, uint8_t *native)
 {
 	const uint16_t *src = (const uint16_t *)c->px;

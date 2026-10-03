@@ -32,6 +32,8 @@ int	canvas_blit_native(const struct canvas *c, uint8_t *native);
  * sending, which is mostly waiting on the panel. */
 int	canvas_turn(const struct canvas *c, uint8_t *native);
 int	canvas_send_native(const struct canvas *c, const uint8_t *native);
+/* where the picture lies in the panel's own order: cw wide, rows p0 to p0+ph */
+bool	canvas_native_shape(const struct canvas *c, int *cw, int *p0, int *ph);
 
 /*
  * Decoders. Each sets sw/sh, fits the picture and fills the canvas; the

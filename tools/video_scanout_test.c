@@ -4,7 +4,8 @@
  * time, and a queued stream whose commands cost a random few us each,
  * with stalls thrown in. Every frame the driver says went out clean must
  * have been seen whole by every refresh; one that may not have been must
- * be reported (-EAGAIN), never passed off as clean.
+ * be reported (-EAGAIN), never passed off as clean. At 40 MHz the driver
+ * slows the refresh with porch lines, and the panel here follows.
  */
 #include <assert.h>
 #include <errno.h>
@@ -63,8 +64,34 @@ static uint8_t ili9341_madctl(void) { return 0xe8; }
 static int64_t esp_timer_get_time(void) { return (int64_t)now; }
 static void vTaskDelay(int ticks) { now += ticks * 1000 + jitter(0, 400); }
 static void lcd_bus_lock(bool on) { assert(on != locked); locked = on; }
-static int lcd_io_clock(void) { return (int)(bytes_per_us * 8e6); }
+static bool bus_take(bool wait) { (void)wait; lcd_bus_lock(true); return true; }
+static int lcd_io_stream_clock(void) { return (int)(bytes_per_us * 8e6); }
 static void klog(const char *fmt, ...) { (void)fmt; }
+typedef unsigned UBaseType_t;
+#define configMAX_PRIORITIES 25
+static UBaseType_t sim_prio = 4;
+static UBaseType_t uxTaskPriorityGet(void *task) { (void)task; return sim_prio; }
+static void vTaskPrioritySet(void *task, UBaseType_t p) { (void)task; sim_prio = p; }
+
+/*
+ * Blanking Porch Control: the front porch's lines after the last row,
+ * the back porch's before the first, after `sim_back`, which is how far
+ * the count is into a refresh when the back porch begins.
+ */
+static int sim_back;
+
+static int esp_lcd_panel_io_tx_param(void *h, int cmd, const void *param, size_t n)
+{
+	const uint8_t *p = param;
+	double line_us = period_us / sim_lines;
+
+	assert(h == io && locked && cmd == 0xb5 && n == 4 && p[0] >= 2 && p[1] >= 2);
+	assert(p[0] <= 127 && p[1] <= 127);
+	sim_lines = 320 + p[0] + p[1];
+	sim_porch = sim_back + p[1];
+	period_us = line_us * sim_lines;
+	return 0;
+}
 
 static double line_at(double t)
 {
@@ -166,7 +193,7 @@ static int frame(int cw, int p0, int ph, bool upwards, int *torn)
 	scan_down = scan_down_sim = upwards;
 	memset(row_written, 0, sizeof(row_written));
 	ret = lcd_draw_native((const uint8_t *)0x3fc00000, (240 - cw) / 2, cw, p0, ph);
-	assert(!locked);
+	assert(!locked && sim_prio == 4);	/* the priority given back, whatever happened */
 	if (ret == 0 || ret == -EAGAIN) {
 		bool ok = whole(first, ph);
 
@@ -179,6 +206,19 @@ static int frame(int cw, int p0, int ph, bool upwards, int *torn)
 		*torn += !ok;
 	}
 	return ret;
+}
+
+/* A panel of its own: its refresh, where row 0 is in the count; nothing slowed. Measured. */
+static void panel(double period, int porch)
+{
+	locked = true;
+	assert(!slow_by(0));
+	locked = false;
+	sim_back = porch - 2;
+	sim_porch = porch;
+	sim_lines = 324;
+	period_us = period;
+	assert(lcd_native_begin(0, 0, 0, 0));
 }
 
 int main(void)
@@ -194,21 +234,17 @@ int main(void)
 
 	/* The refresh is measured, not assumed. */
 	for (int i = 0; i < 3; i++) {
-		period_us = periods[i];
 		phase = 1234;
-		locked = false;
-		assert(lcd_native_ok());
+		panel(periods[i], 4);
 		assert(refresh.lines == sim_lines);
 		assert(fabs(refresh.lines_per_us - sim_lines / period_us) < 0.003 * sim_lines / period_us);
 	}
 
 	/* Every start, both ways, every shape and rate: clean, and almost never late. */
 	for (int i = 0; i < 3; i++) {
-		period_us = periods[i];
-		phase = 0;
-		assert(lcd_native_ok());
 		for (int porch = 1; porch <= 7; porch += 3) {
-			sim_porch = porch;
+			phase = 0;
+			panel(periods[i], porch);
 			for (int up = 0; up < 2; up++)
 				for (size_t s = 0; s < sizeof(shapes) / sizeof(shapes[0]); s++)
 					for (double ph = 0; ph < period_us; ph += 61) {
@@ -221,14 +257,12 @@ int main(void)
 					}
 		}
 	}
-	sim_porch = 4;
 	printf("video scanout: %d frames, %d late, %d torn\n", frames, late, torn);
 	assert(torn == 0);
 	assert(late * 1000 < frames);
 
 	/* Stalls mid-frame: whatever tears is reported. */
-	period_us = 13979;
-	assert(lcd_native_ok());
+	panel(13979, 4);
 	for (stall_band = 0; stall_band < 10; stall_band++)
 		for (stall_us = 250; stall_us < 16000; stall_us *= 1.7)
 			for (double ph = 0; ph < period_us; ph += 397) {
@@ -239,6 +273,65 @@ int main(void)
 			}
 	stall_band = -1;
 	stall_us = 0;
+
+	/*
+	 * At 40 MHz a whole screen takes longer than two refreshes: the
+	 * refresh is slowed for it, and then nothing tears and nothing is late.
+	 */
+	{
+		int late40 = 0, frames40 = 0, torn40 = 0, slowest = 0;
+
+		bytes_per_us = 5;
+		for (int i = 0; i < 2; i++) {
+			phase = 0;
+			panel(periods[i], 4);
+			for (int up = 0; up < 2; up++)
+				for (size_t sh = 0; sh < sizeof(shapes) / sizeof(shapes[0]); sh++)
+					for (double ph = 0; ph < period_us; ph += 61) {
+						phase = ph;
+						int ret = frame(shapes[sh].cw, shapes[sh].p0, shapes[sh].ph,
+								up, &torn40);
+
+						assert(ret == 0 || ret == -EAGAIN);
+						late40 += ret == -EAGAIN;
+						frames40++;
+					}
+			slowest = sim_lines > slowest ? sim_lines : slowest;
+		}
+		printf("video scanout at 40 MHz: %d frames, %d late, %d torn, refresh up to %d lines\n",
+		       frames40, late40, torn40, slowest);
+		assert(torn40 == 0 && late40 * 100 < frames40 && slowest <= 500);
+
+		/*
+		 * A 24 fps clip: the refresh set to exactly two a frame from
+		 * the start, so no frame is up longer than the next, and the
+		 * player told how often frames can go. A 30 fps one is too
+		 * quick for that, and is shown as if it were 24.
+		 */
+		for (int fps = 24; fps <= 30; fps += 6) {
+			int every = 0, late = 0, torn = 0, n = 0;
+
+			phase = 0;
+			panel(13979, 4);
+			assert(lcd_native_begin(240, 0, 320, 1000000 / fps));
+			every = lcd_native_every();
+			/* to the line, as well as the refresh was measured */
+			if (fps == 24)
+				assert(fabs(period_us * 2 - 1000000.0 / fps) < period_us / sim_lines * 4 &&
+				       abs(every - 1000000 / fps) < period_us / sim_lines * 4);
+			else	/* shown as if 24 a second */
+				assert(abs(every - 1000000 / 24) < period_us / sim_lines * 4);
+			for (double ph = 0; ph < period_us; ph += 61, n++) {
+				phase = ph;
+				late += frame(240, 0, 320, true, &torn) == -EAGAIN;
+			}
+			printf("video scanout at %d fps: refresh %d lines, a frame every %d us at most, "
+			       "%d of %d late, %d torn\n", fps, sim_lines, every, late, n, torn);
+			assert(!torn && !late);
+		}
+		bytes_per_us = 10;
+		panel(13979, 4);
+	}
 
 	/* Errors come back, and the bus is let go. */
 	read_fails = 1;

@@ -20,13 +20,17 @@
 
 #include <stdbool.h>
 
-#define SCANOUT_MAX_BANDS	12
+#define SCANOUT_MAX_BANDS	14
+#define SCANOUT_EDGE_ROWS	8	/* the first band and the last, at least */
 
-/* Whole bands keep direct PSRAM DMA aligned, including a cropped picture. */
-static inline int scanout_band_rows(int width, int remaining, bool reversed)
+struct scanout_band {
+	int	first, n;	/* rows [first, first + n), in the order the refresh meets them */
+};
+
+/* Rows that bring a band's pixels to the next 64-byte line, for direct PSRAM DMA. */
+static inline int scanout_unit(int width)
 {
-	int bytes = width * 2, unit = 64, a = bytes;
-	int n;
+	int unit = 64, a = width * 2;
 
 	while (a) {
 		int rem = unit % a;
@@ -34,34 +38,49 @@ static inline int scanout_band_rows(int width, int remaining, bool reversed)
 		unit = a;
 		a = rem;
 	}
-	unit = 64 / unit;
-	/* Start sending sooner after the first rows have passed. Odd widths
-	 * still need 64 rows to keep the next DMA pointer aligned. */
-	n = unit > 32 ? unit : 32;
-	if (n > remaining)
-		n = remaining;
-	/* The far end comes first when the panel refreshes upwards. Send
-	 * its short tail alone, rather than bouncing every full band. */
-	if (reversed && remaining % unit)
-		n = remaining % unit;
-	return n;
+	return 64 / unit;
 }
 
-struct scanout_band {
-	int	first, n;	/* rows [first, first + n), in the order the refresh meets them */
-};
-
-/* Rows [first, first + rows) cut into whole bands; their number, -1 if too many. */
+/*
+ * Rows [first, first + rows) cut into bands; their number, -1 if too
+ * many. Each band begins a whole number of units from the picture's
+ * first row, so its pixels go straight from PSRAM; the rows over go with
+ * the band sent first when the far end goes first (reversed), with the
+ * last otherwise.
+ *
+ * The bands grow from a short first one and shrink to a short last one.
+ * A frame may start once the refresh has left its first band, and must
+ * finish its last before the next refresh comes to it; and while a band
+ * is sent the refresh, faster than the bus, gets further ahead. Short at
+ * the ends and no more than doubling, then, no band holds the frame back
+ * more than the first and the last, and a frame can take longer than a
+ * refresh without one meeting it.
+ */
 static inline int scanout_bands(int width, int first, int rows, bool reversed,
 				struct scanout_band *out)
 {
+	int unit = scanout_unit(width);
+	int mid = unit > 32 ? unit : 32;
+	int edge = (SCANOUT_EDGE_ROWS + unit - 1) / unit * unit;
+	int odd = rows % unit;
+	int last = edge + (reversed ? 0 : odd);
 	int done = 0, nb = 0;
 
 	while (done < rows) {
-		int n = scanout_band_rows(width, rows - done, reversed);
+		int left = rows - done;
+		int n = nb ? edge << (nb < 3 ? nb : 3) : edge + (reversed ? odd : 0);
 
 		if (nb == SCANOUT_MAX_BANDS)
 			return -1;
+		if (nb && n > mid)
+			n = mid;
+		/* what is left ends in a band twice the last, then the last */
+		if (left <= last)
+			n = left;
+		else if (left <= last + 2 * edge)
+			n = left - last;
+		else if (left - n < last + 2 * edge)
+			n = left - last - 2 * edge;
 		out[nb].first = first + done;
 		out[nb].n = n;
 		nb++;

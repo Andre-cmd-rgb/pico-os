@@ -183,21 +183,26 @@ static void paths(void)
 
 static void bands(void)
 {
+	struct scanout_band b[SCANOUT_MAX_BANDS];
+
 	for (int w = 1; w <= 240; w++)
 		for (int h = 1; h <= 320; h++)
 			for (int reverse = 0; reverse <= 1; reverse++) {
-				int left = h, done = 0;
+				int nb = scanout_bands(w, 7, h, reverse, b), done = 0;
 
-				while (left) {
-					int n = scanout_band_rows(w, left, reverse);
-					int offset = reverse ? left - n : done;
+				assert(nb > 0 && nb <= SCANOUT_MAX_BANDS);
+				for (int k = 0; k < nb; k++) {
+					/* where its pixels begin in the picture's buffer */
+					int offset = reverse ? h - done - b[k].n : done;
 
-					assert(n > 0 && n <= 64 && n <= left);
-					if (left != n)
-						assert((offset * w * 2) % 64 == 0);
-					left -= n;
-					done += n;
+					assert(b[k].first == 7 + done && b[k].n > 0 && b[k].n <= 64);
+					assert((offset * w * 2) % 64 == 0);
+					done += b[k].n;
 				}
+				assert(done == h);
+				if (h >= 64 && w % 32 == 0)
+					assert(b[0].n <= SCANOUT_EDGE_ROWS + 1 &&
+					       b[nb - 1].n <= SCANOUT_EDGE_ROWS + 1);
 			}
 }
 

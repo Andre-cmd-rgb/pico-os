@@ -390,7 +390,7 @@ speaker and a card attached:
 | No sound, but the codec is found | the amplifier's pin is a shutdown input, not an enable: toggle **The amplifier runs when that pin is low** in menuconfig |
 | Sound is distorted | check the speaker's clearance and mounting in the case; lower `volume` if the speaker or amplifier is overdriven |
 | Screen lights up but stays blank | menuconfig → **Start-up sequence**: try the standard table instead of the alternative |
-| Noise or torn lines on the screen | the panel runs at 80 MHz here, which is well over its datasheet: drop **Bus clock** to 40000000 |
+| Noise or torn lines on the screen | the panel runs at 40 MHz here, which is over its datasheet: `lcdtest verify` reads frames back from it; drop **Bus clock** to 26000000 if they come back wrong |
 | `sd: no usable card` | reseat it; try another card; `PT_SD_MMC_D1` = -1 (one-wire mode) if the card is flaky |
 | `battery` says "no battery fitted" with a cell fitted | check the socket polarity and that the cell is not below its protection cut-out |
 | `cardkb: keyboard disconnected` again and again | the bus is shared with the codec on weak internal pull-ups: shorten the cable, or add 4.7 kΩ from SDA and SCL to 3V3 |

@@ -73,6 +73,10 @@ static int esp_lcd_panel_io_tx_param(void *handle, int command, const void *data
 static int esp_lcd_panel_io_tx_color(void *handle, int command, const void *data, size_t n)
 { assert(owns_bus && handle == io && command == CMD_RAMWR && data && n); return 0; }
 static void lcd_wait_done(int ms) { assert(owns_bus && (ms == 0 || ms == 1000)); }
+#define pdMS_TO_TICKS(ms) (ms)
+static SemaphoreHandle_t done;		/* lcd_draw_wait()'s, not called here */
+static bool drawing;
+static void draw_settle(void) { assert(owns_bus); drawing = false; }
 
 #include "lcd_capture_state_under_test.h"
 #define capture_rect capture_rect_real

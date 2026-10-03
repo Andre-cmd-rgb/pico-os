@@ -109,6 +109,11 @@ int lcd_io_stream(const struct lcd_io_step *steps, int n)
 	return -ENOTSUP;
 }
 
+int lcd_io_read_long(uint8_t cmd, uint8_t *out, size_t n)
+{
+	return -ENOTSUP;
+}
+
 uint8_t *lcd_io_alloc(size_t bytes)
 {
 	return bus_io ? esp_lcd_i80_alloc_draw_buffer(bus_io, bytes, 0) : NULL;
@@ -336,6 +341,11 @@ int lcd_io_set_clock(esp_lcd_panel_io_handle_t *io, int hz)
 }
 
 int lcd_io_clock(void)
+{
+	return CONFIG_PT_LCD_PCLK_HZ;
+}
+
+int lcd_io_stream_clock(void)
 {
 	return CONFIG_PT_LCD_PCLK_HZ;
 }

@@ -27,6 +27,9 @@ const char *lcd_io_name(void);
 /* A register of the panel read back, n bytes; -ENOTSUP where it cannot be. */
 int	lcd_io_read(uint8_t cmd, uint8_t *out, int n);
 
+/* A long read after a command (the panel's memory), slowly; -ENOTSUP where it cannot be. */
+int	lcd_io_read_long(uint8_t cmd, uint8_t *out, size_t n);
+
 /*
  * Commands and their data queued all at once and sent back to back by
  * the bus's interrupt, so that nothing between two of them waits on a
@@ -46,3 +49,4 @@ int	lcd_io_stream(const struct lcd_io_step *steps, int n);
 /* The bus clock, changed at run time; -ENOTSUP where it cannot be. */
 int	lcd_io_set_clock(esp_lcd_panel_io_handle_t *io, int hz);
 int	lcd_io_clock(void);
+int	lcd_io_stream_clock(void);	/* lcd_io_stream()'s, which may be slower */

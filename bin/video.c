@@ -310,7 +310,7 @@ struct video_cleanup {
 	struct helper *helpers;
 	struct blitter *blit;
 	struct pt_file *tty;
-	bool *boosted, *kept, *screen;
+	bool *boosted, *kept, *screen, *native;
 };
 
 static bool video_cleanup_step(void *arg)
@@ -333,6 +333,14 @@ static bool video_cleanup_step(void *arg)
 	if (!done) {
 		xSemaphoreGive(c->guard);
 		return false;
+	}
+	/* the refresh as it was; the blitter, which held the bus, has stopped */
+	if (*c->native) {
+		if (!lcd_native_end(false)) {
+			xSemaphoreGive(c->guard);
+			return false;
+		}
+		*c->native = false;
 	}
 	if (*c->boosted) {
 		if (!cpufreq_try_boost(false)) {
@@ -800,15 +808,15 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	uint8_t *native[2] = { NULL, NULL };
 	int ret, next = 0, ahead = 0, nread = 0, end, arg;
 	int shown_n = 0, dropped = 0, frame_us, buffer_us = 0, i = 0, from = 0, target;
+	int thinned = 0, every_us = 0, ncw, np0, nph;	/* every_us: the panel's pace */
 	int64_t read_us = 0, decode_us = 0, blit_us = 0, started;
 	int64_t decode_guess = 0;
 	bool keys = true, screen = false, played = false, step = false, boosted = false;
-	bool kept = false;
+	bool kept = false, native_ok = false;
 	struct video_cleanup cleanup = {
 		.helpers = helpers, .blit = &blit, .tty = proc_current()->fd[PT_STDIN],
-		.boosted = &boosted, .kept = &kept, .screen = &screen,
+		.boosted = &boosted, .kept = &kept, .screen = &screen, .native = &native_ok,
 	};
-	bool native_ok = false;
 	uint32_t from_off = 0;
 	unsigned gen = vt_screen_gen();
 
@@ -909,7 +917,11 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	 * leaving this core free to decode and read the next frame. A turned copy for
 	 * each page, in PSRAM: one is sent while the next is made.
 	 */
-	native_ok = lcd_native_ok();
+	frame_us = 1000000 / clip.fps;
+	xSemaphoreTake(cleanup.guard, portMAX_DELAY);
+	native_ok = canvas_native_shape(&page[0], &ncw, &np0, &nph) &&
+		    lcd_native_begin(ncw, np0, nph, frame_us);
+	xSemaphoreGive(cleanup.guard);
 	for (int k = 0; k < 2 && native_ok; k++) {
 		native_mem[k] = pt_malloc((size_t)page[0].w * page[0].h * 2 + 63);
 		native[k] = native_mem[k] ?
@@ -933,7 +945,6 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 		buffer_us = audio_buffer_us();
 	}
 	/* Enough frames ahead to cover the sound queued, and a few more. */
-	frame_us = 1000000 / clip.fps;
 	ahead = (buffer_us + frame_us - 1) / frame_us + 3;
 	ahead = ahead > MAX_AHEAD ? MAX_AHEAD : ahead;
 	if (!(slots = pt_calloc(ahead, sizeof(*slots)))) {
@@ -998,7 +1009,7 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 		struct canvas *into = &page[next];
 		struct slot *f;
 		const uint8_t *turned;
-		bool late, hidden;
+		bool late, hidden, thin;
 		int key;
 
 		/*
@@ -1040,6 +1051,14 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 		hidden = !vt_screen_front();
 		/* not ready before half its sound is gone: let it go */
 		late = !step && esp_timer_get_time() + decode_guess > f->play_at + frame_us / 2;
+		/*
+		 * No more frames than the panel takes in step with its
+		 * refresh (a whole screen at 30 a second is more), the ones
+		 * left out spread evenly and not decoded at all.
+		 */
+		every_us = native_ok ? lcd_native_every() : 0;
+		thin = !step && every_us > frame_us && i > from &&
+		       (int64_t)i * frame_us / every_us == (int64_t)(i - 1) * frame_us / every_us;
 
 		if (!hidden && gen != vt_screen_gen()) {
 			gen = vt_screen_gen();
@@ -1050,6 +1069,8 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			wait_until(f->play_at);	/* the sound goes on alone, in time */
 		} else if (late) {
 			dropped++;
+		} else if (thin) {
+			thinned++;
 		} else {
 			mark = esp_timer_get_time();
 			slice0.px = into->px;
@@ -1217,10 +1238,13 @@ done:
 	if (index_only || !verbose)
 		return 0;
 
-	int seen = shown_n + dropped;
+	int seen = shown_n + dropped + thinned;
 
 	pt_printf("%dx%d at %d fps: %d frames shown, %d dropped\n",
 		  clip.w, clip.h, clip.fps, shown_n - blit.missed, dropped + blit.missed);
+	if (thinned)
+		pt_printf("  %d left out: the panel takes %d.%d a second in step\n", thinned,
+			  10000000 / every_us / 10, 10000000 / every_us % 10);
 	if (blit.missed)
 		pt_printf("  %d panel transfers failed\n", blit.missed);
 	if (blit.late)
