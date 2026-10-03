@@ -25,7 +25,7 @@ static int gen_version(char *b, size_t n)
 {
 	const esp_app_desc_t *app = esp_app_get_description();
 
-	return snprintf(b, n, "PocketType version %s (esp-idf %s) #1 SMP %s %s\n",
+	return snprintf(b, n, PT_OS_NAME " version %s (esp-idf %s) #1 SMP %s %s\n",
 			PT_VERSION, app->idf_ver, app->date, app->time);
 }
 

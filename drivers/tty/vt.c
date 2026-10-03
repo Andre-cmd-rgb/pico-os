@@ -117,6 +117,7 @@ static int		 active;		/* what the renderer paints */
 /* ------------------------------------------------------------ grid */
 
 static bool screen_alloc(void);
+static void screen_free_all(void);
 
 static void mark_on(struct screen *sc, int x, int y)
 {
@@ -562,29 +563,53 @@ static void draw_cell(uint8_t *px, int span_w, int cell_x, uint8_t glyph, uint16
 	const uint8_t *bg = palette[BG_OF(color) < VT_COLORS ? BG_OF(color) : BG_DEFAULT];
 	const uint8_t *mark = palette[VT_CURSOR];
 	const uint8_t *bits = font5x8[glyph < FONT_GLYPHS ? glyph : FONT_UNKNOWN];
-	const bool block = glyph == FONT_BLOCK;
-	const int thick = SCALE * 2;
+	/* Every caller supplies DMA or 64-byte-aligned storage. Pixel offsets
+	 * keep the word stores aligned; may_alias also permits byte buffers. */
+	typedef uint16_t pixel_t __attribute__((may_alias));
+	uint16_t ink, paper, stroke;
 
 	if (cursor && cursor_shape == VT_CURSOR_BLOCK) {
 		fg = palette[BG_OF(color) < VT_COLORS ? BG_OF(color) : BG_DEFAULT];
 		bg = mark;
 	}
-	for (int py = 0; py < CELL_H; py++) {
-		int gy = py / SCALE - 1;
-		uint8_t rowbits = block ? 0x1f : gy >= 0 && gy < FONT_H ? bits[gy] : 0;
-		uint8_t *o = px + (py * span_w + cell_x) * 2;
+	/* Native words preserve the palette's high-byte-first panel order. */
+	memcpy(&ink, fg, sizeof(ink));
+	memcpy(&paper, bg, sizeof(paper));
+	memcpy(&stroke, mark, sizeof(stroke));
+	for (int gy = -1; gy <= FONT_H; gy++) {
+		uint8_t rowbits = glyph == FONT_BLOCK ? 0x3f :
+				  gy >= 0 && gy < FONT_H ? bits[gy] : 0;
 
-		for (int x = 0; x < CELL_W; x++) {
-			int gx = x / SCALE;
-			bool on = block || (gx < FONT_W ? (rowbits >> (FONT_W - 1 - gx)) & 1 :
-					    rowbits & 0x20);	/* an icon's sixth column */
-			const uint8_t *c = on ? fg : bg;
+		for (int dy = 0; dy < SCALE; dy++) {
+			pixel_t *o = (pixel_t *)px + ((gy + 1) * SCALE + dy) * span_w + cell_x;
 
-			if (cursor && ((cursor_shape == VT_CURSOR_UNDERLINE && py >= CELL_H - thick) ||
-				       (cursor_shape == VT_CURSOR_BAR && x < thick / 2 + 1)))
-				c = mark;
-			*o++ = c[0];
-			*o++ = c[1];
+#if SCALE == 1
+			o[0] = rowbits & 0x10 ? ink : paper;
+			o[1] = rowbits & 0x08 ? ink : paper;
+			o[2] = rowbits & 0x04 ? ink : paper;
+			o[3] = rowbits & 0x02 ? ink : paper;
+			o[4] = rowbits & 0x01 ? ink : paper;
+			o[5] = rowbits & 0x20 ? ink : paper;	/* icon's sixth column */
+#else
+			o[0] = o[1] = rowbits & 0x10 ? ink : paper;
+			o[2] = o[3] = rowbits & 0x08 ? ink : paper;
+			o[4] = o[5] = rowbits & 0x04 ? ink : paper;
+			o[6] = o[7] = rowbits & 0x02 ? ink : paper;
+			o[8] = o[9] = rowbits & 0x01 ? ink : paper;
+			o[10] = o[11] = rowbits & 0x20 ? ink : paper;
+#endif
+		}
+	}
+	/* The cursor is one cell per pass; keep its stroke out of glyph loops. */
+	if (cursor && (cursor_shape == VT_CURSOR_UNDERLINE || cursor_shape == VT_CURSOR_BAR)) {
+		int y0 = cursor_shape == VT_CURSOR_UNDERLINE ? CELL_H - SCALE * 2 : 0;
+		int width = cursor_shape == VT_CURSOR_BAR ? SCALE + 1 : CELL_W;
+
+		for (int y = y0; y < CELL_H; y++) {
+			pixel_t *o = (pixel_t *)px + y * span_w + cell_x;
+
+			for (int x = 0; x < width; x++)
+				o[x] = stroke;
 		}
 	}
 }
@@ -800,9 +825,93 @@ static const struct cell *shown_row(const struct screen *sc, int y)
 	return &sc->hist[(size_t)line * cols];
 }
 
+/* Clearing the panel invalidates every row, including rows a previous
+ * pass painted before a terminal switch. Consume the repaint together
+ * with that terminal's dirty grid, never halfway through a switch. */
+static bool prepare_frame(int which)
+{
+	bool repaint;
+
+	xSemaphoreTake(lock, portMAX_DELAY);
+	repaint = repaint_all && which == active;
+	if (repaint) {
+		struct screen *sc = &screens[which];
+
+		repaint_all = false;
+		for (int y = 0; y < rows; y++) {
+			sc->dirty_lo[y] = 0;
+			sc->dirty_hi[y] = cols - 1;
+		}
+	}
+	xSemaphoreGive(lock);
+	return repaint;
+}
+
+
+/* Finish a coherent row pass for the terminal it started on. Switching
+ * stays quick; its notification and repaint are kept for the next pass. */
+static void render_rows(uint8_t *pixels, struct cell *row, int which,
+			bool cur_shown, int cur_x, int cur_y)
+{
+	struct screen *sc = &screens[which];
+
+	for (int y = 0; y < rows; y++) {
+		int lo, hi, n, left, right, span_w;
+
+		xSemaphoreTake(lock, portMAX_DELAY);
+		lo = sc->dirty_lo[y];
+		hi = sc->dirty_hi[y];
+		if (lo <= hi) {
+			memcpy(row, shown_row(sc, y) + lo, (hi - lo + 1) * sizeof(*row));
+			sc->dirty_lo[y] = CLEAN_LO;
+			sc->dirty_hi[y] = 0;
+		}
+		xSemaphoreGive(lock);
+		if (lo > hi)
+			continue;
+
+		n = hi - lo + 1;
+		left = !lo && origin_x > 0 ? origin_x : 0;
+		right = hi == cols - 1 ? MAX(0, lcd_width() - origin_x - cols * CELL_W) : 0;
+		span_w = left + n * CELL_W + right;
+		for (int i = 0; i < n; i++)
+			draw_cell(pixels, span_w, left + i * CELL_W, row[i].glyph, row[i].color,
+				  cur_shown && y == cur_y && lo + i == cur_x);
+		/* Include the spare edge pixels in this transfer, in the outer
+		 * cells' colours, rather than allocating two tiny LCD fills. */
+		if (left || right) {
+			unsigned l = BG_OF(row[0].color), r = BG_OF(row[n - 1].color);
+			const uint8_t *lb = palette[l < VT_COLORS ? l : BG_DEFAULT];
+			const uint8_t *rb = palette[r < VT_COLORS ? r : BG_DEFAULT];
+
+			for (int py = 0; py < CELL_H; py++) {
+				uint8_t *line = pixels + py * span_w * 2;
+
+				for (int x = 0; x < left; x++) {
+					line[x * 2] = lb[0];
+					line[x * 2 + 1] = lb[1];
+				}
+				for (int x = span_w - right; x < span_w; x++) {
+					line[x * 2] = rb[0];
+					line[x * 2 + 1] = rb[1];
+				}
+			}
+		}
+		lcd_draw(origin_x + lo * CELL_W - left, text_y + y * CELL_H,
+			 span_w, CELL_H, pixels);
+	}
+}
+
+static void renderer_dispose(uint8_t *pixels, struct cell *row)
+{
+	heap_caps_free(pixels);
+	free(row);
+	renderer = NULL;
+}
+
 static void render_task(void *arg)
 {
-	uint8_t *pixels = lcd_alloc_buffer((size_t)cols * CELL_W * CELL_H * 2);
+	uint8_t *pixels = lcd_alloc_buffer((size_t)lcd_width() * CELL_H * 2);
 	struct cell *row = malloc(cols * sizeof(*row));
 	int64_t next_blink = 0;
 	int64_t next_status = 0;
@@ -810,11 +919,14 @@ static void render_task(void *arg)
 	int cur_x = -1, cur_y = -1;
 
 	if (!pixels || !row) {
+		renderer_dispose(pixels, row);
 		klog("vt: no memory for the renderer");
 		vTaskDelete(NULL);
+		return;
 	}
 	for (;;) {
 		int64_t blink_us = blink_ms * 1000LL;
+		int frame_vt;
 
 		/* dark: nothing to draw until it is lit again, whatever is written */
 		ulTaskNotifyTake(pdTRUE, blanked ? portMAX_DELAY :
@@ -833,8 +945,8 @@ static void render_task(void *arg)
 			if (i == active) {
 				xSemaphoreTake(lock, portMAX_DELAY);
 				mark_all();
-				xSemaphoreGive(lock);
 				repaint_all = true;
+				xSemaphoreGive(lock);
 			}
 		}
 		/* taken from the program or given back: program_shows() */
@@ -853,7 +965,8 @@ static void render_task(void *arg)
 		was_owned = owned;
 		owned_vt = active;
 		xSemaphoreTake(panel, portMAX_DELAY);
-		if (blanked || owned) {
+		frame_vt = active;
+		if (blanked || program_shows(frame_vt)) {
 			xSemaphoreGive(panel);
 			continue;		/* the program in front owns the screen */
 		}
@@ -864,11 +977,10 @@ static void render_task(void *arg)
 			next_blink = now + blink_us;
 		}
 
-		struct screen *sc = onscreen();
+		struct screen *sc = &screens[frame_vt];
 
-		if (repaint_all) {
+		if (prepare_frame(frame_vt)) {
 			/* a different terminal or new colours: clear once, then draw it */
-			repaint_all = false;
 			lcd_fill(0, 0, lcd_width(), lcd_height(),
 				 palette[BG_DEFAULT][0] << 8 | palette[BG_DEFAULT][1]);
 			cur_x = cur_y = -1;
@@ -892,25 +1004,7 @@ static void render_task(void *arg)
 		}
 		xSemaphoreGive(lock);
 
-		for (int y = 0; y < rows; y++) {
-			xSemaphoreTake(lock, portMAX_DELAY);
-			sc = onscreen();	/* it may have been switched */
-			int lo = sc->dirty_lo[y], hi = sc->dirty_hi[y];
-			if (lo <= hi) {
-				memcpy(row, shown_row(sc, y) + lo, (hi - lo + 1) * sizeof(*row));
-				sc->dirty_lo[y] = CLEAN_LO;
-				sc->dirty_hi[y] = 0;
-			}
-			xSemaphoreGive(lock);
-			if (lo > hi)
-				continue;
-
-			int n = hi - lo + 1;
-			for (int i = 0; i < n; i++)
-				draw_cell(pixels, n * CELL_W, i * CELL_W, row[i].glyph, row[i].color,
-					  cur_shown && y == cur_y && lo + i == cur_x);
-			lcd_draw(origin_x + lo * CELL_W, text_y + y * CELL_H, n * CELL_W, CELL_H, pixels);
-		}
+		render_rows(pixels, row, frame_vt, cur_shown, cur_x, cur_y);
 		xSemaphoreGive(panel);
 	}
 }
@@ -1026,6 +1120,13 @@ void vt_init(void)
 	lock = xSemaphoreCreateMutex();
 	panel = xSemaphoreCreateMutex();
 	if (!lock || !panel || !screen_alloc()) {
+		screen_free_all();
+		if (lock)
+			vSemaphoreDelete(lock);
+		if (panel)
+			vSemaphoreDelete(panel);
+		lock = panel = NULL;
+		display = false;
 		klog("vt: out of memory");
 		return;
 	}
@@ -1051,24 +1152,48 @@ void vt_init(void)
  * never from an interrupt -- so several terminals cost nothing that the
  * scarce internal RAM wants.
  */
-static bool screen_alloc(void)
+static void screen_free_all(void)
 {
 	for (int i = 0; i < CONFIG_PT_VT_COUNT; i++) {
 		struct screen *sc = &screens[i];
 
+		heap_caps_free(sc->cells);
+		heap_caps_free(sc->dirty_lo);
+		heap_caps_free(sc->dirty_hi);
+		heap_caps_free(sc->hist);
+		memset(sc, 0, sizeof(*sc));
+	}
+}
+
+static bool screen_alloc(void)
+{
+	for (int i = 0; i < CONFIG_PT_VT_COUNT; i++) {
+		struct screen *sc = &screens[i];
+		struct cell *cells;
+		uint16_t *lo, *hi;
+
 		if (sc->cells)
 			continue;
-		sc->cells = heap_caps_malloc_prefer((size_t)cols * rows * sizeof(*sc->cells), 2,
+		cells = heap_caps_malloc_prefer((size_t)cols * rows * sizeof(*sc->cells), 2,
 						    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
 						    MALLOC_CAP_8BIT);
-		sc->dirty_lo = heap_caps_malloc_prefer(rows * sizeof(*sc->dirty_lo), 2,
+		lo = heap_caps_malloc_prefer(rows * sizeof(*sc->dirty_lo), 2,
 						       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
 						       MALLOC_CAP_8BIT);
-		sc->dirty_hi = heap_caps_malloc_prefer(rows * sizeof(*sc->dirty_hi), 2,
+		hi = heap_caps_malloc_prefer(rows * sizeof(*sc->dirty_hi), 2,
 						       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
 						       MALLOC_CAP_8BIT);
-		if (!sc->cells || !sc->dirty_lo || !sc->dirty_hi)
+		if (!cells || !lo || !hi) {
+			heap_caps_free(cells);
+			heap_caps_free(lo);
+			heap_caps_free(hi);
+			screen_free_all();
 			return false;
+		}
+		/* Readers see a complete grid or none of it. */
+		sc->dirty_lo = lo;
+		sc->dirty_hi = hi;
+		sc->cells = cells;
 		for (int k = 0; k < cols * rows; k++)
 			sc->cells[k] = (struct cell) { ' ' - FONT_FIRST, COLOR(FG_DEFAULT, BG_DEFAULT) };
 		for (int y = 0; y < rows; y++) {
@@ -1140,11 +1265,13 @@ void vt_scroll_end(void)
 
 void vt_note(const char *text)
 {
+#if CONFIG_PT_STATUS_LINE
 	strlcpy(note_text, text, sizeof(note_text));
 	note_until = esp_timer_get_time() + 2000000;
 	status_now = true;
 	if (renderer)
 		xTaskNotifyGive(renderer);
+#endif
 }
 
 int vt_count(void)
@@ -1169,6 +1296,8 @@ int vt_switch(int which)
 {
 	if (which < 0 || which >= CONFIG_PT_VT_COUNT)
 		return -EINVAL;
+	if (!lock || !screens[which].cells)
+		return -ENOMEM;
 	if (which == active)
 		return 0;
 	xSemaphoreTake(lock, portMAX_DELAY);
@@ -1320,5 +1449,8 @@ void vt_start_display(void)
 	xSemaphoreTake(lock, portMAX_DELAY);
 	mark_all();
 	xSemaphoreGive(lock);
-	xTaskCreatePinnedToCore(render_task, "kvt", 4096, NULL, 4, &renderer, 0);
+	if (xTaskCreatePinnedToCore(render_task, "kvt", 4096, NULL, 4, &renderer, 0) != pdPASS) {
+		renderer = NULL;
+		klog("vt: no memory for the renderer task");
+	}
 }

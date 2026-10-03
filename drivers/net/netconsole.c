@@ -78,18 +78,22 @@ static size_t strip_telnet(uint8_t *buf, size_t n)
 
 static ssize_t net_read(struct pt_file *f, void *buf, size_t n)
 {
+	int timeout = read_timeout_ms >= 0 ? read_timeout_ms : 0;
 	struct timeval tv = {
-		.tv_sec = read_timeout_ms / 1000,
-		.tv_usec = read_timeout_ms % 1000 * 1000,
+		.tv_sec = timeout / 1000,
+		.tv_usec = timeout % 1000 * 1000,
 	};
 	ssize_t got;
 
+	if (!n)
+		return 0;
 	if (session < 0 || peer_gone)
 		return 0;			/* the client hung up: end of file */
-	setsockopt(session, SOL_SOCKET, SO_RCVTIMEO, &tv,
-		   read_timeout_ms >= 0 ? sizeof(tv) : 0);
+	/* Zero clears the login deadline; a zero-sized option is invalid. */
+	if (setsockopt(session, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)))
+		return -EIO;
 	for (;;) {
-		got = recv(session, buf, n, 0);
+		got = recv(session, buf, n, read_timeout_ms == 0 ? MSG_DONTWAIT : 0);
 		if (got > 0) {
 			size_t kept = strip_telnet(buf, got);
 
@@ -133,6 +137,7 @@ static int net_ioctl(struct pt_file *f, int req, void *arg)
 {
 	switch (req) {
 	case PT_TTY_SETRAW:
+	case PT_TTY_TRYSETRAW:
 		return 0;			/* the client is already raw */
 	case PT_TTY_GETSIZE: {
 		struct pt_winsize *ws = arg;

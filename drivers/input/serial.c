@@ -27,7 +27,7 @@ static void out_lock(bool take)
 	if (!out_mutex)
 		return;
 	if (take)
-		xSemaphoreTake(out_mutex, pdMS_TO_TICKS(1000));
+		xSemaphoreTake(out_mutex, portMAX_DELAY);
 	else
 		xSemaphoreGive(out_mutex);
 }
@@ -47,14 +47,29 @@ static void out_lock(bool take)
  */
 #define USJ_PIECE	512
 #define USJ_WAIT	pdMS_TO_TICKS(500)
+#define USJ_RECHECK	pdMS_TO_TICKS(10)
 
 static bool unread;
+static bool was_connected;
 
 static void serial_out(const char *s, size_t n)
 {
-	if (!usb_serial_jtag_is_connected())
-		return;
 	out_lock(true);
+	bool connected = usb_serial_jtag_is_connected();
+
+	/* The SDK's SOF monitor can briefly report a disconnect after a long
+	 * critical section (for example a system-task snapshot). Give a
+	 * previously connected host a brief interval to be observed again. A real
+	 * disconnect pays this delay once, then subsequent output drops. */
+	if (!connected && was_connected) {
+		vTaskDelay(USJ_RECHECK ? USJ_RECHECK : 1);
+		connected = usb_serial_jtag_is_connected();
+	}
+	was_connected = connected;
+	if (!connected) {
+		out_lock(false);
+		return;
+	}
 	while (n) {
 		size_t k = n < USJ_PIECE ? n : USJ_PIECE;
 
@@ -88,6 +103,12 @@ static int serial_install(void)
 		return err;
 	usb_serial_jtag_vfs_use_driver();
 	return 0;
+}
+
+static void serial_uninstall(void)
+{
+	usb_serial_jtag_vfs_use_nonblocking();
+	usb_serial_jtag_driver_uninstall();
 }
 
 /* While a PC is connected the driver keeps the chip awake
@@ -129,6 +150,12 @@ static int serial_install(void)
 	return 0;
 }
 
+static void serial_uninstall(void)
+{
+	uart_vfs_dev_use_nonblocking(UART_PORT);
+	uart_driver_delete(UART_PORT);
+}
+
 /* In light sleep a UART byte wakes the chip, but that byte and a couple after
  * it are lost: the first keypress after a quiet spell may not arrive. */
 void serial_idle_sleep(bool on)
@@ -162,6 +189,9 @@ static void serial_rx_task(void *arg)
 	size_t len = 0;
 	bool marked = false;
 
+	/* Init publishes the output callbacks before any buffered transfer
+	 * request can be consumed by this higher-priority task. */
+	ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 	for (;;) {
 		int n = serial_read(buf, sizeof(buf)), from = 0;
 
@@ -194,17 +224,35 @@ static void serial_rx_task(void *arg)
 
 int serial_console_init(void)
 {
-	esp_err_t err = serial_install();
+	esp_err_t err;
+#if CONFIG_PT_KBD_UART
+	TaskHandle_t worker;
+#endif
+
+	out_mutex = xSemaphoreCreateMutex();
+	if (!out_mutex)
+		return -ENOMEM;
+	err = serial_install();
 
 	if (err) {
+		vSemaphoreDelete(out_mutex);
+		out_mutex = NULL;
 		klog("serial: driver install failed (%s)", esp_err_to_name(err));
 		return -EIO;
 	}
-	out_mutex = xSemaphoreCreateMutex();
+#if CONFIG_PT_KBD_UART
+	if (xTaskCreatePinnedToCore(serial_rx_task, "kserial", 4096,
+				  NULL, 10, &worker, 0) != pdPASS) {
+		serial_uninstall();
+		vSemaphoreDelete(out_mutex);
+		out_mutex = NULL;
+		return -ENOMEM;
+	}
+#endif
 	tty_set_mirror(serial_out);
 	xfer_set_output(serial_out);
 #if CONFIG_PT_KBD_UART
-	xTaskCreatePinnedToCore(serial_rx_task, "kserial", 4096, NULL, 10, NULL, 0);
+	xTaskNotifyGive(worker);
 #endif
 	klog("serial: console on %s", SERIAL_NAME);
 	return 0;

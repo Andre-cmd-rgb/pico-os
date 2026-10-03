@@ -35,6 +35,8 @@ struct tty {
 	int		     esc_state;	/* 0 none, 1 after ESC, 2 in a sequence */
 	int		     fg_pgid;
 	int		     read_timeout_ms;
+	int		     app_scroll_pid;	/* cleared when its process exits */
+	int		     app_scroll_pgid;
 };
 
 static struct tty	 ttys[CONFIG_PT_VT_COUNT];
@@ -246,6 +248,14 @@ static bool switch_key(uint8_t c)
  */
 static bool scrolling;
 
+static bool app_scroll(struct tty *tty)
+{
+	if (tty->app_scroll_pid && !proc_alive(tty->app_scroll_pid))
+		tty->app_scroll_pid = 0;
+	return tty->app_scroll_pid && tty->app_scroll_pgid == tty->fg_pgid &&
+	       !proc_stopped(tty->app_scroll_pid);
+}
+
 /* The length of the whole ESC [ ... sequence at `s`, or 0. */
 static size_t seq_len(const char *s, size_t n)
 {
@@ -307,7 +317,16 @@ void tty_input_remote(const char *s, size_t n)
 
 		if (step) {
 			switch_armed = false;
-			scrolling = vt_scroll(step) > 0;
+			if (app_scroll(tty)) {
+				/* The full-screen app owns its transcript, while the
+				 * shell still uses the terminal's ordinary history. */
+				const char *key = step >= 1 << 20 ? "\x1b[1;5H" :
+					step <= -(1 << 20) ? "\x1b[1;5F" :
+					step > 0 ? "\x1b[5~" : "\x1b[6~";
+
+				xStreamBufferSend(tty->input, key, strlen(key), 0);
+			} else
+				scrolling = vt_scroll(step) > 0;
 			i += k - 1;
 			continue;
 		}
@@ -352,8 +371,11 @@ int tty_switch(int which)
 		vt_scroll_end();
 		scrolling = false;
 	}
+	int ret = vt_switch(which);
+
+	if (ret)
+		return ret;
 	front = which;
-	vt_switch(which);
 	if (activate_hook)
 		activate_hook(which);	/* start its shell if it has none */
 	return 0;
@@ -427,7 +449,9 @@ static int tty_ioctl(struct pt_file *f, int req, void *arg)
 
 	switch (req) {
 	case PT_TTY_SETRAW:
-		xSemaphoreTake(tty->in_lock, portMAX_DELAY);
+	case PT_TTY_TRYSETRAW:
+		if (!xSemaphoreTake(tty->in_lock, req == PT_TTY_TRYSETRAW ? 0 : portMAX_DELAY))
+			return -EAGAIN;
 		tty->raw = *(int *)arg;
 		tty->line_len = 0;
 		tty->esc_state = 0;
@@ -450,6 +474,24 @@ static int tty_ioctl(struct pt_file *f, int req, void *arg)
 	case PT_TTY_GETRAW:
 		*(int *)arg = tty->raw;
 		return 0;
+	case PT_TTY_SETSCROLL: {
+		struct proc *p = proc_current();
+
+		if (!p)
+			return -EPERM;
+		xSemaphoreTake(tty->in_lock, portMAX_DELAY);
+		if (*(int *)arg) {
+			tty->app_scroll_pid = p->pid;
+			tty->app_scroll_pgid = p->pgid;
+			if (tty == fg() && scrolling) {
+				vt_scroll_end();
+				scrolling = false;
+			}
+		} else if (tty->app_scroll_pid == p->pid)
+			tty->app_scroll_pid = 0;
+		xSemaphoreGive(tty->in_lock);
+		return 0;
+	}
 	}
 	return -ENOTTY;
 }

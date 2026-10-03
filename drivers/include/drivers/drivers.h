@@ -21,6 +21,7 @@ void	lcd_fill(int x, int y, int w, int h, uint16_t rgb565);
 int	lcd_capture_begin(void);
 const uint8_t *lcd_capture_pixels(int *w, int *h);	/* RGB565, high byte first */
 void	lcd_capture_end(void);
+int	lcd_capture_try_end(void);	/* -EAGAIN if drawing; safe for exit cleanup */
 int	lcd_capture_save(const char *path);	/* the whole dance, into a BMP */
 
 void	lcd_backlight_set(int percent);	/* 0 turns the backlight off */
@@ -41,6 +42,7 @@ int	lcd_read_reg(uint8_t cmd, uint8_t *out, int n);	/* the panel's registers */
  */
 bool	lcd_native_ok(void);
 /* columns c0..c0+cw-1 of rows p0..p0+ph-1, portrait, the buffer row by row */
+/* -EAGAIN means a complete frame sent after its refresh window. */
 int	lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph);
 void	lcd_native_order(bool upwards);	/* which way the refresh runs */
 bool	lcd_native_upwards(void);
@@ -412,6 +414,7 @@ int	cpufreq_init(void);
 int	cpufreq_set(int min_mhz, int max_mhz);		/* one of cpufreq_speeds */
 void	cpufreq_get(int *min_mhz, int *max_mhz);
 void	cpufreq_boost(bool on);	/* counted: the policy's top as its floor too */
+bool	cpufreq_try_boost(bool on);	/* reaper retries instead of blocking */
 int	cpufreq_boosted(void);
 void	cpufreq_speeds(int *slowest, int *middle, int *fastest);	/* 80, 160, 240 on the S3 */
 int	cpufreq_current_mhz(void);

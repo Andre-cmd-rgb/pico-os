@@ -26,7 +26,7 @@ static void banner(void)
 {
 	const esp_app_desc_t *app = esp_app_get_description();
 
-	klog("PocketType %s (esp-idf %s) #1 SMP %s %s", PT_VERSION, app->idf_ver, app->date, app->time);
+	klog(PT_OS_NAME " %s (esp-idf %s) #1 SMP %s %s", PT_VERSION, app->idf_ver, app->date, app->time);
 	klog("mem: %zu KB internal, %zu KB psram available",
 	     heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
 	     heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
@@ -233,7 +233,10 @@ void app_main(void)
 		clock_restore();
 	}
 #if CONFIG_PT_LCD
-	lcd_init();
+	int lcd_error = lcd_init();
+
+	if (lcd_error)
+		klog("init: display initialization failed (%s); continuing on serial", strerror(-lcd_error));
 #endif
 	vt_init();
 	if (root)

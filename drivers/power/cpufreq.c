@@ -27,6 +27,8 @@ static int  cur_min = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
 static int  cur_max = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
 static bool cur_sleep;
 static int  boosts;		/* programs that want the policy's top all the time */
+static StaticSemaphore_t policy_storage;
+static SemaphoreHandle_t policy_lock;
 
 static void account(void);
 
@@ -96,7 +98,12 @@ static int apply(int min_mhz, int max_mhz, bool sleep)
 
 int cpufreq_set(int min_mhz, int max_mhz)
 {
-	return apply(min_mhz, max_mhz, cur_sleep);
+	int err;
+
+	xSemaphoreTake(policy_lock, portMAX_DELAY);
+	err = apply(min_mhz, max_mhz, cur_sleep);
+	xSemaphoreGive(policy_lock);
+	return err;
 }
 
 /*
@@ -107,7 +114,8 @@ int cpufreq_set(int min_mhz, int max_mhz)
  * policy changed with `cpufreq` while one played, came out wrong. Now it
  * is counted, and only the minimum is lifted: powersave stays at its 80.
  */
-void cpufreq_boost(bool on)
+/* Policy and effective boost must reach the SDK together on both cores. */
+static void boost_locked(bool on)
 {
 	boosts += on ? 1 : -1;
 	if (boosts < 0)
@@ -115,25 +123,55 @@ void cpufreq_boost(bool on)
 	apply(cur_min, cur_max, cur_sleep);
 }
 
+void cpufreq_boost(bool on)
+{
+	xSemaphoreTake(policy_lock, portMAX_DELAY);
+	boost_locked(on);
+	xSemaphoreGive(policy_lock);
+}
+
+bool cpufreq_try_boost(bool on)
+{
+	if (!xSemaphoreTake(policy_lock, 0))
+		return false;
+	boost_locked(on);
+	xSemaphoreGive(policy_lock);
+	return true;
+}
+
 int cpufreq_boosted(void)
 {
-	return boosts;
+	int n;
+
+	xSemaphoreTake(policy_lock, portMAX_DELAY);
+	n = boosts;
+	xSemaphoreGive(policy_lock);
+	return n;
 }
 
 int cpufreq_set_idle_sleep(bool on)
 {
-	int err = apply(cur_min, cur_max, on);
+	int err;
+
+	xSemaphoreTake(policy_lock, portMAX_DELAY);
+	err = apply(cur_min, cur_max, on);
 
 	if (!err) {
 		serial_idle_sleep(on);
 		klog("cpufreq: idle sleep %s", on ? "on" : "off");
 	}
+	xSemaphoreGive(policy_lock);
 	return err;
 }
 
 bool cpufreq_idle_sleep(void)
 {
-	return cur_sleep;
+	bool sleep;
+
+	xSemaphoreTake(policy_lock, portMAX_DELAY);
+	sleep = cur_sleep;
+	xSemaphoreGive(policy_lock);
+	return sleep;
 }
 
 /*
@@ -205,14 +243,27 @@ int cpufreq_time_summary(char *buf, size_t size)
 	long long total = 0;
 	size_t len = 0;
 
+	if (!size)
+		return -EINVAL;
+	xSemaphoreTake(policy_lock, portMAX_DELAY);
 	account();
 	for (int i = 0; i < 4; i++)
 		total += at_speed[i].us;
-	if (!total)
+	if (!total) {
+		xSemaphoreGive(policy_lock);
 		return -ENOTSUP;
-	for (int i = 0; i < 4 && at_speed[i].mhz; i++)
-		len += snprintf(buf + len, size - len, "%s%lld%% at %d MHz",
-				i ? ", " : "", at_speed[i].us * 100 / total, at_speed[i].mhz);
+	}
+	for (int i = 0; i < 4 && at_speed[i].mhz; i++) {
+		int n = snprintf(buf + len, size - len, "%s%lld%% at %d MHz",
+				 i ? ", " : "", at_speed[i].us * 100 / total, at_speed[i].mhz);
+
+		if (n < 0 || (size_t)n >= size - len) {
+			len = size - 1;
+			break;
+		}
+		len += n;
+	}
+	xSemaphoreGive(policy_lock);
 	return len;
 #else
 	return -ENOTSUP;
@@ -221,6 +272,8 @@ int cpufreq_time_summary(char *buf, size_t size)
 
 int cpufreq_stats(char *buf, size_t size)
 {
+	if (!size)
+		return -EINVAL;
 #if CONFIG_PM_ENABLE && CONFIG_PM_PROFILING
 	FILE *f = fmemopen(buf, size, "w");
 
@@ -237,8 +290,10 @@ int cpufreq_stats(char *buf, size_t size)
 
 void cpufreq_get(int *min_mhz, int *max_mhz)
 {
+	xSemaphoreTake(policy_lock, portMAX_DELAY);
 	*min_mhz = cur_min;
 	*max_mhz = cur_max;
+	xSemaphoreGive(policy_lock);
 }
 
 int cpufreq_current_mhz(void)
@@ -260,6 +315,8 @@ const char *cpufreq_policy_name(int min_mhz, int max_mhz)
 int cpufreq_init(void)
 {
 	bool sleep = IS_IDLE_SLEEP;
+
+	policy_lock = xSemaphoreCreateMutexStatic(&policy_storage);
 #if CONFIG_PT_CPUFREQ_PERFORMANCE
 	int err = apply(FAST_MHZ, FAST_MHZ, sleep);
 #elif CONFIG_PT_CPUFREQ_POWERSAVE

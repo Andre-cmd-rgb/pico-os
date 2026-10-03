@@ -36,6 +36,7 @@
  * that holding a key down does not wear the flash.
  */
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -64,17 +65,23 @@ static struct idle_times times = {
 };
 
 static TaskHandle_t	 task;
-static volatile int64_t	 last_key;	/* someone at the keyboard */
-static volatile int64_t	 last_any;	/* anything at all, the PC included */
-static volatile int	 keep;		/* programs holding the screen on */
+static portMUX_TYPE	 time_lock = portMUX_INITIALIZER_UNLOCKED;
+static int64_t		 last_key;	/* someone at the keyboard */
+static int64_t		 last_any;	/* anything at all, the PC included */
+static atomic_int	 keep;		/* programs holding the screen on */
 static volatile enum screen_state state = SCREEN_ON;
+static atomic_bool	 screen_changing;	/* a key must wake an in-flight transition */
 static volatile bool	 asked;		/* power_suspend_soon() */
 static volatile bool	 doze_asked;	/* power_doze() */
 static volatile bool	 woke_up;	/* a key since the doze began */
 static bool		 dozing;
 static bool		 slept_before;		/* light sleep as it was before the dark */
-static volatile int64_t	 save_at;	/* /etc/power to be written then; 0: not */
+static int64_t		 save_at;	/* /etc/power to be written then; 0: not */
+#if CONFIG_PT_AUDIO
 static int		 unmuted = CONFIG_PT_AUDIO_VOLUME;	/* what Fn 9 goes back to */
+#else
+static int		 unmuted;
+#endif
 
 /*
  * What the processes had used when the quiet began, to tell a program
@@ -90,6 +97,49 @@ static int nseen;
 static int64_t now_us(void)
 {
 	return esp_timer_get_time();
+}
+
+/* Activity times cross cores and are wider than the S3 can load at once.
+ * A delayed writer must not replace a newer key or remote activity. */
+static void activity_record(int64_t now, bool local)
+{
+	portENTER_CRITICAL(&time_lock);
+	if (local && now > last_key)
+		last_key = now;
+	if (now > last_any)
+		last_any = now;
+	portEXIT_CRITICAL(&time_lock);
+}
+
+static void activity_times(int64_t *key, int64_t *any)
+{
+	portENTER_CRITICAL(&time_lock);
+	*key = last_key;
+	*any = last_any;
+	portEXIT_CRITICAL(&time_lock);
+}
+
+static void save_schedule(int64_t when)
+{
+	portENTER_CRITICAL(&time_lock);
+	if (when > save_at)
+		save_at = when;
+	portEXIT_CRITICAL(&time_lock);
+}
+
+/* Claim only a deadline already due, without erasing a concurrent later
+ * change. Saving files and notifying the idle task happen outside the lock. */
+static bool save_take_due(int64_t now, int64_t *deadline)
+{
+	bool due;
+
+	portENTER_CRITICAL(&time_lock);
+	due = save_at && now >= save_at;
+	if (due)
+		save_at = 0;
+	*deadline = save_at;
+	portEXIT_CRITICAL(&time_lock);
+	return due;
 }
 
 enum screen_state power_screen(void)
@@ -110,18 +160,28 @@ static int dim_level(void)
 }
 
 /* On the idle task only, so the panel is never told two things at once. */
-static void set_screen(enum screen_state want)
+static bool set_screen(enum screen_state want)
 {
 	enum screen_state was = state;
+	bool panel = lcd_width() > 0;
 
 	if (want == was)
-		return;
+		return true;
+	screen_changing = true;
 	if (want == SCREEN_OFF) {
-		state = want;
 		proc_set_quiet(true);
 		vt_blank(true);			/* the renderer stops first */
 		lcd_light(0);
 		lcd_panel_power(false);
+		if (panel && lcd_panel_on()) {
+			/* A rejected sleep leaves the panel awake; restore the
+			 * visible terminal without changing the CPU sleep policy. */
+			proc_set_quiet(false);
+			vt_blank(false);
+			lcd_light(was == SCREEN_DIM ? dim_level() : -1);
+			screen_changing = false;
+			return false;
+		}
 		/*
 		 * Dark, the chip light-sleeps between the keyboard's polls, as
 		 * a phone does with its screen off: everything is kept, and a
@@ -132,18 +192,44 @@ static void set_screen(enum screen_state want)
 		slept_before = cpufreq_idle_sleep();
 		if (!slept_before)
 			cpufreq_set_idle_sleep(true);
-		return;
+		state = want;
+		screen_changing = false;
+		return true;
 	}
 	if (was == SCREEN_OFF) {
 		if (!slept_before)
 			cpufreq_set_idle_sleep(false);
-		proc_set_quiet(false);
 		lcd_panel_power(true);
+		if (panel && !lcd_panel_on()) {
+			/* Keep the renderer and lamp dark until wake succeeds,
+			 * and keep the temporary idle-sleep override in place. */
+			if (!slept_before)
+				cpufreq_set_idle_sleep(true);
+			screen_changing = false;
+			return false;
+		}
+		proc_set_quiet(false);
 		vt_blank(false);		/* everything is painted again */
 		wifi_retry_soon();		/* someone is back: look for the network */
 	}
 	state = want;
 	lcd_light(want == SCREEN_DIM ? dim_level() : -1);
+	screen_changing = false;
+	return true;
+}
+
+/* A transient panel error gets another attempt soon, including when all
+ * idle deadlines are disabled. Successful transitions keep their old waits. */
+static TickType_t idle_wait_ticks(int64_t next, bool screen_ok)
+{
+	int64_t wait_ms;
+
+	if (next == INT64_MAX && screen_ok)
+		return portMAX_DELAY;
+	wait_ms = next == INT64_MAX ? 250 : next / 1000 + 20;
+	if (!screen_ok && wait_ms > 250)
+		wait_ms = 250;
+	return pdMS_TO_TICKS(wait_ms);
 }
 
 static void snapshot_procs(void)
@@ -275,10 +361,14 @@ static void idle_task(void *arg)
 	bool snapped = false;
 
 	for (;;) {
-		int64_t now = now_us(), quiet = now - last_key, any = now - last_any;
+		int64_t now = now_us(), key_at, any_at, quiet, any, deadline;
 		int64_t next = INT64_MAX;
 		enum screen_state want = SCREEN_ON;
+		bool screen_ok;
 
+		activity_times(&key_at, &any_at);
+		quiet = now - key_at;
+		any = now - any_at;
 		if (doze_asked && !dozing)
 			doze_begin();
 		else if (dozing && woke_up)
@@ -290,7 +380,7 @@ static void idle_task(void *arg)
 			want = SCREEN_OFF;
 		else if (times.dim_s && quiet >= seconds(times.dim_s))
 			want = SCREEN_DIM;
-		set_screen(want);
+		screen_ok = set_screen(want);
 
 		/* the next moment something is due */
 		if (times.dim_s && quiet < seconds(times.dim_s))
@@ -325,16 +415,12 @@ static void idle_task(void *arg)
 			}
 			next = wait < next ? wait : next;
 		}
-		if (save_at && now >= save_at) {
-			save_at = 0;
+		if (save_take_due(now, &deadline)) {
 			save_config();
-		} else if (save_at && save_at - now < next) {
-			next = save_at - now;
+		} else if (deadline && deadline - now < next) {
+			next = deadline - now;
 		}
-		if (next == INT64_MAX)
-			ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-		else
-			ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(next / 1000 + 20));
+		ulTaskNotifyTake(pdTRUE, idle_wait_ticks(next, screen_ok));
 	}
 }
 
@@ -342,8 +428,8 @@ void power_activity(void)
 {
 	int64_t now = now_us();
 
-	last_key = last_any = now;
-	if (task && state != SCREEN_ON)
+	activity_record(now, true);
+	if (task && (state != SCREEN_ON || screen_changing))
 		xTaskNotifyGive(task);
 }
 
@@ -380,7 +466,7 @@ void power_screen_wake(void)
 
 void power_remote_activity(void)
 {
-	last_any = now_us();
+	activity_record(now_us(), false);
 }
 
 /*
@@ -396,9 +482,11 @@ void power_suspend_soon(void)
 
 void power_keep_screen(bool on)
 {
-	keep += on ? 1 : -1;
-	if (keep < 0)
-		keep = 0;
+	int old = atomic_load(&keep), next;
+
+	do {
+		next = on ? old + 1 : old > 0 ? old - 1 : 0;
+	} while (!atomic_compare_exchange_weak(&keep, &old, next));
 	power_activity();
 }
 
@@ -475,7 +563,7 @@ int idle_set(const struct idle_times *t)
 
 void power_levels_changed(void)
 {
-	save_at = now_us() + seconds(SAVE_AFTER_S);
+	save_schedule(now_us() + seconds(SAVE_AFTER_S));
 	if (task)
 		xTaskNotifyGive(task);
 }
@@ -546,7 +634,7 @@ void power_shortcut(char key)
 int idle_init(void)
 {
 	idle_load();
-	last_key = last_any = now_us();
+	activity_record(now_us(), true);
 	if (!vt_has_display())
 		times.dim_s = times.blank_s = 0;	/* nothing to dim */
 	xTaskCreatePinnedToCore(idle_task, "kidle", 3072, NULL, 3, &task, 0);
