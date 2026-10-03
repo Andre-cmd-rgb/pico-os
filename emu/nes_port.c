@@ -67,6 +67,10 @@ void rg_system_log(int level, const char *context, const char *format, ...)
 	va_start(ap, format);
 	n = vsnprintf(line, sizeof(line), format, ap);
 	va_end(ap);
+	if (n < 0)
+		return;
+	if ((size_t)n >= sizeof(line))
+		n = sizeof(line) - 1;
 	while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
 		line[--n] = '\0';
 	if (n > 0)
@@ -132,16 +136,19 @@ static void clear_screen(void)
 
 /* The core's palette is RGB565 the right way round for a PC; the panel
  * wants each pixel's high byte first. */
-static void build_palette(void)
+static int build_palette(void)
 {
 	uint16_t *src = nofrendo_buildpalette(0, 16);
 
+	if (!src)
+		return -ENOMEM;
 	for (int i = 0; i < 256; i++) {
-		uint16_t c = src ? src[i] : 0;
+		uint16_t c = src[i];
 
 		palette[i] = (uint16_t)(c << 8 | c >> 8);
 	}
 	pt_free(src);			/* the core built it for us to keep */
+	return 0;
 }
 
 /* ------------------------------------------------------------ the joypad */
@@ -189,7 +196,7 @@ static bool read_pad(struct pad *pad, int64_t now, int *state)
 	while ((key = pt_readkey_timeout(PT_STDIN, 0)) != PT_KEY_NONE) {
 		int button;
 
-		if (key == 'q' || key == 'Q' || key == PT_KEY_ESC || key < 0)
+		if (key == 'q' || key == 'Q' || key == PT_KEY_ESC || key == PT_CTRL('c') || key < 0)
 			return false;
 		if (key == 'p' || key == 'P') {
 			want_shot = true;	/* saved after the next frame */
@@ -208,6 +215,62 @@ static bool read_pad(struct pad *pad, int64_t now, int *state)
 
 /* ------------------------------------------------------------ running */
 
+struct nes_cleanup {
+	StaticSemaphore_t guard_storage;
+	SemaphoreHandle_t guard;
+	struct pt_file *tty;
+	int pid;
+	bool core, capture, raw, done;
+};
+
+static bool nes_cleanup_step(void *arg)
+{
+	struct nes_cleanup *c = arg;
+	int pid = c->pid;
+
+	/* Ownership can pass to another game before this hook is removed. */
+	if (c->done)
+		return true;
+	/* A syscall can exit the owner while it holds this guard. That
+	 * operation will never resume, so cleanup retires its lock itself. */
+	if (xSemaphoreGetMutexHolder(c->guard) != xTaskGetCurrentTaskHandle() &&
+	    !xSemaphoreTake(c->guard, 0))
+		return false;
+	if (c->capture) {
+		if (lcd_capture_try_end() == -EAGAIN) {
+			xSemaphoreGive(c->guard);
+			return false;
+		}
+		c->capture = false;
+	}
+	if (c->core) {
+		/* The core's static ROM pointers must be cleared before exit
+		 * releases its tracked allocations, including from the reaper. */
+		nes_shutdown();
+		c->core = false;
+	}
+	pt_free(rowmem);
+	pt_free(vidbuf);
+	rowbuf = rowmem = vidbuf = NULL;
+	apu = NULL;
+	want_shot = false;
+	if (c->raw && c->tty && c->tty->ops->ioctl) {
+		int raw = 0, off = -1;
+
+		if (c->tty->ops->ioctl(c->tty, PT_TTY_TRYSETRAW, &raw) == -EAGAIN) {
+			xSemaphoreGive(c->guard);
+			return false;
+		}
+		/* readkey's reset syscall may have delivered the terminating kill. */
+		c->tty->ops->ioctl(c->tty, PT_TTY_SETTIMEOUT, &off);
+	}
+	c->raw = false;
+	c->done = true;
+	atomic_compare_exchange_strong(&owner, &pid, 0);
+	xSemaphoreGive(c->guard);
+	return true;
+}
+
 void nes_last_stats(struct nes_stats *out)
 {
 	*out = stats;
@@ -217,10 +280,15 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 {
 	char vfs[PT_PATH_MAX + 16];
 	struct pad pad = { 0 };
+	struct nes_cleanup cleanup = { 0 };
+	struct proc *p = proc_current();
 	int64_t started, next_frame, paused_us = 0;
 	unsigned gen;
-	int frame = 0, ret = 0;
+	int frame = 0, ret = 0, frame_us = FRAME_US;
+	bool screen = false;
 
+	if (!p)
+		return -EPERM;
 	if (!vt_has_display())
 		return -ENODEV;
 	if (!mount_resolve(rom_path, vfs, sizeof(vfs)))
@@ -231,6 +299,18 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 	/* one killed outright never gave it back: a pid no longer alive */
 	if ((was && proc_alive(was)) || !atomic_compare_exchange_strong(&owner, &was, me))
 		return -EBUSY;
+	cleanup.guard = xSemaphoreCreateMutexStatic(&cleanup.guard_storage);
+	cleanup.tty = p->fd[PT_STDIN];
+	cleanup.pid = me;
+	pt_sigcatch(true);
+	if ((ret = proc_set_cleanup(nes_cleanup_step, &cleanup))) {
+		atomic_store(&owner, 0);
+		return ret;
+	}
+
+	/* Publish startup state under a mutex so force-kill waits for the
+	 * core to finish an allocation or ROM-load update before retiring it. */
+	xSemaphoreTake(cleanup.guard, portMAX_DELAY);
 
 	/*
 	 * Both buffers are in PSRAM. The row buffer goes to the display by
@@ -248,17 +328,20 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 				MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	if (!rowbuf || !vidbuf) {
 		ret = -ENOMEM;
-		goto out;
+		goto startup_done;
 	}
-	if (!nes_init(SYS_DETECT, SAMPLE_RATE, false, NULL)) {
+	cleanup.core = true;
+	if (!nes_init(SYS_DETECT, SAMPLE_RATE, false, NULL) ||
+	    !nes_getptr()->apu || !nes_getptr()->apu->buffer) {
 		ret = -ENOMEM;
-		goto out;
+		goto startup_done;
 	}
-	build_palette();
+	if ((ret = build_palette()))
+		goto startup_done;
 	if (nes_loadfile(vfs) != 0) {
 		klog("nes: %s is not a ROM this can run", rom_path);
 		ret = -ENOEXEC;
-		goto out;
+		goto startup_done;
 	}
 	/*
 	 * After loading, not before: inserting a cartridge resets the
@@ -269,6 +352,14 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 	nes_setvidbuf(vidbuf);
 	apu = nes_getptr()->apu;
 	input_connect(0, NES_JOYPAD);
+	if (nes_getptr()->refresh_rate == 50)
+		frame_us = 20000;		/* PAL stays at 50 Hz without an audio clock */
+	cleanup.raw = true;
+startup_done:
+	xSemaphoreGive(cleanup.guard);
+	if (ret)
+		goto out;
+	pt_tty_raw(PT_STDIN, true);
 
 	origin_x = (lcd_width() - NES_SCREEN_WIDTH) / 2;
 	origin_y = (lcd_height() - NES_SCREEN_HEIGHT) / 2;
@@ -277,11 +368,13 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 	if (origin_y < 0)
 		origin_y = 0;
 	vt_hold_screen(true);		/* the terminal stops repainting */
+	screen = true;
 	clear_screen();
 	gen = vt_screen_gen();
 	if (opt->sound) {
-		audio_set_rate(SAMPLE_RATE);
-		audio_set_latency(SOUND_LATENCY_MS);	/* a game's sound keeps up */
+		if ((ret = audio_set_rate(SAMPLE_RATE)) ||
+		    (ret = audio_set_latency(SOUND_LATENCY_MS)))
+			goto out;		/* a failed codec cannot pace the game */
 	}
 
 	memset(&stats, 0, sizeof(stats));
@@ -308,8 +401,20 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 			break;
 		input_update(0, state);
 		/* 'p' takes a picture: arm before the frame, write after it */
-		if (want_shot && !lcd_capture_begin())
-			draw = true;
+		if (want_shot) {
+			int captured;
+
+			xSemaphoreTake(cleanup.guard, portMAX_DELAY);
+			captured = lcd_capture_begin();
+			cleanup.capture = !captured;
+			xSemaphoreGive(cleanup.guard);
+			if (!captured)
+				draw = true;
+			else {
+				want_shot = false;
+				klog("nes: screenshot failed (%d)", captured);
+			}
+		}
 		nes_emulate(draw);
 		if (want_shot) {
 			char path[64];
@@ -332,7 +437,10 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 					break;
 			}
 			klog("nes: %s", lcd_capture_save(path) ? "screenshot failed" : path);
+			xSemaphoreTake(cleanup.guard, portMAX_DELAY);
 			lcd_capture_end();
+			cleanup.capture = false;
+			xSemaphoreGive(cleanup.guard);
 			want_shot = false;
 		}
 		stats.frames++;
@@ -347,6 +455,7 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 		 */
 		if (opt->sound && apu && apu->buffer) {
 			int samples = apu->samples_per_frame;
+			ssize_t written;
 
 			for (int s = 0; s < samples; s++) {
 				int mag = apu->buffer[s] < 0 ? -apu->buffer[s] : apu->buffer[s];
@@ -354,10 +463,14 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 				if (mag > stats.sound_peak)
 					stats.sound_peak = mag;
 			}
-			audio_write(apu->buffer, samples * sizeof(*apu->buffer), 1);
+			written = audio_write(apu->buffer, samples * sizeof(*apu->buffer), 1);
+			if (written != (ssize_t)(samples * sizeof(*apu->buffer))) {
+				ret = pt_interrupted() ? 0 : written < 0 ? (int)written : -EIO;
+				break;
+			}
 			continue;	/* the codec is the clock */
 		}
-		next_frame += FRAME_US;
+		next_frame += frame_us;
 		int64_t wait = next_frame - esp_timer_get_time();
 
 		if (wait > 1500)
@@ -373,14 +486,12 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 	if (elapsed > 0)		/* from microseconds: whole seconds lie */
 		stats.fps_tenths = (int)(stats.frames * 10000000LL / elapsed);
 out:
-	vt_hold_screen(false);
-	nes_shutdown();
+	if (screen)
+		vt_hold_screen(false);
 	if (opt->sound)
 		audio_stop();
-	pt_free(rowmem);
-	pt_free(vidbuf);
-	rowbuf = rowmem = vidbuf = NULL;
-	apu = NULL;
-	atomic_store(&owner, 0);
+	while (!nes_cleanup_step(&cleanup))
+		vTaskDelay(pdMS_TO_TICKS(10));
+	proc_set_cleanup(NULL, NULL);
 	return ret;
 }

@@ -17,25 +17,31 @@
 
 #if CONFIG_PT_NES
 
-PT_COMPLETE(nes, ": -q -f <file:.nes>\n*: <file:.nes>\n")
+PT_COMPLETE(nes, ": -q -v -f <file:.nes>\n*: <file:.nes>\n")
 
 PT_PROGRAM_STACK(nes, 16, "play a NES game\n"
-		 "usage: nes [-q] [-f skip] [rom.nes]\n"
+		 "usage: nes [-q] [-v] [-f skip] [rom.nes]\n"
 		 "With no file, the games in ~/roms are offered as a list.\n"
 		 "  -q  no sound\n"
-		 "  -f  draw one frame in every skip+1 (default 1: every other)\n"
-		 "Arrows or WASD move, X and Z are A and B, Enter starts,\n"
-		 "space selects, q or Esc quits. A terminal cannot say when a\n"
-		 "key is let go, so a press counts as held for a moment.")
+		 "  -v  at the end, how fast it ran\n"
+		 "  -f  draw one frame in every skip+1 (default 1:\n"
+		 "      every other)\n"
+		 "Arrows or WASD move, X and Z are A and B, Enter\n"
+		 "starts, space selects, q, Esc or Ctrl-C quits. A\n"
+		 "terminal cannot say when a key is let go, so a press\n"
+		 "counts as held for a moment.")
 {
 	struct nes_options opt = { .sound = true, .frameskip = 1 };
 	struct nes_stats stats;
 	char rom[PT_PATH_MAX];
+	bool verbose = false;
 	int i = 1, ret;
 
 	for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
 		if (!strcmp(argv[i], "-q")) {
 			opt.sound = false;
+		} else if (!strcmp(argv[i], "-v")) {
+			verbose = true;
 		} else if (!strcmp(argv[i], "-f") && i + 1 < argc) {
 			opt.frameskip = atoi(argv[++i]);
 			if (opt.frameskip < 0 || opt.frameskip > 8) {
@@ -43,12 +49,12 @@ PT_PROGRAM_STACK(nes, 16, "play a NES game\n"
 				return 2;
 			}
 		} else {
-			pt_dprintf(PT_STDERR, "usage: nes [-q] [-f skip] rom.nes\n");
+			pt_dprintf(PT_STDERR, "usage: nes [-q] [-v] [-f skip] [rom.nes]\n");
 			return 2;
 		}
 	}
 	if (i + 1 < argc) {
-		pt_dprintf(PT_STDERR, "usage: nes [-q] [-f skip] [rom.nes]\n");
+		pt_dprintf(PT_STDERR, "usage: nes [-q] [-v] [-f skip] [rom.nes]\n");
 		return 2;
 	}
 	if (!vt_has_display()) {
@@ -71,9 +77,7 @@ PT_PROGRAM_STACK(nes, 16, "play a NES game\n"
 		strlcpy(rom, argv[i], sizeof(rom));
 	}
 
-	pt_tty_raw(PT_STDIN, true);
 	ret = nes_run(rom, &opt);
-	pt_tty_raw(PT_STDIN, false);
 	vt_redraw();
 
 	if (ret == -EBUSY) {
@@ -82,7 +86,9 @@ PT_PROGRAM_STACK(nes, 16, "play a NES game\n"
 		return 1;
 	}
 	if (ret)
-		return fail("nes", argv[i], ret);
+		return fail("nes", rom, ret);
+	if (!verbose)
+		return 0;
 	nes_last_stats(&stats);
 	pt_printf("%d frames in %d s: %d.%d emulated a second, %d drawn\n", stats.frames,
 		  stats.seconds, stats.fps_tenths / 10, stats.fps_tenths % 10, stats.blits);

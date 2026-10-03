@@ -2,8 +2,8 @@
  * The one header the emulator core wants from its usual host.
  *
  * Nofrendo as shipped in Retro-Go asks for <rg_system.h> and two things
- * inside it: a logging call and a CRC. This is ours, so the core itself
- * is byte for byte what upstream ships. The functions live in
+ * inside it: a logging call and a CRC. This adapter is ours; it keeps host
+ * glue separate from the vendored core and its documented local patches. The functions live in
  * emu/nes_port.c.
  */
 #pragma once

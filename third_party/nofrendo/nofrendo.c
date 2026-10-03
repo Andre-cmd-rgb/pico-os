@@ -63,6 +63,9 @@ void *nofrendo_buildpalette(nespal_t palette, int bitdepth)
         uint16 *colors = calloc(256, 2);
         uint16 color = 0;
 
+        if (!colors)
+            return NULL;
+
         for (int i = 0; i < 64; i++)
         {
             const uint8 *rgb = &nes_palette[i * 3];
@@ -89,6 +92,10 @@ void *nofrendo_buildpalette(nespal_t palette, int bitdepth)
     else if (bitdepth == 24)
     {
         uint8 *colors = calloc(256, 3);
+
+        if (!colors)
+            return NULL;
+
         memcpy(colors, nes_palette, 64 * 3);
         /* Set it up 3 times, for sprite priority/BG transparency trickery */
         memcpy(colors + (64 * 3), nes_palette, 64 * 3);
