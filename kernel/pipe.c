@@ -17,6 +17,7 @@ struct pipe {
 	SemaphoreHandle_t	rlock, wlock;
 	atomic_int		readers, writers;
 	atomic_int		ends;		/* open ends: the last one frees */
+	atomic_int		timeout_ms;	/* the reader can poll without blocking */
 };
 
 /* One counter decides who frees: with separate reader and writer counts, two
@@ -35,10 +36,21 @@ static ssize_t pipe_read(struct pt_file *f, void *buf, size_t n)
 {
 	struct pipe *p = f->priv;
 	ssize_t ret;
+	int timeout = atomic_load(&p->timeout_ms);
+	int64_t deadline = pt_uptime_us() + (int64_t)timeout * 1000;
+
+	if (!n)
+		return 0;
 
 	xSemaphoreTake(p->rlock, portMAX_DELAY);
 	for (;;) {
-		size_t got = xStreamBufferReceive(p->sb, buf, n, PIPE_POLL);
+		int wait = proc_poll_ms(50);
+		int64_t left = deadline - pt_uptime_us();
+		size_t got;
+
+		if (timeout >= 0 && left < (int64_t)wait * 1000)
+			wait = left > 0 ? (int)((left + 999) / 1000) : 0;
+		got = xStreamBufferReceive(p->sb, buf, n, pdMS_TO_TICKS(wait));
 		if (got) {
 			ret = got;
 			break;
@@ -51,6 +63,10 @@ static ssize_t pipe_read(struct pt_file *f, void *buf, size_t n)
 			ret = -EINTR;
 			break;
 		}
+		if (timeout >= 0 && pt_uptime_us() >= deadline) {
+			ret = -EAGAIN;
+			break;
+		}
 		if (proc_stop_pending()) {	/* stopped, but not holding the pipe */
 			xSemaphoreGive(p->rlock);
 			proc_stop_point();
@@ -59,6 +75,18 @@ static ssize_t pipe_read(struct pt_file *f, void *buf, size_t n)
 	}
 	xSemaphoreGive(p->rlock);
 	return ret;
+}
+
+static int pipe_ioctl(struct pt_file *f, int req, void *arg)
+{
+	struct pipe *p = f->priv;
+
+	if (req != PT_PIPE_SETTIMEOUT)
+		return -ENOTTY;
+	if (!arg || *(int *)arg < -1)
+		return -EINVAL;
+	atomic_store(&p->timeout_ms, *(int *)arg);
+	return 0;
 }
 
 static ssize_t pipe_write(struct pt_file *f, const void *buf, size_t n)
@@ -106,6 +134,7 @@ static void pipe_release_write(struct pt_file *f)
 
 static const struct pt_file_ops pipe_read_ops = {
 	.read = pipe_read,
+	.ioctl = pipe_ioctl,
 	.release = pipe_release_read,
 };
 
@@ -126,6 +155,7 @@ int pipe_create(struct pt_file **rd, struct pt_file **wr)
 	atomic_init(&p->readers, 1);
 	atomic_init(&p->writers, 1);
 	atomic_init(&p->ends, 2);
+	atomic_init(&p->timeout_ms, -1);
 	*rd = p->sb && p->rlock && p->wlock ? file_alloc(&pipe_read_ops, p) : NULL;
 	*wr = *rd ? file_alloc(&pipe_write_ops, p) : NULL;
 	if (*wr)

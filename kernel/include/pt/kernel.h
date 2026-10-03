@@ -12,6 +12,7 @@
 
 #include "pt/sys.h"
 
+#define PT_OS_NAME	"pico-os"
 #define PT_VERSION	"1.0-beta2"
 #define PT_MAX_FDS	16
 
@@ -88,6 +89,9 @@ struct proc {
 	atomic_uint		 sigpending;
 	bool			 sigcatch;
 	atomic_bool		 exiting;
+	bool			 forced_cleanup;	/* suspended while helpers finish */
+	bool			 (*cleanup)(void *arg);
+	void			 *cleanup_arg;
 	int64_t			 kill_deadline_us;
 	bool			 kill_waiting;	/* past it, but holding a lock */
 	int64_t			 start_us;
@@ -126,7 +130,12 @@ void	proc_signal_group(int pgid, int sig);
 int	proc_list(struct pt_procinfo *out, int max);
 int	proc_count(void);
 bool	proc_alive(int pid);		/* whether that process is still running */
+bool	proc_group_alive(int pgid);	/* includes children after the leader exits */
 bool	proc_stopped(int pid);		/* stopped by SIGSTOP or SIGTSTP */
+/* Called before process memory or its stack is freed, including SIGKILL.
+ * Return false to retry later; never block or use caller-relative syscalls.
+ * The context may live on the process stack. NULL removes the hook. */
+int	proc_set_cleanup(bool (*fn)(void *arg), void *arg);
 /*
  * How often a wait looks for signals: every `ms` normally, once a second
  * while nobody is looking (the screen is dark), so the chip can sleep.

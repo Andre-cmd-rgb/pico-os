@@ -139,6 +139,9 @@ char	*pt_strdup(const char *s);
 #define PT_TTY_SETPGRP	0x5403	/* int *: foreground process group */
 #define PT_TTY_SETTIMEOUT 0x5404 /* int *: read timeout in ms, -1 blocks; -EAGAIN on expiry */
 #define PT_TTY_GETRAW	0x5405	/* int *: 1 raw, 0 cooked */
+#define PT_TTY_SETSCROLL	0x5406	/* int *: 1 app owns scroll keys, 0 releases */
+#define PT_TTY_TRYSETRAW	0x5407	/* int *: SETRAW, -EAGAIN while input is busy */
+#define PT_PIPE_SETTIMEOUT 0x5410 /* int *: -1 blocks, 0 polls; -EAGAIN on expiry */
 
 struct pt_winsize {
 	uint16_t cols;

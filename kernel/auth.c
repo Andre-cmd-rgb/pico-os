@@ -64,14 +64,24 @@ static void to_hex(const uint8_t *in, size_t n, char *out)
 
 static int from_hex(const char *in, uint8_t *out, size_t n)
 {
+	if (strlen(in) != 2 * n)
+		return -EINVAL;
 	for (size_t i = 0; i < n; i++) {
-		unsigned v;
+		unsigned v = 0;
 
-		if (sscanf(in + 2 * i, "%2x", &v) != 1)
-			return -EINVAL;
+		for (size_t j = 0; j < 2; j++) {
+			unsigned char c = in[2 * i + j];
+
+			if (c >= '0' && c <= '9')
+				v = v * 16 + c - '0';
+			else if (c >= 'a' && c <= 'f')
+				v = v * 16 + c - 'a' + 10;
+			else
+				return -EINVAL;
+		}
 		out[i] = (uint8_t)v;
 	}
-	return in[2 * n] && in[2 * n] != '\n' ? -EINVAL : 0;
+	return 0;
 }
 
 /* The stored line, split up: 0, -ENOENT when there is none, -EINVAL if damaged. */
@@ -79,12 +89,14 @@ static int load(unsigned *iterations, uint8_t salt[SALT_LEN], uint8_t hash[HASH_
 {
 	char path[64], line[160], salt_hex[2 * SALT_LEN + 1], hash_hex[2 * HASH_LEN + 1];
 	FILE *f;
-	int ret = -EINVAL;
+	int ret = -EINVAL, end = 0;
 
 	if (!mount_resolve(SHADOW, path, sizeof(path)) || !(f = fopen(path, "r")))
 		return -ENOENT;
 	if (fgets(line, sizeof(line), f) &&
-	    sscanf(line, SCHEME "$%u$%32[0-9a-f]$%64[0-9a-f]", iterations, salt_hex, hash_hex) == 3 &&
+	    sscanf(line, SCHEME "$%u$%32[0-9a-f]$%64[0-9a-f]%n", iterations, salt_hex, hash_hex,
+		   &end) == 3 && end &&
+	    (!line[end] || (line[end] == '\n' && !line[end + 1])) &&
 	    *iterations >= 1000 && !from_hex(salt_hex, salt, SALT_LEN) &&
 	    !from_hex(hash_hex, hash, HASH_LEN))
 		ret = 0;

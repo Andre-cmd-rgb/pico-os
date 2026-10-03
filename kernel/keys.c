@@ -89,18 +89,26 @@ int pt_readkey_timeout(int fd, int ms)
 	if (c != '[')
 		return c < 0 ? c : PT_KEY_ESC;
 
-	int num = 0;
+	int num = 0, modifier = 0;
+	bool modifiers = false;
+
 	for (;;) {
 		c = read_byte(fd, ESC_TIMEOUT_MS);
-		if (c >= '0' && c <= '9')
-			num = num * 10 + (c - '0');
-		else if (c == ';')
-			num = 0;		/* modifiers: ignored */
-		else
+		if (c >= '0' && c <= '9') {
+			int *value = modifiers ? &modifier : &num;
+
+			/* Unknown long numbers still consume the sequence safely. */
+			*value = *value < 1000 ? *value * 10 + (c - '0') : 10000;
+		} else if (c == ';') {
+			modifiers = true;
+			modifier = 0;
+		} else
 			break;
 	}
 	if (c < 0)
 		return c == PT_KEY_ESC ? PT_KEY_UNKNOWN : c;
+	if (modifier == 5 && (c == 'H' || c == 'F'))
+		return c == 'H' ? PT_KEY_CTRL_HOME : PT_KEY_CTRL_END;
 	return c == '~' ? tilde_key(num) : final_key(c);
 }
 

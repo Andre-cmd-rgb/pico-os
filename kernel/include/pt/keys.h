@@ -29,6 +29,8 @@ enum pt_key {
 	PT_KEY_F3,
 	PT_KEY_F4,
 	PT_KEY_UNKNOWN,		/* an escape sequence nobody maps */
+	PT_KEY_CTRL_HOME,
+	PT_KEY_CTRL_END,
 };
 
 #define PT_CTRL(c)	((c) & 0x1f)

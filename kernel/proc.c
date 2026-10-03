@@ -296,9 +296,48 @@ bool proc_stopped(int pid)
 	return stopped;
 }
 
+bool proc_group_alive(int pgid)
+{
+	bool alive = false;
+
+	LOCK();
+	for (int i = 0; i < CONFIG_PT_MAX_PROCS && !alive; i++)
+		alive = procs[i].state == PROC_RUNNING && procs[i].pgid == pgid;
+	UNLOCK();
+	return alive;
+}
+
 /* ------------------------------------------------------------ exit */
 
 static void deliver(struct proc *p, int sig);
+
+int proc_set_cleanup(bool (*fn)(void *arg), void *arg)
+{
+	struct proc *p = proc_current();
+
+	if (!p)
+		return -EPERM;
+	LOCK();
+	if (atomic_load(&p->exiting)) {
+		UNLOCK();
+		return -EBUSY;
+	}
+	p->cleanup = fn;
+	p->cleanup_arg = arg;
+	UNLOCK();
+	return 0;
+}
+
+/* The exiting process or the reaper owns this hook, never both. A helper
+ * may still be finishing DMA; keep its memory until it acknowledges exit. */
+static bool cleanup_step(struct proc *p)
+{
+	if (p->cleanup && !p->cleanup(p->cleanup_arg))
+		return false;
+	p->cleanup = NULL;
+	p->cleanup_arg = NULL;
+	return true;
+}
 
 static void teardown(struct proc *p, int status)
 {
@@ -349,6 +388,11 @@ void pt_exit(int status)
 
 	if (!p)
 		vTaskDelete(NULL);
+	LOCK();
+	atomic_store(&p->exiting, true);
+	UNLOCK();
+	while (!cleanup_step(p))
+		vTaskDelay(pdMS_TO_TICKS(10));
 	teardown(p, status);
 	/*
 	 * A task cannot free the stack it is standing on: it stops here and
@@ -798,19 +842,23 @@ static bool holds_lock(TaskHandle_t task)
 static void force_kill(struct proc *p, int64_t now)
 {
 	TaskHandle_t task = NULL;
+	bool cleaning = false;
 
 	LOCK();
 	if (p->state == PROC_RUNNING && p->kill_deadline_us && now > p->kill_deadline_us &&
-	    !atomic_load(&p->exiting) && p->task) {
+	    (!atomic_load(&p->exiting) || p->forced_cleanup) && p->task) {
 		task = p->task;
-		vTaskSuspend(task);
+		cleaning = p->forced_cleanup;
+		if (!cleaning)
+			vTaskSuspend(task);
 	}
 	UNLOCK();
 	if (!task)
 		return;
 	/* on the other core it stops at the interrupt the suspend sends */
-	vTaskDelay(1);
-	if (holds_lock(task)) {
+	if (!cleaning)
+		vTaskDelay(1);
+	if (!cleaning && holds_lock(task)) {
 		vTaskResume(task);
 		if (!p->kill_waiting)
 			klog("kill: pid %d (%s) holds a lock; waiting for it to let go", p->pid, p->name);
@@ -818,8 +866,15 @@ static void force_kill(struct proc *p, int64_t now)
 		return;
 	}
 	LOCK();
+	atomic_store(&p->exiting, true);
+	p->forced_cleanup = true;
+	UNLOCK();
+	if (!cleanup_step(p))
+		return;
+	LOCK();
 	vTaskDeleteWithCaps(task);
 	p->task = NULL;
+	p->forced_cleanup = false;
 	UNLOCK();
 	klog("kill: pid %d (%s) ignored SIGKILL, task deleted", p->pid, p->name);
 	teardown(p, 128 + PT_SIGKILL);

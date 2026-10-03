@@ -452,13 +452,15 @@ int pico_load(struct pico_vm *vm, const uint8_t *data, size_t len, char *err, si
 		return fail(err, errlen, "damaged executable header");
 
 	p->strings = port_alloc(p->nstrings * sizeof(*p->strings));
+	/* Cleanup can run after any later allocation fails. */
+	if (p->strings)
+		memset(p->strings, 0, p->nstrings * sizeof(*p->strings));
 	p->structs = port_alloc((p->nstructs + 1) * sizeof(*p->structs));
 	p->fields = port_alloc((nfields + 1) * sizeof(*p->fields));
 	p->global_kinds = port_alloc(p->nglobals + 1);
 	p->funcs = port_alloc(p->nfuncs * sizeof(*p->funcs));
 	if (!p->strings || !p->structs || !p->fields || !p->global_kinds || !p->funcs)
 		return fail(err, errlen, "out of memory");
-	memset(p->strings, 0, p->nstrings * sizeof(*p->strings));
 
 	for (uint32_t i = 0; i < p->nstrings; i++) {
 		uint32_t n = rd32(&r);
