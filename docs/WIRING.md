@@ -151,16 +151,29 @@ them: they carry a 2.8 MHz clock, and a long loop picks up the Wi-Fi.
 
 A socket with a switch says when a plug is in: wire the switch between
 **GPIO 21** and GND. menuconfig's **The plug switch** says which kind it
-is: one that closes when a plug goes in (the default), one that opens
-(the purple module's own socket: on the one tried, of its five legs the
-two furthest from the opening touch each other until a plug goes in --
-a meter beeps across them with the socket empty and not with a plug in;
-one to GND, the other to GPIO 21), or one that closes to 3.3 V. Then sound goes to the
-headphones while a plug is in and back to the speaker when it comes
-out, and `dmesg` says `audio: headphones in` and `out`; without one,
-`volume jack` and `volume speaker` choose, and `/etc/power` keeps the
-choice. It is one or the other, never both, and an alarm always rings on
-the speaker.
+is: one that closes when a plug goes in (the default), one that opens,
+or one that closes to 3.3 V.
+
+The purple module's own socket has one that opens, but it is not a
+switch of its own: of its five legs, two touch only while the socket is
+empty (a meter beeps across them then, not with a plug in), and one of
+those two is **the left channel's spring**, which rests on the other
+until a plug lifts it. Wire **only the other one, the rest contact, to
+GPIO 21** -- nothing to GND -- and choose "opens": with the socket empty
+the DAC's left output holds the pin low through the spring. Ground
+either leg and the left ear is silent. The spring is the leg with a
+track to the module's circuit; if in doubt, wire one to GPIO 21 and
+play a sound panned left: the wrong one silences the left ear.
+
+Then sound goes to the headphones while a plug is in and back to the
+speaker when it comes out (`dmesg`: `audio: headphones in`, `out`), and
+`volume speaker` keeps it on the speaker; with such a socket `volume
+jack` is refused, because the jack would play into the pin that tells,
+unless the build allows it for trying out (menuconfig: **Let `volume
+jack` keep sound on the jack with no plug**). Without a plug switch,
+`volume jack` and `volume speaker` choose. `/etc/power` keeps the
+choice. It is one or the other, never both, and an alarm always rings
+on the speaker.
 
 The DAC plays at line level, 2.1 V RMS at full scale, which is far too
 loud for headphones, so the jack has a volume of its own, kept apart

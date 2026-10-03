@@ -437,9 +437,11 @@ PT_COMPLETE(volume, ": speaker jack auto\n")
 PT_PROGRAM(volume, "show or set the volume, and where sound goes\n"
 	   "usage: volume [0-100] [speaker | jack | auto]\n"
 	   "The number is the volume of wherever the sound goes.\n"
-	   "With a headphone jack, speaker or jack sends all the\n"
-	   "sound there, and auto (the start) sends it to the\n"
-	   "jack while a plug is in, if the socket can tell.\n"
+	   "With a headphone jack, auto (the start) sends it to\n"
+	   "the jack while a plug is in and speaker keeps it on\n"
+	   "the speaker. jack forces it to the jack only where\n"
+	   "the socket cannot tell a plug is in, or in a build\n"
+	   "made for trying it out.\n"
 	   "The speaker and the headphones keep a volume each,\n"
 	   "the headphones starting low; all of it is kept in\n"
 	   "/etc/power. An alarm always rings on the speaker.")
@@ -468,8 +470,11 @@ PT_PROGRAM(volume, "show or set the volume, and where sound goes\n"
 		return 1;
 	}
 	/* where first: `volume 30 jack` is the headphones at 30 */
-	if (out >= 0 && audio_has_jack())
-		audio_set_output((enum audio_out)out);
+	if (out >= 0 && audio_has_jack() && audio_set_output((enum audio_out)out) == -EPERM) {
+		pt_dprintf(PT_STDERR, "volume: the headphones follow the plug here: auto\n"
+			   "  or speaker\n");
+		return 1;
+	}
 	if (percent >= 0)
 		audio_set_volume((int)percent);
 	if (percent >= 0 || out >= 0)

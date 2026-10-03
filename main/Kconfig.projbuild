@@ -835,12 +835,13 @@ config PT_AUDIO_JACK_DETECT_LOW
 config PT_AUDIO_JACK_DETECT_OPENS
 	bool "opens, from ground, when a plug goes in"
 	help
-	  A switch that is closed with the socket empty -- the kind on the
-	  purple GY-PCM5102's socket, the two legs furthest from the
-	  opening on the one tried (a meter beeps across them with the
-	  socket empty, not with a plug in) -- one leg to ground and the
-	  other to the pin. The pin has a pull-up and reads high while a
-	  plug is in.
+	  A switch that is closed with the socket empty. On the purple
+	  GY-PCM5102's socket it is the left channel's own spring resting
+	  on a contact of its own: that contact, and nothing else, goes to
+	  the pin, which the DAC's output then holds low; a plug lifts the
+	  spring off it. Never ground either leg -- the spring is the left
+	  channel, and grounded it plays nothing. The pin has a pull-up and
+	  reads high while a plug is in.
 
 config PT_AUDIO_JACK_DETECT_HIGH
 	bool "closes to 3.3 V when a plug goes in"
@@ -848,6 +849,17 @@ config PT_AUDIO_JACK_DETECT_HIGH
 	  The pin has a pull-down and reads high while a plug is in.
 
 endchoice
+
+config PT_AUDIO_JACK_FORCE
+	bool "Let `volume jack` keep sound on the jack with no plug (development)"
+	depends on PT_AUDIO_JACK_DETECT >= 0
+	default n
+	help
+	  With a socket that can tell, the plug decides where sound goes and
+	  `volume jack` is refused: forced, the jack plays with nothing in
+	  it, and on the purple module's socket that is into the pin that
+	  tells. For trying the jack out on the bench; then a 4.7 kOhm
+	  resistor between that contact and the pin keeps the pin safe.
 
 endif
 

@@ -778,6 +778,13 @@ int audio_set_output(enum audio_out o)
 #if CONFIG_PT_AUDIO_JACK
 	if (!ready || jack_failed)
 		return -ENODEV;
+#if CONFIG_PT_AUDIO_JACK_DETECT >= 0 && !defined(CONFIG_PT_AUDIO_JACK_FORCE)
+	/* A socket that can tell has the plug decide: forced, the jack would
+	 * play into nothing -- and on the purple module's socket, into the
+	 * pin that tells. A development build may (menuconfig). */
+	if (o == AUDIO_OUT_JACK)
+		return -EPERM;
+#endif
 	out_wanted = o;
 	xTaskNotifyGive(mixer);
 	return 0;
