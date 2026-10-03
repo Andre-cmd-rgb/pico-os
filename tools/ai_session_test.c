@@ -135,7 +135,7 @@ static void overwrite(const char *path, const struct jbuf *header, const char *b
 
 int main(int argc, char **argv)
 {
-	struct ai_session s = { .id = "one", .title = "café / studio", .root = "/home/andre/notes",
+	struct ai_session s = { .id = "one", .title = "café / studio", .root = "/home/user/notes",
 		.model = "test/model:free", .effort = "auto", .mode = 0, .updated = 10,
 		.usage = { .input = 100, .output = 40, .cost = .0123, .known = true, .cost_known = true } };
 	struct ai_session loaded, *list;

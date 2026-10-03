@@ -90,7 +90,7 @@ static int show_status(void)
 
 /*
  * One network on a line of the 53 columns: names are padded by what they
- * take on the screen, so a phone's "Andrea’s iPhone" (three bytes for the
+ * take on the screen, so a phone's "Alex’s iPhone" (three bytes for the
  * ’) lines up with the rest.
  */
 static void show_ap(int number, const struct wifi_ap *ap)
@@ -151,7 +151,7 @@ static bool same_typed(const char *a, const char *b)
 /*
  * The network among `aps` that `typed` means: its line number (up to
  * `numbered`), its name, or its name as a keyboard types it -- an iPhone
- * calls its hotspot "Andrea’s iPhone", and the CardKB has no ’. A name
+ * calls its hotspot "Alex’s iPhone", and the CardKB has no ’. A name
  * that is spelt exactly wins over one that is only typed alike.
  */
 static const struct wifi_ap *find_ap(const char *typed, const struct wifi_ap *aps, int n,

@@ -162,22 +162,22 @@ static void models(void)
 static void paths(void)
 {
 	char p[PT_PATH_MAX];
-	const char *root = "/home/andre/pico/project", *notes = "/home/andre/notes";
+	const char *root = "/home/user/pico/project", *notes = "/home/user/notes";
 
-	assert(ai_path_resolve(root, notes, "/home/andre", "src/../main.pico", p, sizeof(p)));
-	assert(!strcmp(p, "/home/andre/pico/project/main.pico"));
-	assert(ai_path_resolve(root, notes, "/home/andre", "~/notes/history/topic.md", p, sizeof(p)));
-	assert(ai_path_resolve(root, notes, "/home/andre", "../../notes/new.md", p, sizeof(p)));
-	assert(!ai_path_resolve(root, notes, "/home/andre", "../../../.config/openrouter", p, sizeof(p)));
-	assert(!ai_path_resolve(root, notes, "/home/andre", "~/notes/../../etc/passwd", p, sizeof(p)));
-	assert(!ai_path_resolve(root, notes, "/home/andre", "/home/andre/pico/project-evil/file", p, sizeof(p)));
-	assert(ai_path_resolve("/", notes, "/home/andre", "/tmp/a", p, sizeof(p)));
-	assert(!ai_path_resolve(root, notes, "/home/andre", "file", p, 3));
-	assert(ai_path_is_note("/home/andre/NOTES/topic.md", notes, "/home/andre", true));
-	assert(ai_path_is_note("/mnt/sd/Notes/topic.md", notes, "/home/andre", true));
-	assert(!ai_path_is_note("/mnt/sd/notes-extra/topic.md", notes, "/home/andre", true));
-	assert(!ai_path_is_note("/mnt/sd/notes/topic.md", notes, "/home/andre", false));
-	assert(!ai_path_is_note("/home/andre/notes-extra/topic.md", notes, "/home/andre", true));
+	assert(ai_path_resolve(root, notes, "/home/user", "src/../main.pico", p, sizeof(p)));
+	assert(!strcmp(p, "/home/user/pico/project/main.pico"));
+	assert(ai_path_resolve(root, notes, "/home/user", "~/notes/history/topic.md", p, sizeof(p)));
+	assert(ai_path_resolve(root, notes, "/home/user", "../../notes/new.md", p, sizeof(p)));
+	assert(!ai_path_resolve(root, notes, "/home/user", "../../../.config/openrouter", p, sizeof(p)));
+	assert(!ai_path_resolve(root, notes, "/home/user", "~/notes/../../etc/passwd", p, sizeof(p)));
+	assert(!ai_path_resolve(root, notes, "/home/user", "/home/user/pico/project-evil/file", p, sizeof(p)));
+	assert(ai_path_resolve("/", notes, "/home/user", "/tmp/a", p, sizeof(p)));
+	assert(!ai_path_resolve(root, notes, "/home/user", "file", p, 3));
+	assert(ai_path_is_note("/home/user/NOTES/topic.md", notes, "/home/user", true));
+	assert(ai_path_is_note("/mnt/sd/Notes/topic.md", notes, "/home/user", true));
+	assert(!ai_path_is_note("/mnt/sd/notes-extra/topic.md", notes, "/home/user", true));
+	assert(!ai_path_is_note("/mnt/sd/notes/topic.md", notes, "/home/user", false));
+	assert(!ai_path_is_note("/home/user/notes-extra/topic.md", notes, "/home/user", true));
 	assert(!ai_path_is_note("/mnt/sd/notes/topic.md", "/tmp/test/notes", "/tmp/test", true));
 }
 

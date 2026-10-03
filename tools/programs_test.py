@@ -45,7 +45,7 @@ FILES = {
     "words": "banana\napple\ncherry\napple\nBanana\n\ndate\n  apple pie\nfig\n",
     "nums": "10\n9\n-3\n2.5\n0\n-0\n100\n007\n1e3\n  42\nabc\n",
     "sizes": "2K\n1M\n512\n3G\n1K\n1.5M\n",
-    "table": "root:x:0:0:root:/root:/bin/sh\nandre:x:1000:1000::/home/andre:/bin/sh\n"
+    "table": "root:x:0:0:root:/root:/bin/sh\nandre:x:1000:1000::/home/user:/bin/sh\n"
              "nobody:x:65534:65534::/:/bin/false\nno colons here\n",
     "tabs": "a\tb\tc\nd\te\tf\n1\t2\n",
     "cols": "3 apple 10\n1 cherry 2\n2 banana 33\n3 apple 9\n1 fig 100\n",

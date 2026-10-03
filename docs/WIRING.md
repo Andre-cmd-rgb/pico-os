@@ -386,7 +386,7 @@ speaker and a card attached:
 
 1. `make flash` — the board is `/dev/ttyACM*`. If it does not appear, hold
    **BOOT**, tap **RESET**, release **BOOT**, and flash again.
-2. `make term`. The boot log ends at `andre@pockettype:~$`.
+2. `make term`. The boot log ends at `user@pockettype:~$`.
 3. `dmesg` should have lines for `lcd`, `rootfs`, `es8311` (with a battery
    line if a cell is fitted, and `sd` if a card is in).
 4. `lcdtest` draws eight colour bars: red, green, blue, yellow, magenta,

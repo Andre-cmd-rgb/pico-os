@@ -26,7 +26,7 @@ drawn in PIXELTAPE's amber CRT colors on an ILI9341 screen.
 [0.50] rootfs: / is littlefs on flash:storage, 13160 KB free of 13248 KB
 [0.56] battery: 3.86 V, 58%; a 2500 mAh cell, 90 mohm (a guess), 0.0 cycles
 [0.56] tmpfs: /tmp holds up to 2048 KB, taken from RAM as it is used
-[0.63] sd: AGGCE 60906 MB on 4-bit sdmmc, mounted on /mnt/sd and /home/andre
+[0.63] sd: AGGCE 60906 MB on 4-bit sdmmc, mounted on /mnt/sd and /home/user
 [0.63] wifi: radio off, no saved network; `wifi on` starts it
 [0.63] init: 124 programs, starting shell
 ```
