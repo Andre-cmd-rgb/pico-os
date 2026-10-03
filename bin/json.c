@@ -4,6 +4,7 @@
  * server sends without judging it; the writer escapes what goes into a
  * string and nothing else.
  */
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -130,9 +131,10 @@ static const char *skip(const char *p, const char *e)
 			return e;
 		if (*p == '"') {
 			for (p++; p < e && *p != '"'; p++)
-				if (*p == '\\')
+				if (*p == '\\' && p + 1 < e)
 					p++;
-			p++;
+			if (p < e)
+				p++;
 		} else if (*p == '{' || *p == '[') {
 			depth++;
 			p++;
@@ -152,11 +154,13 @@ static const char *skip(const char *p, const char *e)
 /* In the object or array at p: the value under `key` (or at index `key`). */
 static const char *member(const char *p, const char *e, const char *key, size_t klen)
 {
-	bool array = *p == '[';
-	long want = array ? strtol(key, NULL, 10) : 0;
+	bool array;
+	long want;
 
-	if (*p != '{' && *p != '[')
+	if (p >= e || (*p != '{' && *p != '['))
 		return NULL;
+	array = *p == '[';
+	want = array ? strtol(key, NULL, 10) : 0;
 	for (long n = 0;; n++) {
 		const char *name = NULL, *nend = NULL;
 
@@ -318,4 +322,107 @@ double json_num(const char *v, const char *vend, double dflt)
 	num[vend - v] = '\0';
 	d = strtod(num, &end);
 	return end == num ? dflt : d;
+}
+
+/* ------------------------------------------------------------ validation */
+
+static const char *json_space(const char *p, const char *end)
+{
+	while (p < end && strchr(" \t\r\n", *p))
+		p++;
+	return p;
+}
+
+/* The API JSON reader is deliberately permissive. Snapshots and tool arguments
+ * need a stricter check before that reader sees incomplete data. */
+static const char *json_value_end(const char *p, const char *end, int depth)
+{
+	char close;
+	bool object;
+
+	p = json_space(p, end);
+	if (p == end || depth > 32)
+		return NULL;
+	if (*p == '"') {
+		for (p++; p < end; p++) {
+			if (*p == '"')
+				return p + 1;
+			if ((unsigned char)*p < 32)
+				return NULL;
+			if (*p == '\\') {
+				if (++p == end)
+					return NULL;
+				if (*p == 'u') {
+					for (int i = 0; i < 4; i++)
+						if (++p == end || !isxdigit((unsigned char)*p))
+							return NULL;
+				} else if (!strchr("\"\\/bfnrt", *p))
+					return NULL;
+			}
+		}
+		return NULL;
+	}
+	if (*p == '{' || *p == '[') {
+		object = *p == '{';
+		close = object ? '}' : ']';
+		p = json_space(p + 1, end);
+		if (p < end && *p == close)
+			return p + 1;
+		for (;;) {
+			if (object) {
+				if (p == end || *p != '"' || !(p = json_value_end(p, end, depth + 1)))
+					return NULL;
+				p = json_space(p, end);
+				if (p == end || *p != ':')
+					return NULL;
+				p++;
+			}
+			if (!(p = json_value_end(p, end, depth + 1)))
+				return NULL;
+			p = json_space(p, end);
+			if (p == end)
+				return NULL;
+			if (*p == close)
+				return p + 1;
+			if (*p != ',')
+				return NULL;
+			p = json_space(p + 1, end);
+		}
+	}
+	if (end - p >= 4 && (!memcmp(p, "true", 4) || !memcmp(p, "null", 4)))
+		return p + 4;
+	if (end - p >= 5 && !memcmp(p, "false", 5))
+		return p + 5;
+	if (*p == '-')
+		p++;
+	if (p == end || !isdigit((unsigned char)*p))
+		return NULL;
+	if (*p == '0')
+		p++;
+	else
+		while (p < end && isdigit((unsigned char)*p))
+			p++;
+	if (p < end && *p == '.') {
+		if (++p == end || !isdigit((unsigned char)*p))
+			return NULL;
+		while (p < end && isdigit((unsigned char)*p))
+			p++;
+	}
+	if (p < end && (*p == 'e' || *p == 'E')) {
+		p++;
+		if (p < end && (*p == '+' || *p == '-'))
+			p++;
+		if (p == end || !isdigit((unsigned char)*p))
+			return NULL;
+		while (p < end && isdigit((unsigned char)*p))
+			p++;
+	}
+	return p;
+}
+
+bool json_valid(const char *p, size_t n)
+{
+	const char *end = p + n, *after = json_value_end(p, end, 0);
+
+	return after && json_space(after, end) == end;
 }

@@ -1,6 +1,12 @@
 idf_component_register(
 	SRCS
 		ai.c
+		ai_jobs.c
+		ai_models.c
+		ai_path.c
+		ai_session.c
+		ai_stats.c
+		ai_ui.c
 		alarm.c
 		audio.c
 		bench.c

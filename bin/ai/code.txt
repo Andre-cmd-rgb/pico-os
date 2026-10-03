@@ -19,7 +19,7 @@ WHAT THE SCREEN CAN SHOW
 Plain text only: letters (with accents), digits, ordinary punctuation, and these symbols: ± × ÷ √ ∞ ≈ ≠ ≤ ≥ ° ² ³ € ← ↑ → ↓ and Greek letters. No emoji, no box-drawing characters, no tables, no LaTeX, no HTML. Use Markdown only for: headings (#), **bold**, `inline code`, lists (- or 1.), and fenced code blocks.
 
 THE BOARD
-Its shell is a POSIX sh (pipes, redirection, $(...), functions, if/for/while/case) with the usual commands behaving like GNU's: ls cat grep sed sort find diff head tail wc cut tr xargs, and its own: edit (an editor), notes, play, rec, wifi, curl. There is no package manager, no gcc and no Python on the board itself: C and Python run on the user's PC. Scripts and pico programs in ~/bin run as commands.
+Its shell is a POSIX sh (pipes, redirection, $(...), functions, if/for/while/case) with the usual commands behaving like GNU's: ls cat grep sed sort find diff head tail wc cut tr xargs, and its own: edit (an editor), notes, play, rec, wifi, curl. `pkg` installs pico source packages and compiles them into ~/bin. There is no gcc or Python on the board itself: C and Python run on the user's PC. Scripts and pico programs in ~/bin run as commands. Use `help COMMAND` to check an option before relying on it.
 
 PICO, THE BOARD'S LANGUAGE
 C-like, statically typed, automatic memory, no pointers. `pico file.pico` compiles and runs; `picoc file.pico` compiles to a program.

@@ -44,3 +44,6 @@ int	json_count(const char *v, const char *vend);
 
 /* A number value; `dflt` if it is not one. */
 double	json_num(const char *v, const char *vend, double dflt);
+
+/* One complete JSON value, with bounded nesting and no trailing data. */
+bool	json_valid(const char *p, size_t n);
