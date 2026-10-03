@@ -28,6 +28,7 @@ struct mp3 {
 	uint8_t		in[IN_BYTES];
 	int		filled, pos;
 	bool		eof;
+	int		error;
 	int16_t		pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
 	int		have, taken;	/* frames decoded but not handed over */
 };
@@ -42,8 +43,10 @@ static bool refill(struct mp3 *m)
 	m->filled -= m->pos;
 	m->pos = 0;
 	n = pt_read(m->base.fd, m->in + m->filled, IN_BYTES - m->filled);
-	if (n < 0)
+	if (n < 0) {
+		m->error = n;
 		return false;
+	}
 	if (n == 0)
 		m->eof = true;
 	m->filled += n;
@@ -53,6 +56,8 @@ static bool refill(struct mp3 *m)
 /* Decodes the next frame with samples in it; false at the end of the file. */
 static bool next_frame(struct mp3 *m)
 {
+	if (m->error)
+		return false;
 	for (;;) {
 		mp3dec_frame_info_t info;
 		int samples;
@@ -68,6 +73,12 @@ static bool next_frame(struct mp3 *m)
 		m->pos += info.frame_bytes;
 		if (!samples)
 			continue;		/* a tag, or a frame cut short */
+		/* Callers allocate their output once, using the opening format. */
+		if (m->base.channels && (m->base.channels != info.channels ||
+					m->base.rate != info.hz)) {
+			m->error = -EINVAL;
+			return false;
+		}
 		m->base.rate = info.hz;
 		m->base.channels = info.channels;
 		m->have = samples;
@@ -82,13 +93,11 @@ static ssize_t mp3_read(struct codec *c, int16_t *pcm, size_t frames)
 	size_t done = 0;
 
 	while (done < frames) {
-		int n, was = c->channels;
+		int n;
 
 		if (m->taken == m->have) {
 			if (!next_frame(m))
 				break;
-			if (was && m->base.channels != was && done)
-				break;		/* the format changed: stop here */
 		}
 		n = m->have - m->taken;
 		if ((size_t)n > frames - done)
@@ -98,7 +107,7 @@ static ssize_t mp3_read(struct codec *c, int16_t *pcm, size_t frames)
 		m->taken += n;
 		done += n;
 	}
-	return done;
+	return done ? (ssize_t)done : m->error;
 }
 
 static void mp3_close(struct codec *c)
