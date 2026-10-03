@@ -172,7 +172,7 @@ static int reader_seek(struct reader *r, uint32_t off)
  */
 struct helper {
 	TaskHandle_t	  task;
-	SemaphoreHandle_t go, done;
+	SemaphoreHandle_t go, done, exited;
 	struct canvas	  c;
 	const uint8_t	 *data;
 	size_t		  len;
@@ -186,13 +186,13 @@ static void helper_task(void *arg)
 
 	for (;;) {
 		xSemaphoreTake(h->go, portMAX_DELAY);
-		if (h->quit)
+		if (__atomic_load_n(&h->quit, __ATOMIC_ACQUIRE))
 			break;
 		h->ret = canvas_jpeg_mem(&h->c, h->data, h->len);
 		xSemaphoreGive(h->done);
 	}
-	xSemaphoreGive(h->done);
-	vTaskDelete(NULL);
+	xSemaphoreGive(h->exited);
+	vTaskSuspend(NULL);
 }
 
 /*
@@ -202,11 +202,14 @@ static void helper_task(void *arg)
  */
 struct blitter {
 	TaskHandle_t	  task;
-	SemaphoreHandle_t go, done;
+	SemaphoreHandle_t go, done, exited;
 	int		  vt;		/* the terminal the player holds: this is no program */
 	struct canvas	 *c;
 	const uint8_t	 *native;	/* its turned copy, when the panel can be read */
 	volatile bool	  quit, pending;
+	int		  missed;
+	int		  late;
+	int64_t		  transfer_us, transfer_max_us;
 };
 
 static void blit_task(void *arg)
@@ -215,17 +218,30 @@ static void blit_task(void *arg)
 
 	for (;;) {
 		xSemaphoreTake(b->go, portMAX_DELAY);
-		if (b->quit)
+		if (__atomic_load_n(&b->quit, __ATOMIC_ACQUIRE))
 			break;
-		/* in step with the panel's refresh if it can be, or else as it is */
-		if (vt_screen_begin_on(b->vt) &&
-		    (!b->native || canvas_send_native(b->c, b->native)))
-			canvas_blit_fit(b->c);
+		if (vt_screen_begin_on(b->vt)) {
+			int64_t started = esp_timer_get_time(), elapsed;
+			int ret = b->native ? canvas_send_native(b->c, b->native) : -ENOTSUP;
+
+			/* A failed synchronised write must not become a tearing
+			 * landscape blit. The next frame tries the refresh again. */
+			if (ret == -ENOTSUP && !b->native)
+				canvas_blit_fit(b->c);
+			else if (ret == -EAGAIN)
+				b->late++;
+			else if (ret)
+				b->missed++;
+			elapsed = esp_timer_get_time() - started;
+			b->transfer_us += elapsed;
+			if (elapsed > b->transfer_max_us)
+				b->transfer_max_us = elapsed;
+		}
 		vt_screen_end();
 		xSemaphoreGive(b->done);
 	}
-	xSemaphoreGive(b->done);
-	vTaskDelete(NULL);
+	xSemaphoreGive(b->exited);
+	vTaskSuspend(NULL);
 }
 
 static void blit_finish(struct blitter *b)
@@ -246,11 +262,13 @@ static void blit_start(struct blitter *b, struct canvas *c, const uint8_t *nativ
 }
 
 static int task_start(TaskFunction_t fn, const char *name, uint32_t stack, void *arg,
-		      TaskHandle_t *task, SemaphoreHandle_t *go, SemaphoreHandle_t *done)
+		      TaskHandle_t *task, SemaphoreHandle_t *go, SemaphoreHandle_t *done,
+		      SemaphoreHandle_t *exited)
 {
 	*go = xSemaphoreCreateBinary();
 	*done = xSemaphoreCreateBinary();
-	if (!*go || !*done ||
+	*exited = xSemaphoreCreateBinary();
+	if (!*go || !*done || !*exited ||
 	    xTaskCreatePinnedToCore(fn, name, stack, arg, 4, task, HELPER_CORE) != pdPASS) {
 		*task = NULL;
 		return -ENOMEM;
@@ -259,25 +277,85 @@ static int task_start(TaskFunction_t fn, const char *name, uint32_t stack, void 
 }
 
 /*
- * Tells a task started above to finish, and waits until it has. Nothing
- * may be pending on it: the `done` it gives after work would be taken
- * for the one it gives on quitting, and its semaphores deleted under it
- * (a clip stopped with Esc mid-frame crashed the board that way).
+ * Completion of work and exit are separate acknowledgments. Even when
+ * killed during a decode or DMA transfer, keep its memory until exit.
+ * Polling lets the kernel reaper continue its other chores meanwhile.
  */
-static void task_stop(TaskHandle_t *task, SemaphoreHandle_t *go, SemaphoreHandle_t *done,
-		      volatile bool *quit)
+static bool task_stop_step(TaskHandle_t *task, SemaphoreHandle_t *go, SemaphoreHandle_t *done,
+			   SemaphoreHandle_t *exited, volatile bool *quit)
 {
 	if (*task) {
-		*quit = true;
+		__atomic_store_n(quit, true, __ATOMIC_RELEASE);
 		xSemaphoreGive(*go);
-		xSemaphoreTake(*done, portMAX_DELAY);
+		if (!xSemaphoreTake(*exited, 0))
+			return false;
+		vTaskDelete(*task);
 		*task = NULL;
 	}
 	if (*go)
 		vSemaphoreDelete(*go);
 	if (*done)
 		vSemaphoreDelete(*done);
-	*go = *done = NULL;
+	if (*exited)
+		vSemaphoreDelete(*exited);
+	*go = *done = *exited = NULL;
+	return true;
+}
+
+struct video_cleanup {
+	StaticSemaphore_t guard_storage;
+	SemaphoreHandle_t guard;
+	struct helper *helpers;
+	struct blitter *blit;
+	struct pt_file *tty;
+	bool *boosted, *kept, *screen;
+};
+
+static bool video_cleanup_step(void *arg)
+{
+	struct video_cleanup *c = arg;
+	struct blitter *b = c->blit;
+	bool done;
+
+	/* A force-kill must not re-enter a half-published startup or cleanup
+	 * update. The kernel lets a task holding this mutex release it first. */
+	if (!xSemaphoreTake(c->guard, 0))
+		return false;
+	done = task_stop_step(&b->task, &b->go, &b->done, &b->exited, &b->quit);
+
+	for (int i = 0; i < MAX_SLICES - 1; i++) {
+		struct helper *h = &c->helpers[i];
+
+		done &= task_stop_step(&h->task, &h->go, &h->done, &h->exited, &h->quit);
+	}
+	if (!done) {
+		xSemaphoreGive(c->guard);
+		return false;
+	}
+	if (*c->boosted) {
+		if (!cpufreq_try_boost(false)) {
+			xSemaphoreGive(c->guard);
+			return false;
+		}
+		*c->boosted = false;
+	}
+	if (*c->kept) {
+		power_keep_screen(false);
+		*c->kept = false;
+	}
+	/* The reaper has no process-relative stdin. Address the held file. */
+	if (*c->screen && c->tty && c->tty->ops->ioctl) {
+		int raw = 0, off = -1;
+
+		if (c->tty->ops->ioctl(c->tty, PT_TTY_TRYSETRAW, &raw) == -EAGAIN) {
+			xSemaphoreGive(c->guard);
+			return false;
+		}
+		/* A kill can interrupt readkey between its timed read and reset. */
+		c->tty->ops->ioctl(c->tty, PT_TTY_SETTIMEOUT, &off);
+	}
+	xSemaphoreGive(c->guard);
+	return true;
 }
 
 /* Where the picture goes, from one canvas to another with its own pixels. */
@@ -689,18 +767,20 @@ static void bar_at(const char *what, int seconds, const char *after)
 	bar(line);
 }
 
-PT_COMPLETE(video, ": <file:.ptv>\n")
+PT_COMPLETE(video, ": -v -i <file:.ptv>\n*: <file:.ptv>\n")
 
 PT_PROGRAM_STACK(video, 8, "play a clip\n"
-		 "usage: video [clip.ptv]    video -i clip.ptv\n"
+		 "usage: video [-v] [clip.ptv]    video -i clip.ptv\n"
 		 "With no file, what is in ~/video is offered as a list.\n"
 		 "Space pauses, q or Esc stops, s saves the screen.\n"
 		 "Left/right go 10 s back or on, up/down a minute,\n"
 		 "0-9 a tenth of the way in each. A clip goes on from\n"
 		 "where it was left, unless 0 is pressed at the start.\n"
+		 "-v  at the end, frames shown and dropped, and the\n"
+		 "    time each frame took to read, decode and send\n"
 		 "-i  write an index into an older clip, so that\n"
 		 "    jumping in it is quick (new clips have one)\n"
-		 "Make a clip on the PC: make video FILE=something.mp4")
+		 "On the PC: make video FILE=something.mkv")
 {
 	static const char *const exts[] = { ".ptv", NULL };
 	struct canvas page[2] = { { 0 }, { 0 } }, slice0 = { 0 }, *shown = &page[0];
@@ -711,27 +791,43 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	struct index idx = { 0 };
 	struct slot *slots = NULL;
 	char chosen[PT_PATH_MAX], shot[PT_PATH_MAX];
-	bool index_only = argc > 1 && !strcmp(argv[1], "-i");
-	const char *path = argc > 1 + index_only ? argv[1 + index_only] : chosen, *name;
+	bool index_only = false, verbose = false;
+	const char *path = chosen, *name;
 	void *native_mem[2] = { NULL, NULL };
 	uint8_t *native[2] = { NULL, NULL };
-	int ret, next = 0, ahead = 0, nread = 0, end;
+	int ret, next = 0, ahead = 0, nread = 0, end, arg;
 	int shown_n = 0, dropped = 0, frame_us, buffer_us = 0, i = 0, from = 0, target;
 	int64_t read_us = 0, decode_us = 0, blit_us = 0, started;
 	int64_t decode_guess = 0;
 	bool keys = true, screen = false, played = false, step = false, boosted = false;
+	bool kept = false;
+	struct video_cleanup cleanup = {
+		.helpers = helpers, .blit = &blit, .tty = proc_current()->fd[PT_STDIN],
+		.boosted = &boosted, .kept = &kept, .screen = &screen,
+	};
+	bool native_ok = false;
 	uint32_t from_off = 0;
 	unsigned gen = vt_screen_gen();
 
-	if (argc > 2 + index_only || (index_only && argc != 3)) {
-		pt_dprintf(PT_STDERR, "usage: video [clip.ptv]    video -i clip.ptv\n");
+	for (arg = 1; arg < argc && argv[arg][0] == '-' && argv[arg][1]; arg++) {
+		if (!strcmp(argv[arg], "-i"))
+			index_only = true;
+		else if (!strcmp(argv[arg], "-v"))
+			verbose = true;
+		else
+			break;
+	}
+	if (arg < argc && argv[arg][0] != '-')
+		path = argv[arg++];
+	if (arg < argc || (index_only && (path == chosen || verbose))) {
+		pt_dprintf(PT_STDERR, "usage: video [-v] [clip.ptv]    video -i clip.ptv\n");
 		return 2;
 	}
 	if (!index_only && !vt_has_display()) {
 		pt_dprintf(PT_STDERR, "video: there is no screen\n");
 		return 1;
 	}
-	if (argc == 1) {
+	if (path == chosen) {
 		char dir[64];
 
 		home_dir(dir, sizeof(dir), "video");
@@ -760,6 +856,12 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 		ret = ret == -EEXIST ? 0 : ret;
 		goto done;
 	}
+	/* Helpers use this process's memory. Catch interruption before any
+	 * of them starts, including system calls during the rest of startup. */
+	pt_sigcatch(true);
+	cleanup.guard = xSemaphoreCreateMutexStatic(&cleanup.guard_storage);
+	if ((ret = proc_set_cleanup(video_cleanup_step, &cleanup)))
+		goto done;
 	/* Two pages: one being sent to the panel while the next is
 	 * decoded into the other. */
 	if ((ret = canvas_open(&page[0])) || (ret = canvas_open(&page[1])))
@@ -788,8 +890,11 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			h->c = slice0;
 			h->c.dh = bottom - top;
 			h->c.y0 = page[0].y0 + top;
-			if ((ret = task_start(helper_task, "vidslice", 4096, h,
-					      &h->task, &h->go, &h->done)))
+			xSemaphoreTake(cleanup.guard, portMAX_DELAY);
+			ret = task_start(helper_task, "vidslice", 4096, h,
+					 &h->task, &h->go, &h->done, &h->exited);
+			xSemaphoreGive(cleanup.guard);
+			if (ret)
 				goto done;
 		}
 	}
@@ -797,17 +902,25 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	 * Frames go to the panel turned into its own order, in step with its
 	 * refresh, so that nothing that moves tears (canvas_blit_native). The
 	 * turning is done here, on this core, while the frame waits for its
-	 * sound; the blitter on the other core only sends. A turned copy for
+	 * sound; the blitter shares the other core with the helper decoder,
+	 * leaving this core free to decode and read the next frame. A turned copy for
 	 * each page, in PSRAM: one is sent while the next is made.
 	 */
-	for (int k = 0; k < 2 && lcd_native_ok(); k++) {
+	native_ok = lcd_native_ok();
+	for (int k = 0; k < 2 && native_ok; k++) {
 		native_mem[k] = pt_malloc((size_t)page[0].w * page[0].h * 2 + 63);
 		native[k] = native_mem[k] ?
 			(uint8_t *)(((uintptr_t)native_mem[k] + 63) & ~(uintptr_t)63) : NULL;
 	}
-	if (!native[0] || !native[1])
-		native[0] = native[1] = NULL;	/* then as it is, tearing or not */
-	if ((ret = task_start(blit_task, "vidblit", 3072, &blit, &blit.task, &blit.go, &blit.done)))
+	if (native_ok && (!native[0] || !native[1])) {
+		ret = -ENOMEM;
+		goto done;
+	}
+	xSemaphoreTake(cleanup.guard, portMAX_DELAY);
+	ret = task_start(blit_task, "vidblit", 3072, &blit, &blit.task, &blit.go,
+			 &blit.done, &blit.exited);
+	xSemaphoreGive(cleanup.guard);
+	if (ret)
 		goto done;
 
 	if (clip.audio_bytes) {
@@ -833,24 +946,22 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	/* As fast as the policy lets it, all the time (cpufreq_boost()):
 	 * nothing here is idle long enough for the governor to be right
 	 * about it. Under powersave that is 80 MHz, and frames are dropped. */
+	xSemaphoreTake(cleanup.guard, portMAX_DELAY);
 	cpufreq_boost(true);
 	boosted = true;
+	xSemaphoreGive(cleanup.guard);
 
 	vt_hold_screen(true);
 	blit.vt = vt_screen_mine();
+	xSemaphoreTake(cleanup.guard, portMAX_DELAY);
 	power_keep_screen(true);		/* nobody presses keys to watch */
+	kept = true;
 	screen = true;
+	xSemaphoreGive(cleanup.guard);
 	canvas_clear(&page[0]);
 	canvas_clear(&page[1]);
 	repaint(&page[0]);
 	pt_tty_raw(PT_STDIN, true);
-	/*
-	 * The helpers on the other core work in this program's memory: a
-	 * kill from another terminal must end the loop and stop them, not
-	 * end the program under them.
-	 */
-	pt_sigcatch(true);
-
 	/* Left part of the way through last time: on from there, unless 0. */
 	if (resume_get(name, &clip, &from, &from_off) && frame_at(rd.fd, from_off)) {
 		bar_at("go on from", from / clip.fps, "?  enter: yes  0: from the start");
@@ -956,8 +1067,9 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 				if (helpers[s - 1].ret)
 					ret = helpers[s - 1].ret;
 			}
-			turned = !ret && native[next] && !canvas_turn(into, native[next]) ?
-				 native[next] : NULL;
+			if (!ret && native[next])
+				ret = canvas_turn(into, native[next]);
+			turned = !ret ? native[next] : NULL;
 			now = esp_timer_get_time();
 			decode_us += now - mark;
 			/* Guess high: a quick frame lowers it slowly, a slow
@@ -1060,6 +1172,10 @@ jump:
 		nread = ret;
 		ret = 0;
 		started = esp_timer_get_time() - (int64_t)nread * frame_us;
+		/* A silent seek needs time to decode its first frame before the
+		 * new timeline starts, or the retained estimate drops it at once. */
+		if (!clip.audio_bytes)
+			started += decode_guess + SHOW_LEAD_US;
 	}
 	ret = 0;
 	/* Where it was left, for next time; played to the end, or all but, is done with. */
@@ -1069,16 +1185,14 @@ jump:
 	else if (played)
 		resume_put(name, &clip, -1, 0);
 done:
-	blit_finish(&blit);		/* the frame on its way to the panel first */
-	task_stop(&blit.task, &blit.go, &blit.done, &blit.quit);
+	if (cleanup.guard)
+		while (!video_cleanup_step(&cleanup))
+			vTaskDelay(pdMS_TO_TICKS(10));
+	proc_set_cleanup(NULL, NULL);
 	pt_free(native_mem[0]);
 	pt_free(native_mem[1]);
-	for (int i = 0; i < MAX_SLICES - 1; i++)
-		task_stop(&helpers[i].task, &helpers[i].go, &helpers[i].done, &helpers[i].quit);
 	if (screen)
 		pt_tty_raw(PT_STDIN, false);
-	if (boosted)
-		cpufreq_boost(false);
 	if (clip.audio_bytes)
 		audio_stop();
 	canvas_close(&page[0]);
@@ -1092,19 +1206,25 @@ done:
 	pt_free(rd.buf);
 	pt_close(rd.fd);
 	if (screen) {
-		power_keep_screen(false);
 		vt_hold_screen(false);
 		vt_redraw();
 	}
 	if (ret)
 		return fail("video", path, ret);
-	if (index_only)
+	if (index_only || !verbose)
 		return 0;
 
 	int seen = shown_n + dropped;
 
 	pt_printf("%dx%d at %d fps: %d frames shown, %d dropped\n",
-		  clip.w, clip.h, clip.fps, shown_n, dropped);
+		  clip.w, clip.h, clip.fps, shown_n - blit.missed, dropped + blit.missed);
+	if (blit.missed)
+		pt_printf("  %d panel transfers failed\n", blit.missed);
+	if (blit.late)
+		pt_printf("  %d panel transfers finished after their refresh window\n", blit.late);
+	if (shown_n)
+		pt_printf("  panel %lld ms average, %lld ms maximum (including refresh wait)\n",
+			  blit.transfer_us / 1000 / shown_n, blit.transfer_max_us / 1000);
 	if (seen)
 		pt_printf("  read %lld ms, decode %lld ms, draw %lld ms (each frame)\n",
 			  read_us / 1000 / seen, shown_n ? decode_us / 1000 / shown_n : 0,

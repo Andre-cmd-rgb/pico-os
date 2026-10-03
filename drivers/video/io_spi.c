@@ -30,6 +30,7 @@
 
 static esp_lcd_panel_io_spi_config_t panel_cfg;
 static spi_device_handle_t reader;
+static bool bus_open;
 static int clock_hz = CONFIG_PT_LCD_SPI_HZ;
 
 /*
@@ -86,18 +87,25 @@ int lcd_io_open(esp_lcd_panel_io_handle_t *io, esp_lcd_panel_io_color_trans_done
 		 */
 		.flags.psram_dma_direct = 1,
 	};
-	esp_err_t err = spi_bus_initialize(HOST, &bus, SPI_DMA_CH_AUTO);
+	esp_err_t err;
+
+	if (bus_open || reader || *io)
+		return -EBUSY;
+	err = spi_bus_initialize(HOST, &bus, SPI_DMA_CH_AUTO);
 
 	if (err) {
 		klog("lcd: SPI%d bus setup failed (%s)", CONFIG_PT_LCD_SPI_HOST, esp_err_to_name(err));
 		return -EIO;
 	}
+	bus_open = true;
 	panel_cfg = cfg;
 	err = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)HOST, &cfg, io);
 	if (err) {
 		klog("lcd: SPI panel setup failed (%s)", esp_err_to_name(err));
+		lcd_io_close(io);
 		return -EIO;
 	}
+	clock_hz = cfg.pclk_hz;
 	/*
 	 * The bus keeps its levels through light sleep: isolated, a floating
 	 * chip select and clock could clock noise into the panel.
@@ -126,6 +134,34 @@ int lcd_io_open(esp_lcd_panel_io_handle_t *io, esp_lcd_panel_io_color_trans_done
 	return 0;
 }
 
+int lcd_io_close(esp_lcd_panel_io_handle_t *io)
+{
+	esp_err_t err;
+
+	if (*io) {
+		err = esp_lcd_panel_io_del(*io);
+		if (err)
+			goto fail;
+		*io = NULL;
+	}
+	if (reader) {
+		err = spi_bus_remove_device(reader);
+		if (err)
+			goto fail;
+		reader = NULL;
+	}
+	if (bus_open) {
+		err = spi_bus_free(HOST);
+		if (err)
+			goto fail;
+		bus_open = false;
+	}
+	return 0;
+fail:
+	klog("lcd: SPI cleanup failed (%s)", esp_err_to_name(err));
+	return -EIO;
+}
+
 /*
  * A register read: the command with D/C low, then `n` bytes back. The
  * caller holds the bus, so nothing else is being sent; chip select is
@@ -139,8 +175,15 @@ int lcd_io_read(uint8_t cmd, uint8_t *out, int n)
 
 	if (!reader || n < 1 || n > 4)
 		return -ENOTSUP;
+	/* The colour callback runs before the SPI ISR releases the writer.
+	 * Own the bus before changing either pin, including on another core. */
+	if (spi_device_acquire_bus(reader, portMAX_DELAY))
+		return -EIO;
 	gpio_func_sel(CONFIG_PT_LCD_SPI_CS, PIN_FUNC_GPIO);
 	gpio_set_direction(CONFIG_PT_LCD_SPI_CS, GPIO_MODE_OUTPUT);
+	/* ESP-IDF disables D/C output after colour DMA. Setting its level
+	 * alone then leaves the panel unable to recognise this command. */
+	gpio_set_direction(CONFIG_PT_LCD_SPI_DC, GPIO_MODE_OUTPUT);
 	gpio_set_level(CONFIG_PT_LCD_SPI_CS, 0);
 	gpio_set_level(CONFIG_PT_LCD_SPI_DC, 0);
 	err = spi_device_polling_transmit(reader, &t);
@@ -154,6 +197,7 @@ int lcd_io_read(uint8_t cmd, uint8_t *out, int n)
 	else
 		gpio_matrix_output(CONFIG_PT_LCD_SPI_CS, spi_periph_signal[HOST].spics_out[0], false,
 				   false);
+	spi_device_release_bus(reader);
 	return err ? -EIO : 0;
 }
 

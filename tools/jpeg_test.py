@@ -78,7 +78,6 @@ def ppm(path):
 # bin/jpeg.c), before cutting to RGB565: one offset for all three colours,
 # by the pixel's column and row, each taken modulo 2.
 DITHER = {(0, 0): 1, (1, 0): 5, (0, 1): 7, (1, 1): 3}
-BLACK_BELOW = 8         # luma left undithered, to cut to black
 
 
 def green6(g):
@@ -87,64 +86,15 @@ def green6(g):
     return (g >> 3) << 1 if g < 32 else (g - 2) >> 2
 
 
-def clamp(v):
-    return 0 if v < 0 else 255 if v > 255 else int(round(v))
-
-
-def fade(cb, cr, k):
-    """How much of a 2x2 group's chroma is kept near black (fade_faint() in
-    jpeg.c): none up to k, rising back to all of it by 2k, both together."""
-    a = max(abs(cb), abs(cr))
-    return 1 if a >= 2 * k else 0 if a <= k else 2 * (a - k) / a
-
-
-def fade_faint(rgb, w):
-    """Near black, faint colour taken off as put_420() does it: over each 2x2
-    group, by its luma, all of FAINT at black and none from DARK up. The
-    group's chroma is guessed from its pixels that are not clipped; the
-    clipped ones have more colour than their RGB says."""
-    DARK, FAINT = 48, 10
-    rgb = bytearray(rgb)
-    h = len(rgb) // 3 // w
-    for gy in range(0, h - h % 2, 2):
-        for gx in range(0, w - w % 2, 2):
-            px = [((gy + dy) * w + gx + dx) * 3 for dy in (0, 1) for dx in (0, 1)]
-            ycc = []
-            for i in px:
-                r, g, b = rgb[i], rgb[i + 1], rgb[i + 2]
-                y = 0.299 * r + 0.587 * g + 0.114 * b
-                ycc.append((y, (b - y) / 1.772, (r - y) / 1.402))
-            total = sum(clamp(y) for y, _, _ in ycc)
-            if total >= 4 * DARK:
-                continue
-            k = FAINT - total * FAINT // (4 * DARK)
-            clear = [c for i, c in zip(px, ycc) if 0 not in rgb[i:i + 3] and 255 not in rgb[i:i + 3]]
-            if not clear:
-                continue
-            f = fade(sum(c[1] for c in clear) / len(clear), sum(c[2] for c in clear) / len(clear), k)
-            for i, (y, cb, cr) in zip(px, ycc):
-                cb, cr = cb * f, cr * f
-                rgb[i] = clamp(y + 1.402 * cr)
-                rgb[i + 1] = clamp(y - 0.344136 * cb - 0.714136 * cr)
-                rgb[i + 2] = clamp(y + 1.772 * cb)
-    return bytes(rgb)
-
-
-def to565(rgb, w=0, black=BLACK_BELOW - 0.5):
+def to565(rgb, w=0):
     """RGB888 narrowed to RGB565 and widened back, as the decoder's output is.
-    With the width given, dithered first the way the decoder's 4:2:0 path is,
-    after taking faint colour off near black as it does, and not below a
-    luma of `black`."""
-    if w:
-        rgb = fade_faint(rgb, w)
+    With the width given, apply the shared 4:2:0 dither at every luma."""
     out = bytearray(len(rgb))
     for i in range(0, len(rgb), 3):
         r, g, b = rgb[i], rgb[i + 1], rgb[i + 2]
         if w:
             px = i // 3
             o = DITHER[(px % w % 2, px // w % 2)]
-            if 0.299 * r + 0.587 * g + 0.114 * b < black:
-                o = 0
             r, g, b = min(r + o, 255), min(g + o, 255), min(b + o, 255)
         r, g, b = r >> 3, green6(g), b >> 3
         out[i] = r << 3 | r >> 2
@@ -231,11 +181,7 @@ def main():
                     continue
                 dither = rw if scale == 0 and ("2x2" in name or "mjpeg" in name) else 0
                 small = shrink(full, rw, rh, scale)
-                # The decoder leaves luma below BLACK_BELOW undithered, and
-                # the luma it goes by is its own, which the reference's RGB
-                # only estimates: right at the line, either way is right.
-                psnr, worst = compare(got, to565(small, dither, BLACK_BELOW - 2),
-                                      to565(small, dither, BLACK_BELOW + 1) if dither else None)
+                psnr, worst = compare(got, to565(small, dither))
                 # At full size the arithmetic is libjpeg's fast IDCT, which
                 # truncates where this one rounds: within a step of RGB565 (9,
                 # once widened) everywhere. Scaled down, each output pixel is
@@ -249,6 +195,24 @@ def main():
                 failed += not ok
                 print(f"{'ok  ' if ok else 'FAIL'} {name} 1/{1 << scale}: "
                       f"{psnr:.1f} dB, worst {worst}")
+
+        # Shadows must retain detail rather than becoming a flat black patch.
+        # Each JPEG block is one neutral shade, so compression adds no edges.
+        ramp = os.path.join(tmp, "shadows.ppm")
+        jpg = os.path.join(tmp, "shadows.jpg")
+        pixels = bytes(v for _ in range(16) for shade in range(32)
+                       for _ in range(8) for v in (shade, shade, shade))
+        with open(ramp, "wb") as f:
+            f.write(b"P6\n256 16\n255\n" + pixels)
+        run(["cjpeg", "-sample", "2x2", "-quality", "100", "-outfile", jpg, ramp])
+        w, h, rgb = ours(checked, jpg, 0)
+        levels = [sum(rgb[(y*w+x)*3] for y in range(h)
+                      for x in range(shade*8, shade*8+8)) / (h*8)
+                  for shade in range(32)]
+        ok = (levels[0] == 0 and all(levels[i] > 0 for i in range(1, 8))
+              and all(a <= b for a, b in zip(levels, levels[1:])))
+        failed += not ok
+        print(f"{'ok  ' if ok else 'FAIL'} shadow ramp: black stays black, shades 1-7 survive")
 
         for name, jpg in pictures[:3] + pictures[6:8]:
             out = run([checked, "-f", jpg, "400"]).stdout.decode().strip()

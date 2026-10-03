@@ -25,10 +25,10 @@
 #define MAX_TRANSFER	16384
 
 static esp_lcd_panel_io_handle_t bus_io;	/* for the lcdreg bus steps */
+static esp_lcd_i80_bus_handle_t bus;
 
 int lcd_io_open(esp_lcd_panel_io_handle_t *io, esp_lcd_panel_io_color_trans_done_cb_t done)
 {
-	esp_lcd_i80_bus_handle_t bus;
 	esp_lcd_i80_bus_config_t bus_cfg = {
 		.dc_gpio_num = CONFIG_PT_LCD_RS,
 		.wr_gpio_num = CONFIG_PT_LCD_WR,
@@ -55,27 +55,58 @@ int lcd_io_open(esp_lcd_panel_io_handle_t *io, esp_lcd_panel_io_color_trans_done
 			.dc_data_level = 1,
 		},
 	};
-	esp_err_t err = esp_lcd_new_i80_bus(&bus_cfg, &bus);
+	esp_err_t err;
+
+	if (bus || bus_io || *io)
+		return -EBUSY;
+	err = esp_lcd_new_i80_bus(&bus_cfg, &bus);
 
 	if (!err)
 		err = esp_lcd_new_panel_io_i80(bus, &io_cfg, io);
 	if (err) {
 		klog("lcd: i80 bus setup failed (%s)", esp_err_to_name(err));
+		lcd_io_close(io);
 		return -EIO;
 	}
 	/* RD idles high: low turns the shield's buffer around onto our pins */
 	if (CONFIG_PT_LCD_RD >= 0) {
-		gpio_reset_pin(CONFIG_PT_LCD_RD);
-		gpio_set_direction(CONFIG_PT_LCD_RD, GPIO_MODE_OUTPUT);
-		gpio_set_level(CONFIG_PT_LCD_RD, 1);
+		if ((err = gpio_reset_pin(CONFIG_PT_LCD_RD)) ||
+		    (err = gpio_set_direction(CONFIG_PT_LCD_RD, GPIO_MODE_OUTPUT)) ||
+		    (err = gpio_set_level(CONFIG_PT_LCD_RD, 1))) {
+			klog("lcd: i80 read pin setup failed (%s)", esp_err_to_name(err));
+			lcd_io_close(io);
+			return -EIO;
+		}
 	}
 	bus_io = *io;
 	return 0;
 }
 
+int lcd_io_close(esp_lcd_panel_io_handle_t *io)
+{
+	esp_err_t err;
+
+	if (*io) {
+		err = esp_lcd_panel_io_del(*io);
+		if (err)
+			goto fail;
+		*io = bus_io = NULL;
+	}
+	if (bus) {
+		err = esp_lcd_del_i80_bus(bus);
+		if (err)
+			goto fail;
+		bus = NULL;
+	}
+	return 0;
+fail:
+	klog("lcd: i80 cleanup failed (%s)", esp_err_to_name(err));
+	return -EIO;
+}
+
 uint8_t *lcd_io_alloc(size_t bytes)
 {
-	return esp_lcd_i80_alloc_draw_buffer(bus_io, bytes, 0);
+	return bus_io ? esp_lcd_i80_alloc_draw_buffer(bus_io, bytes, 0) : NULL;
 }
 
 size_t lcd_io_max_transfer(void)

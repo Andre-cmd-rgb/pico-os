@@ -16,6 +16,7 @@
 #include "drivers/drivers.h"
 #include "ili9341.h"
 #include "lcd_io.h"
+#include "scanout.h"
 
 #if CONFIG_PT_LCD
 
@@ -44,7 +45,7 @@ const uint8_t ili9341_init_seq[] = {
 	0xc7, 1, 0xb7,				/* VCOM control 2 */
 	0x3a, 1, 0x55,				/* 16 bits per pixel */
 	0x36, 1, 0x08,				/* BGR, no mirroring yet */
-	0xb1, 2, 0x00, 0x1a,			/* frame rate */
+	0xb1, 2, 0x00, 0x1f,			/* retain the board's established frame-clock setting */
 	0xb6, 3, 0x08, 0x82, 0x27,		/* display function control */
 	0xf2, 1, 0x00,				/* 3-gamma off */
 	0x26, 1, 0x01,				/* gamma curve 1 */
@@ -78,7 +79,7 @@ const uint8_t ili9341_init_seq[] = {
 	0xc7, 1, 0x86,				/* VCOM control 2 */
 	0x37, 1, 0x00,				/* vertical scroll start */
 	0x3a, 1, 0x55,				/* 16 bits per pixel */
-	0xb1, 2, 0x00, 0x18,			/* frame rate */
+	0xb1, 2, 0x00, 0x1f,			/* frame clock; the actual rate depends on the panel */
 	0xb6, 3, 0x08, 0x82, 0x27,		/* display function control */
 	0xf2, 1, 0x00,				/* 3-gamma off */
 	0x26, 1, 0x01,				/* gamma curve 1 */
@@ -101,7 +102,7 @@ static int			 width, height;
 static int			 brightness = 100;	/* what was asked for */
 static int			 lamp = 100;		/* what it is at: dimmed, or dark */
 static int			 dimmer = -1;		/* the idle dimmer's level; -1 none */
-static bool			 panel_awake = true;
+static bool			 panel_awake;
 static int			 rotation = CONFIG_PT_LCD_ROTATION;
 
 uint8_t ili9341_madctl(void)
@@ -136,6 +137,13 @@ static bool IRAM_ATTR on_color_done(esp_lcd_panel_io_handle_t panel_io,
 	BaseType_t woken = pdFALSE;
 
 	xSemaphoreGiveFromISR(done, &woken);
+#if CONFIG_PT_LCD_ILI9341_SPI
+	/* IDF's SPI wrapper ignores our return flag; request the deferred
+	 * ISR-exit switch so a waiting renderer need not wait for a tick.
+	 * The i80 wrapper consumes the return flag itself. */
+	if (woken == pdTRUE)
+		portYIELD_FROM_ISR();
+#endif
 	return woken == pdTRUE;
 }
 
@@ -238,8 +246,17 @@ void lcd_light(int percent) { }
 void lcd_sleep(void)
 {
 	backlight_sleep();
-	if (io)
-		esp_lcd_panel_io_tx_param(io, CMD_SLPIN, NULL, 0);
+	if (io && width) {
+		esp_err_t err;
+
+		lcd_bus_lock(true);
+		err = esp_lcd_panel_io_tx_param(io, CMD_SLPIN, NULL, 0);
+		if (err)
+			klog("lcd: sleep command failed (%s)", esp_err_to_name(err));
+		else
+			panel_awake = false;
+		lcd_bus_lock(false);
+	}
 	gpio_deep_sleep_hold_en();
 }
 
@@ -262,12 +279,21 @@ int lcd_backlight_now(void)
  */
 void lcd_panel_power(bool on)
 {
-	if (!io || on == panel_awake)
+	esp_err_t err;
+
+	if (!io || !width)
 		return;
 	lcd_bus_lock(true);
-	esp_lcd_panel_io_tx_param(io, on ? CMD_SLPOUT : CMD_SLPIN, NULL, 0);
+	if (on == panel_awake)
+		goto out;
+	err = esp_lcd_panel_io_tx_param(io, on ? CMD_SLPOUT : CMD_SLPIN, NULL, 0);
+	if (err) {
+		klog("lcd: %s command failed (%s)", on ? "wake" : "sleep", esp_err_to_name(err));
+		goto out;
+	}
 	vTaskDelay(pdMS_TO_TICKS(on ? 120 : 5));
 	panel_awake = on;
+out:
 	lcd_bus_lock(false);
 }
 
@@ -281,19 +307,39 @@ bool lcd_panel_on(void)
 int lcd_init(void)
 {
 	int rst = lcd_io_reset_gpio();
+	int ret;
+	esp_err_t err;
+	uint8_t mode;
+	bool landscape;
 
+	if (width && height && io)
+		return 0;
+	width = height = 0;
+	panel_awake = false;
+	/* Retry cleanup if an SDK delete failed on an earlier attempt. Its
+	 * callback still owns the semaphores until the bus has been released. */
+	if ((ret = lcd_io_close(&io)))
+		return ret;
+	if (done)
+		vSemaphoreDelete(done);
+	if (bus_lock)
+		vSemaphoreDelete(bus_lock);
 	done = xSemaphoreCreateBinary();
 	bus_lock = xSemaphoreCreateMutex();
-	if (!done || !bus_lock)
-		return -ENOMEM;
-	if (lcd_io_open(&io, on_color_done))
-		return -EIO;
+	if (!done || !bus_lock) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	if ((ret = lcd_io_open(&io, on_color_done)))
+		goto fail;
 
 	if (rst >= 0) {
-		gpio_set_direction(rst, GPIO_MODE_OUTPUT);
-		gpio_set_level(rst, 0);
+		if ((err = gpio_set_direction(rst, GPIO_MODE_OUTPUT)) ||
+		    (err = gpio_set_level(rst, 0)))
+			goto reset_fail;
 		vTaskDelay(pdMS_TO_TICKS(20));
-		gpio_set_level(rst, 1);
+		if ((err = gpio_set_level(rst, 1)))
+			goto reset_fail;
 		vTaskDelay(pdMS_TO_TICKS(120));
 	}
 
@@ -302,25 +348,55 @@ int lcd_init(void)
 		uint8_t len = ili9341_init_seq[i] & ~DELAY;
 		bool delay = ili9341_init_seq[i++] & DELAY;
 
-		esp_lcd_panel_io_tx_param(io, cmd, len ? &ili9341_init_seq[i] : NULL, len);
+		err = esp_lcd_panel_io_tx_param(io, cmd, len ? &ili9341_init_seq[i] : NULL, len);
+		if (err) {
+			klog("lcd: initialization command 0x%02x failed (%s)", cmd, esp_err_to_name(err));
+			ret = -EIO;
+			goto fail;
+		}
 		i += len;
 		vTaskDelay(pdMS_TO_TICKS(delay ? ili9341_init_seq[i++] : CMD_GAP_MS));
 	}
 
-	uint8_t mode = ili9341_madctl();
-	esp_lcd_panel_io_tx_param(io, CMD_MADCTL, &mode, 1);
+	mode = ili9341_madctl();
+	err = esp_lcd_panel_io_tx_param(io, CMD_MADCTL, &mode, 1);
+	if (err) {
+		klog("lcd: rotation setup failed (%s)", esp_err_to_name(err));
+		ret = -EIO;
+		goto fail;
+	}
 #ifdef CONFIG_PT_LCD_INVERT
-	esp_lcd_panel_io_tx_param(io, CMD_INVON, NULL, 0);
+	err = esp_lcd_panel_io_tx_param(io, CMD_INVON, NULL, 0);
 #else
-	esp_lcd_panel_io_tx_param(io, CMD_INVOFF, NULL, 0);
+	err = esp_lcd_panel_io_tx_param(io, CMD_INVOFF, NULL, 0);
 #endif
+	if (err) {
+		klog("lcd: inversion setup failed (%s)", esp_err_to_name(err));
+		ret = -EIO;
+		goto fail;
+	}
 
-	bool landscape = rotation & 1;
+	landscape = rotation & 1;
 	width = landscape ? 320 : 240;
 	height = landscape ? 240 : 320;
+	panel_awake = true;
 	backlight_init();
 	klog("lcd: ili9341%s on %s, %dx%d", INIT_NAME, lcd_io_name(), width, height);
 	return 0;
+reset_fail:
+	klog("lcd: reset GPIO failed (%s)", esp_err_to_name(err));
+	ret = -EIO;
+fail:
+	width = height = 0;
+	panel_awake = false;
+	if (!lcd_io_close(&io)) {
+		if (done)
+			vSemaphoreDelete(done);
+		if (bus_lock)
+			vSemaphoreDelete(bus_lock);
+		done = bus_lock = NULL;
+	}
+	return ret;
 }
 
 /*
@@ -334,6 +410,8 @@ int lcd_set_rotation(int r)
 {
 	uint8_t mode;
 
+	if (!width || !io)
+		return -ENODEV;
 	if (r < 0 || r > 3 || (r & 1) != (rotation & 1))
 		return -EINVAL;
 	lcd_bus_lock(true);
@@ -358,6 +436,8 @@ int lcd_set_clock(int hz)
 {
 	int ret;
 
+	if (!width || !io)
+		return -ENODEV;
 	if (hz < 10000000 || hz > 80000000)
 		return -EINVAL;
 	lcd_bus_lock(true);
@@ -381,17 +461,16 @@ int lcd_clock(void)
  * the picture is sent. A refresh that happens while a frame goes out
  * shows the new frame on one side of the place where it met the frame
  * going in, and the old one on the other: in a landscape frame, several
- * slanting seams that move (a frame takes 16 ms to send, a refresh 12).
+ * slanting seams that move (a frame takes about 16 ms to send).
  * The panel's TE pin, which would say when a refresh starts, is not
  * wired on this board; its data line is, and the panel can be asked
  * which line it is refreshing (Get Scanline, 0x45).
  *
  * So a frame goes out in the panel's own order, in bands of rows, and a
- * band only once the refresh has passed it: the refresh never meets a
- * band half written. Each refresh shows the old frame, or the new one,
- * whole. The refresh outruns the sending (12 ms against 16), but it
- * cannot come round again and catch the last bands before they are
- * sent, provided the frame starts in the first two thirds of a refresh.
+ * band only once the refresh has passed it. With the slower panel clock,
+ * an early start and aligned 32-row bands, bands reach the panel before
+ * the next refresh reads them. An unusually late transfer finishes its frame
+ * and reports the missed window, rather than leaving half an old image.
  *
  * Two things this panel does that it had to be shown: the row order bit
  * (MY) turns the refresh round as well as the writing, so it is never
@@ -402,15 +481,13 @@ int lcd_clock(void)
 #define NATIVE_H	320
 #define CMD_SCANLINE	0x45
 #define PORCH_LINES	4		/* sync and back porch, before row 0 */
-#define LATE_LINE	200		/* started after this, the refresh laps it */
-#define BAND_ROWS	64
+#define START_LINE	48		/* leave a whole refresh's headroom for preemption */
 #define BEHIND		4		/* rows kept between the refresh and a band */
+#define SCAN_GAP_US	10000		/* a long pause can hide a refresh wrap */
 /*
- * The refresh takes about 44 us a row (70 Hz). A wait for it longer than
- * this many rows sleeps, a tick at a time, instead of spinning: the core
- * this runs on is the one the video player's second decoder uses, and a
- * frame's decode took twice as long with the panel spinning beside it. A
- * tick is a millisecond, 23 rows, so a sleep never overshoots the wait.
+ * The actual refresh rate depends on the panel. A wait longer than this
+ * many rows sleeps instead of taking CPU time from the decoder; shorter
+ * waits poll so that a millisecond tick cannot skip their whole window.
  */
 #define SLEEP_ROWS	30
 
@@ -444,6 +521,8 @@ bool lcd_native_ok(void)
 {
 	bool ok;
 
+	if (!width || !io)
+		return false;
 	lcd_bus_lock(true);
 	ok = width == NATIVE_H && height == NATIVE_W && scan_line() >= 0;
 	lcd_bus_lock(false);
@@ -455,16 +534,18 @@ bool lcd_native_ok(void)
  * p0 + ph - 1, each `cw` pixels (the columns CASET has set), laid out in
  * the buffer by panel row. Bus held.
  */
-static void send_band(const uint8_t *buf, int p0, int cw, int first, int n)
+static int send_band(const uint8_t *buf, int p0, int cw, int first, int n)
 {
 	int lo = scan_down ? NATIVE_H - first - n : first, hi = lo + n - 1;
 	const uint8_t row[4] = { lo >> 8, lo, hi >> 8, hi };
 
-	esp_lcd_panel_io_tx_param(io, CMD_RASET, row, 4);
+	if (esp_lcd_panel_io_tx_param(io, CMD_RASET, row, 4))
+		return -EIO;
 	lcd_wait_done(0);			/* clear a stale completion */
-	esp_lcd_panel_io_tx_color(io, CMD_RAMWR, buf + (size_t)(lo - p0) * cw * 2,
-				  (size_t)n * cw * 2);
-	lcd_wait_done(1000);
+	if (esp_lcd_panel_io_tx_color(io, CMD_RAMWR, buf + (size_t)(lo - p0) * cw * 2,
+				    (size_t)n * cw * 2))
+		return -EIO;
+	return xSemaphoreTake(done, pdMS_TO_TICKS(100)) ? 0 : -ETIMEDOUT;
 }
 
 /*
@@ -472,7 +553,9 @@ static void send_band(const uint8_t *buf, int p0, int cw, int first, int n)
  * c0 + cw - 1 of rows p0 to p0 + ph - 1, as MADCTL addresses them, the
  * buffer holding it row after row -- sent behind the refresh. Only the
  * picture is sent: whatever is round it was painted once and stays.
- * Returns -ENOTSUP where the refresh cannot be read.
+ * Returns -ENOTSUP where the refresh cannot be read, -EAGAIN for a frame
+ * completed after its refresh window. A late frame is finished rather
+ * than leaving the panel with a mixture of two frames until the next one.
  */
 int lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph)
 {
@@ -480,9 +563,12 @@ int lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph)
 	uint8_t back = ili9341_madctl(), mode = back & (MADCTL_MY | MADCTL_BGR);
 	/* the rectangle's rows, counted in the order the refresh meets them */
 	int done = scan_down ? NATIVE_H - p0 - ph : p0, end = done + ph;
-	int line, last;
-	bool lapped = false;
+	int line, last, ret = 0;
+	int64_t deadline, polled;
+	bool lapped = false, late = false;
 
+	if (!width || !io)
+		return -ENODEV;
 	if (c0 < 0 || cw < 1 || c0 + cw > NATIVE_W || p0 < 0 || ph < 1 || p0 + ph > NATIVE_H)
 		return -EINVAL;
 	lcd_bus_lock(true);
@@ -491,43 +577,90 @@ int lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph)
 		lcd_bus_lock(false);
 		return -ENOTSUP;
 	}
-	/* too late in this refresh: the next would catch the end; wait for it */
-	for (int tries = 0; line > LATE_LINE && tries < 400; tries++) {
+	/* A late start left only a few milliseconds for a busy Wi-Fi task
+	 * or a DMA bounce. Always start near the top of a refresh instead. */
+	deadline = esp_timer_get_time() + 100000;
+	while (line > START_LINE) {
+		if (esp_timer_get_time() >= deadline) {
+			ret = -ETIMEDOUT;
+			goto out;
+		}
 		if (line < NATIVE_H - SLEEP_ROWS)
 			vTaskDelay(1);
 		else
 			esp_rom_delay_us(30);
 		line = scan_line();
+		if (line < 0) {
+			ret = -EIO;
+			goto out;
+		}
 	}
-	esp_lcd_panel_io_tx_param(io, CMD_MADCTL, &mode, 1);
-	esp_lcd_panel_io_tx_param(io, CMD_CASET, col, 4);
+	if (esp_lcd_panel_io_tx_param(io, CMD_MADCTL, &mode, 1) ||
+	    esp_lcd_panel_io_tx_param(io, CMD_CASET, col, 4)) {
+		ret = -EIO;
+		goto restore;
+	}
 	last = line;
+	polled = esp_timer_get_time();
 	while (done < end) {
-		int passed, n;
+		int passed, n = scanout_band_rows(cw, end - done, scan_down);
+		int64_t now;
 
 		line = scan_line();
-		if (line < last)
+		now = esp_timer_get_time();
+		if (line < 0 || now >= deadline) {
+			ret = line < 0 ? -EIO : -ETIMEDOUT;
+			break;
+		}
+		if (now - polled >= SCAN_GAP_US)
+			late = true;		/* line alone cannot reveal a skipped whole sweep */
+		polled = now;
+		if (line < last) {
+			if (lapped)
+				late = true;
 			lapped = true;		/* a new refresh: all of the last one is passed */
+		}
 		last = line;
 		passed = lapped ? NATIVE_H : line - PORCH_LINES - BEHIND;
-		if (passed <= done) {
-			if (done - passed > SLEEP_ROWS)
+		/* A whole aligned band, after its last row has been scanned.
+		 * Variable row counts made the next PSRAM DMA pointer unaligned,
+		 * allocating a bounce buffer in scarce internal RAM mid-frame. */
+		if (passed < done + n) {
+			if (done + n - passed > SLEEP_ROWS)
 				vTaskDelay(1);
 			else
 				esp_rom_delay_us(50);
 			continue;
 		}
-		n = passed - done;
-		if (n > BAND_ROWS)
-			n = BAND_ROWS;
-		if (n > end - done)
-			n = end - done;
-		send_band(rgb565be, p0, cw, done, n);
+		/* The second sweep must not have reached rows still unwritten. */
+		if (lapped && line - PORCH_LINES + BEHIND >= done)
+			late = true;
+		if ((ret = send_band(rgb565be, p0, cw, done, n)))
+			break;
 		done += n;
+		/* There is no next iteration to check the final DMA completion. */
+		if (done == end) {
+			line = scan_line();
+			if (line < 0) {
+				ret = -EIO;
+				break;
+			}
+			if (esp_timer_get_time() - polled >= SCAN_GAP_US)
+				late = true;
+			if (line < last)
+				lapped = true;
+			if (lapped && line - PORCH_LINES + BEHIND >= done - n)
+				late = true;
+		}
 	}
-	esp_lcd_panel_io_tx_param(io, CMD_MADCTL, &back, 1);
+	if (!ret && late)
+		ret = -EAGAIN;
+restore:
+	if (esp_lcd_panel_io_tx_param(io, CMD_MADCTL, &back, 1) && (!ret || ret == -EAGAIN))
+		ret = -EIO;
+out:
 	lcd_bus_lock(false);
-	return 0;
+	return ret;
 }
 
 /* A register read back from the panel, for probing. */
@@ -535,6 +668,8 @@ int lcd_read_reg(uint8_t cmd, uint8_t *out, int n)
 {
 	int ret;
 
+	if (!width || !io)
+		return -ENODEV;
 	lcd_bus_lock(true);
 	ret = lcd_io_read(cmd, out, n);
 	lcd_bus_lock(false);
@@ -553,7 +688,7 @@ int lcd_height(void)
 
 uint8_t *lcd_alloc_buffer(size_t bytes)
 {
-	return lcd_io_alloc(bytes);
+	return width && io ? lcd_io_alloc(bytes) : NULL;
 }
 
 /*
@@ -568,15 +703,23 @@ static int	 capture_w, capture_h;
 
 int lcd_capture_begin(void)
 {
-	if (capture)
+	if (!bus_lock || !width)
+		return -ENODEV;
+	lcd_bus_lock(true);
+	if (capture) {
+		lcd_bus_lock(false);
 		return -EBUSY;
+	}
 	capture_w = width;
 	capture_h = height;
 	capture = heap_caps_calloc(1, (size_t)capture_w * capture_h * 2,
 				   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	if (!capture)
 		capture = heap_caps_calloc(1, (size_t)capture_w * capture_h * 2, MALLOC_CAP_8BIT);
-	return capture ? 0 : -ENOMEM;
+	int ret = capture ? 0 : -ENOMEM;
+
+	lcd_bus_lock(false);
+	return ret;
 }
 
 const uint8_t *lcd_capture_pixels(int *w, int *h)
@@ -588,8 +731,24 @@ const uint8_t *lcd_capture_pixels(int *w, int *h)
 
 void lcd_capture_end(void)
 {
+	if (!bus_lock)
+		return;
+	lcd_bus_lock(true);
 	heap_caps_free(capture);
 	capture = NULL;
+	lcd_bus_lock(false);
+}
+
+int lcd_capture_try_end(void)
+{
+	if (!bus_lock)
+		return -ENODEV;
+	if (!xSemaphoreTake(bus_lock, 0))
+		return -EAGAIN;
+	heap_caps_free(capture);
+	capture = NULL;
+	xSemaphoreGive(bus_lock);
+	return 0;
 }
 
 static void capture_rect(int x, int y, int w, int h, const uint8_t *rgb565be)
@@ -618,9 +777,11 @@ void lcd_draw(int x, int y, int w, int h, const uint8_t *rgb565be)
 	const uint8_t col[4] = { x >> 8, x, (x + w - 1) >> 8, x + w - 1 };
 	const uint8_t row[4] = { y >> 8, y, (y + h - 1) >> 8, y + h - 1 };
 
+	if (!width || !io)
+		return;
+	lcd_bus_lock(true);
 	if (capture)
 		capture_rect(x, y, w, h, rgb565be);
-	lcd_bus_lock(true);
 	esp_lcd_panel_io_tx_param(io, CMD_CASET, col, 4);
 	esp_lcd_panel_io_tx_param(io, CMD_RASET, row, 4);
 	lcd_wait_done(0);			/* clear a stale completion */
@@ -638,7 +799,7 @@ void lcd_draw(int x, int y, int w, int h, const uint8_t *rgb565be)
  */
 void lcd_fill(int x, int y, int w, int h, uint16_t rgb565)
 {
-	if (w <= 0 || h <= 0)
+	if (!width || !io || w <= 0 || h <= 0)
 		return;
 	int rows_per_chunk = lcd_io_max_transfer() / 2 / w;
 	if (rows_per_chunk > h)
@@ -692,5 +853,6 @@ int lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph) { r
 int lcd_capture_begin(void) { return -ENODEV; }
 const uint8_t *lcd_capture_pixels(int *w, int *h) { *w = *h = 0; return NULL; }
 void lcd_capture_end(void) { }
+int lcd_capture_try_end(void) { return -ENODEV; }
 
 #endif

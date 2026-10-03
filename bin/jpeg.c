@@ -714,8 +714,6 @@ static HOT void idct(const int16_t *in, int last, uint8_t *out, int stride)
 /* ------------------------------------------------------------ colour */
 
 #define NEUTRAL_BELOW	32	/* of 255: green steps with red and blue: build_rgb() */
-#define DARK		48	/* luma from which faint colour is left alone: put_420() */
-#define FAINT		10	/* and the chroma that is noise, at black */
 
 /* The chroma terms of ITU-R BT.601, full range, as JFIF has it. */
 #define CHROMA(cb, cr, rv, gv, bv)						\
@@ -782,43 +780,13 @@ static void build_rgb(struct jpeg *j)
  * came out as specks of green and purple. The tables reach far enough
  * past 255 to take the offsets.
  *
- * Near black, colour as faint as a compressed picture's noise is taken
- * off, smoothly: chroma up to FAINT goes at black, rising back to itself
- * by twice that, and less and less of it up to a luma of DARK, so nothing
- * changes in steps and a dark colour that is really there -- a deep
- * blue -- is left as it is. (Blacking out whole dark greyish blocks
- * instead made dark scenes blotchy.)
- *
- * And the very darkest greys are not dithered at all, so that they cut to
- * black. A compressed picture beside black bars rings: the bars come out
- * with lumas of 1 to 7 near the edge, and any of those dithered up made
- * one pixel in four the panel's first grey, a line of dots round every
- * letterboxed clip. That dark, the panel shows no detail anyway.
+ * Apply the same rounding in shadows as everywhere else. Suppressing
+ * dither below luma 8 crushed those shades to solid black; stripping
+ * their chroma also made dark scenes grey. Preserve the source's colour
+ * and shadow detail. Actual black stays black (the largest offset is 7).
  */
-#define BLACK_BELOW	8	/* of 255: a step of red and blue */
 #define DOT(i)		(r[i] | g[i] | b[i])
-#define DITHER(y, o)	DOT((y) + ((y) < BLACK_BELOW ? 0 : (o)))
-
-/*
- * Both chroma samples of a 2x2 group, taken off near black when they are
- * as faint as noise. Together, by the larger, so that a colour keeps its
- * hue: a dark red's small blue part is part of it, not noise.
- */
-static inline void fade_faint(int *u, int *v, int k)
-{
-	int cu = *u - 128, cv = *v - 128;
-	int a = cu < 0 ? -cu : cu, av = cv < 0 ? -cv : cv;
-
-	a = av > a ? av : a;
-	if (a >= 2 * k)
-		return;				/* a colour: as it is */
-	if (a <= k) {
-		*u = *v = 128;			/* noise: none */
-		return;
-	}
-	*u = 128 + cu * 2 * (a - k) / a;	/* rising back to itself by 2k */
-	*v = 128 + cv * 2 * (a - k) / a;
-}
+#define DITHER(y, o)	DOT((y) + (o))
 
 static void put_420(const struct jpeg *j, uint8_t *dst, size_t stride)
 {
@@ -830,13 +798,6 @@ static void put_420(const struct jpeg *j, uint8_t *dst, size_t stride)
 
 		for (int cx = 0; cx < 8; cx++, y0 += 2, y1 += 2) {
 			int u = cb[cx], v = cr[cx];
-			unsigned sum = y0[0] + y0[1] + y1[0] + y1[1];
-
-			if (sum < 4 * DARK) {
-				int k = FAINT - (int)sum * FAINT / (4 * DARK);
-
-				fade_faint(&u, &v, k);
-			}
 			const uint16_t *r = j->red[v], *b = j->blue[u];
 			const uint16_t *g = j->rgb[1] + 256 + j->gcb[u] + j->gcr[v];
 

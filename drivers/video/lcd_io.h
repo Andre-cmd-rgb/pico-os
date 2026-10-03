@@ -10,6 +10,9 @@
 /* Brings the bus up and returns the handle commands and pixels go through. */
 int	lcd_io_open(esp_lcd_panel_io_handle_t *io, esp_lcd_panel_io_color_trans_done_cb_t done);
 
+/* Releases a partial startup too; no drawing may be in progress. */
+int	lcd_io_close(esp_lcd_panel_io_handle_t *io);
+
 /* A buffer the bus can send by DMA. Free it with heap_caps_free. */
 uint8_t *lcd_io_alloc(size_t bytes);
 
