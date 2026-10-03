@@ -17,8 +17,9 @@ speaker, side by side with the alternatives:
 - the screen filled, the edges that do not fit cut off (--fit keeps the
   whole picture and letterboxes it); black bars the source carries in its
   own picture, a 4:3 film posted as 16:9, are found and cut first;
-- the source's frame rate up to 25, which the board shows without
-  dropping frames; 50 becomes 25 and anything else faster 24;
+- the source's frame rate up to 24, anything faster 24: the board shows
+  24 a second in step with its refresh, each frame for two refreshes
+  (48 Hz), and leaves frames out of a quicker clip;
 - JPEG quality 2, the best (a frame decodes in about 29 ms);
 - 50% more colour than the source and the shadows lifted a little: the TN
   panel washes colour out and shows its first steps of grey as black;
@@ -58,7 +59,7 @@ from concurrent.futures import ThreadPoolExecutor
 MAGIC = b"PTV2"
 SOUND, STEREO = 1, 2            # the header's flags
 RATE = 44100                    # about what the sound is made at; see sound_rate()
-MAX_FPS = 25
+MAX_FPS = 24
 DEFAULT_SIZE = "320x240"
 DEFAULT_SLICES = 2              # one per core: the chip decodes them at the same time
 
@@ -151,13 +152,12 @@ class Source:
 
 
 def pick_fps(src):
-    """Keep slower sources. 50 halves to 25, an even step; anything else
-    above 25 becomes 24 rather than playing with dropped frames."""
+    """Keep slower sources; anything quicker becomes 24. The board shows a
+    whole screen of 24 a second in step with its refresh, two refreshes
+    each (48 Hz); more than that it leaves frames out to keep up."""
     if src <= MAX_FPS + 0.5:
         return max(1, round(src))
-    if abs(src / 2 - 25) < 0.5:
-        return 25
-    return 24
+    return MAX_FPS
 
 
 def sound_rate(fps, target=RATE):
@@ -408,7 +408,7 @@ def main():
                     help="keep the whole picture, with black bars, rather than filling the screen")
     ap.add_argument("--fill", action="store_true", help=argparse.SUPPRESS)  # the default now
     ap.add_argument("--fps", type=int, default=None,
-                    help="frames a second; the source's up to 25 if not given")
+                    help="frames a second; the source's up to 24 if not given")
     ap.add_argument("--quality", type=int, default=2,
                     help="JPEG quality, ffmpeg's -q:v: 2 (best, the default) to 31")
     ap.add_argument("--saturation", type=float, default=1.5,

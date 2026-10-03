@@ -334,9 +334,13 @@ make pull FILE=~/hello.pico DEST=copy.pico
 ### Clips
 
 The board plays its own clip format, `.ptv`: a JPEG a frame and plain PCM
-sound, which is what a 240 MHz chip can decode at 25 frames a second.
-`tools/mkvideo.py` converts anything ffmpeg reads, with the settings that
-looked and sounded best on the board as its defaults: the screen filled,
+sound, which is what a 240 MHz chip can decode at 24 frames a second --
+also as many as the panel shows of a whole screen in step with its
+refresh, which it then runs at 48 Hz, two refreshes a frame, so nothing
+tears; a quicker clip has frames left out evenly. `tools/mkvideo.py`
+converts anything ffmpeg reads, with the settings that
+looked and sounded best on the board as its defaults: 24 frames a second
+at most, the screen filled,
 JPEG quality 2, half as much colour again, the shadows lifted out of the
 panel's first greys, the English sound track (if there is one) levelled
 for a small speaker, in stereo for headphones. It shows how far it has got,
