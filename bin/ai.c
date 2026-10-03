@@ -2766,18 +2766,19 @@ static int read_question(const struct chat *ch, char *buf, size_t size)
 PT_COMPLETE(ai, ": study code web resume -m -d\ncode: <dir>\n-d: <dir>\nresume: last\n")
 
 PT_PROGRAM_STACK(ai, AI_STACK_KB, "talk to a language model, over OpenRouter\n"
-	   "usage: ai [-m model] [-d dir] [study|code|web]\n"
+	   "usage: ai [-m model] [-d dir] [study | code | web]\n"
 	   "          [question]\n"
-	   "       ai resume [last|session-id]\n"
-	   "Chats auto-save; ai starts a new conversation.\n"
-	   "All modes use file tools in a working folder and\n"
-	   "~/notes; changes and commands ask first. Study uses\n"
-	   "~/notes by default; code uses the current folder.\n"
-	   "-d selects a folder. With a\n"
-	   "question it answers it and ends; without, a full-\n"
-	   "screen chat with scrolling, editing and history\n"
-	   "(/help there). The key is ~/.config/openrouter, the\n"
-	   "models of each mode ~/.config/ai.")
+	   "       ai resume [last | session-id]\n"
+	   "Without a question, a full-screen chat: scrolling,\n"
+	   "editing, history, /help for the rest. With one, the\n"
+	   "answer, and ai ends. Chats save themselves; resume\n"
+	   "goes back to one.\n"
+	   "study works in ~/notes, code in the current folder,\n"
+	   "web looks things up with sources; -d picks the\n"
+	   "folder. Every mode reads files there and in ~/notes\n"
+	   "and asks before changing one or running a command.\n"
+	   "The key is ~/.config/openrouter, each mode's model\n"
+	   "~/.config/ai.")
 {
 	struct chat *ch = pt_calloc(1, sizeof(*ch));
 	struct pt_winsize ws = { 53, 23 };
