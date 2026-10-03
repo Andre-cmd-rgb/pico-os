@@ -1,5 +1,6 @@
 # Build output: the firmware in build/<board>/, pico's PC tools in lang/build/
 build/
+build-*/
 lang/build/
 
 # Made from sdkconfig.defaults and the board file; those are the source
@@ -9,8 +10,19 @@ sdkconfig.old
 # Downloaded by the component manager (dependencies.lock pins the versions)
 managed_components/
 
-# Clips made by tools/mkvideo.py and tools/ytgrab.py
+# Local clips made by the pico-os-tools companion utilities
 clips/
+
+# Local downloads and converted clips from the video tools; keep the scripts.
+/tools/*.mp4
+/tools/*.webm
+/tools/*.ptv
+/tools/*.part
+
+# Local service credentials, if used by host tools.
+.env
+.env.*
+!.env.example
 
 # Editor and tool caches
 .cache/
