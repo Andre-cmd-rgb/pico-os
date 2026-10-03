@@ -8,15 +8,13 @@
    and back to sleep at once if a flat cell woke only to find it still flat
    -- then the PSRAM self test
 2. status LED, serial console, process table, CPU frequency policy
-3. display, terminal and console
-4. sound, then the keyboards: CardKB, USB
-5. `/` (the root filesystem); the user's name and time zone
-   (`kernel/user.c`), then the standard directories, `/home/NAME` among
-   them; the clock and the battery, which read what they saved there;
-   `/tmp`, `/mnt/sd`
-6. `setup -f`, the first start's questions, while there is no `/etc/user`
-7. `/etc/rc`, if it exists
-8. a login shell, restarted whenever it exits
+3. Wi-Fi driver, then `/` (the root filesystem); restore the user's name,
+   time zone, standard directories and clock before the display starts
+4. display, terminals and console; restore rotation and theme from `/etc`
+5. sound, keyboards, USB storage, battery, `/tmp`, `/mnt/sd`
+6. saved Wi-Fi networks, alarms, idle policy, network console and modem
+7. `setup -f`, the first start's questions, while there is no `/etc/user`
+8. `/etc/rc`, if it exists, then a login shell, restarted whenever it exits
 
 A driver that is switched off compiles to stubs returning `-ENODEV`, so the
 boot sequence never changes shape from one board to the next.
@@ -86,7 +84,7 @@ path belongs to the mount with the longest matching path, as on Linux.
 |---|---|---|
 | `/` | `/rootfs` | `drivers/storage/rootfs.c`: LittleFS (default), FAT, or a RAM disk for QEMU |
 | `/tmp` | `/tmpfs` | `drivers/storage/ramdisk.c`: FAT on PSRAM |
-| `/mnt/sd` | `/sdcard` | `drivers/storage/sdcard.c`: FAT32 over SPI |
+| `/mnt/sd` | `/sdcard` | `drivers/storage/sdcard.c`: FAT over SDMMC or SPI, selected by board |
 
 Mount points are real directories on `/`, created at boot before anything is
 mounted on them. When the SD card is out, `/mnt/sd` is just that empty
@@ -161,18 +159,27 @@ second to 57.
 ## The speaker is shared
 
 `drivers/audio/audio.c` is a mixer. Every task that writes gets a stream,
-a ring of its samples in PSRAM at its own rate; a kernel task on core 0
-takes a block from each, brings it to the rate on the wire (the highest
-any stream with samples wants) by linear interpolation, adds them up and
-hands them to I2S, whose DMA paces everything. A writer blocks while its
-ring is full, so a program timed by its sound still runs at its rate.
+a ring of its frames (left and right; a mono writer's are doubled) in
+PSRAM at its own rate; a kernel task on core 0 takes a block from each,
+brings it to the rate on the wire (the highest any stream with samples
+wants) by linear interpolation, adds them up, limits the block's peak
+before it can clip, then hands it to I2S. Its DMA paces everything. The
+limiter reduces gain immediately and releases it over about 125 ms; a
+single stream below full scale passes unchanged. For the speaker the two
+sides are folded into one and sent as 16 bits; the speaker's 100% is the
+codec's full 0 dB. For the headphone DAC they stay apart and go out as
+32 bits, the limiter's gain and the jack's own volume (0.6 dB a percent,
+`levels.h`) multiplied in at once, so turning it down rounds nothing
+away. The two outputs keep a volume each; `audio_set_volume()` sets the
+one in use. A writer blocks while its ring is full, so a program timed
+by its sound still runs at its rate.
 `audio_set_latency()` sizes the ring: a second for `play` (a card busy
 writing a screenshot never runs it dry), 50 ms for the NES and a clip,
 whose sound has to keep up with the picture. `audio_stop()` plays the
 caller's queue out, `audio_discard()` drops it (a pause), and a stream
 whose process has gone is freed by the mixer. The alarm still takes the
-speaker over (`audio_claim`), and the others go on at their pace,
-unheard. After 5 s of silence the codec goes into standby, and before
+speaker over (`audio_claim`), headphones or not, and the others go on
+at their pace, unheard. After 5 s of silence the codec goes into standby, and before
 deep sleep `audio_sleep()` puts it there and holds the amplifier's
 shutdown pin.
 
@@ -214,8 +221,31 @@ moment -- and `lcd_draw_native()` asks the panel which line it is
 refreshing (0x45, Get Scanline; a dummy bit first, so the count arrives
 shifted by one). The clip player turns each frame into the panel's own
 order (`canvas_blit_native`, 16-pixel tiles) and sends it in bands of
-rows, each only once the refresh has passed it, so no refresh meets a
-half-sent band. Two things only the panel could show: its row order bit
+rows, each only once the refresh has passed it. FRMCTR1 uses RTNA=31
+(nominal 61 Hz) to give the transfer more time. Each transfer starts near
+the start of a refresh. Bands use 32 rows, or 64 for odd pixel widths,
+and keep their PSRAM DMA addresses on 64-byte
+cache lines, including cropped frames and reversed scan order; varying
+their height used to trigger internal-RAM bounce buffers mid-frame.
+The blitter and helper decoders share core 0 at priority 4, leaving the
+main decoder and SD reader on core 1. Moving a priority-6 blitter onto
+that core worsened playback in the user's test and has been reverted.
+If a refresh catches up, finish the
+same frame and report it as late, rather than leave half of an old image.
+Long polling gaps can hide a wrap and are counted as late too. Actual
+transfer errors remain separate; playback reports the average and maximum
+panel time, including waits for the refresh. Failed native transfers,
+allocations or rotation do not become unsynchronised landscape writes.
+`tools/video_scanout_test.py` runs the actual function against a simulated
+panel/DMA clock, including cropped and reversed bands, whole-frame
+coherence, preemption and I/O errors. Hardware still needs a visual check.
+The ESP-IDF LCD colour callback disables the D/C GPIO output before it
+wakes the sender. `lcd_io_read()` must acquire the SPI reader's bus before
+remapping CS and re-enable D/C output before sending Get Scanline: merely
+setting the pin's level leaves it undriven. This defect made refresh reads
+unreliable after pixel transfers. `tools/lcd_io_test.py` exercises the real
+read function with D/C initially disabled, both CS routes and error cleanup.
+Two things only the panel could show: its row order bit
 (MY) turns the refresh round too, so it is never changed between frames;
 and with MY set the refresh runs from the last row to the first.
 `lcdtest tear up|down|land` flashes red and blue frames sent each way:
@@ -245,14 +275,65 @@ of internal RAM.
 esp_http_client with the answer streamed back as server-sent events,
 laid out as it comes (words wrapped to the screen, Markdown turned into
 SGR, links into numbered sources). Each mode sends a list of models and
-OpenRouter moves down it when one is busy. In code mode the request
-carries five tools; the program loops, running what the model asks for
-(each change and command confirmed by the user, every path held inside
-the project by `inside()`) and sending the results back, until it
+OpenRouter moves down it when one is busy. All modes carry file and command
+tools; the program loops, running what the model asks for
+(notes changes and all commands always confirmed, project edits optionally
+allowed for the session, paths normalised before checking the workspace
+and notes boundaries) and sending the results back, until it
 answers in words. The conversation is kept as JSON text and trimmed from
 the front a question at a time. `bin/json.c` is the JSON it needs: a
 value found by its path over the text, with no tree and no allocation,
 and a builder that escapes strings.
+
+`bin/ai_ui.c` owns the interactive screen: a 512-row ring of rendered
+cells, the last 32 submitted prompts, UTF-8 cursor editing and slash-command
+completion. All state is per chat and allocated through `pt_malloc`.
+`ai.c` routes its Markdown output and tool messages into the ring in screen
+mode, or to stdout for one-shot and redirected use. Drawing addresses rows
+explicitly so the system bar and bottom prompt never scroll. Network reads
+poll keys between chunks/timeouts; a scrolled view stays on the same text
+as more arrives. `tools/ai_ui_test.py` exercises it under ASan/UBSan on the
+host without an API key.
+
+`bin/ai_stats.c` reads provider usage rather than estimating tokens from
+streamed characters. One header row shows mode, reported cumulative tokens
+and cost; response footers show wall time and average output tokens per
+second over request time. `/stats` shows detailed usage for the latest
+response plus chat totals. Reasoning tokens are already part
+of completion tokens. Missing final usage makes the totals incomplete.
+
+`bin/ai_session.c` saves complete message JSON separately from the 48 KiB
+API context. Each `.config/ai-sessions/*.chat` has a metadata JSON line and
+a full message array, limited to 1 MiB. Auto-save uses a temporary file and
+rename, checking short writes and close errors before replacing a snapshot.
+Listing reads metadata only and returns the 128 newest sessions. Load
+validates the JSON and rebuilds context at whole user turns, omitting saved
+display-only footers. `ai` always starts fresh; `ai resume` and `/sessions`
+offer a picker. `/history` uses a scratch Markdown file and the notes reader
+to read the full archive. Resuming never restores file approvals or starts
+old commands. Esc stops active work first and exits when idle, including
+jobs still running after the model finished. `tools/ai_session_test.py`
+checks usage, round trips, context boundaries, corruption and failed saves.
+
+`bin/ai_jobs.c` owns up to three command groups per chat. Pipe reads use
+`PT_PIPE_SETTIMEOUT` (default -1 blocking; zero polls; positive milliseconds
+wait; expiry is -EAGAIN, closed writers are EOF). Commands use /dev/null as
+input, run from the selected folder, and return after a bounded wait even
+without output. Status and stop tools can only address that chat's groups.
+Stopping sends TERM, then KILL after 500 ms; leaving the chat cleans them up.
+Cancelling a tool also cancels the remaining tools in that turn. Group
+liveness comes from the kernel, so a shell exiting with background children
+and redirected output does not cause the chat to forget a running command.
+
+`bin/ai_models.c` parses the model catalogue one record at a time in PSRAM,
+keeping text-output IDs, prices and supported reasoning efforts. Short names
+match model slugs after punctuation and optional version prefixes are
+normalised; ambiguous names use the picker. Explicit provider IDs and
+configured model choices work offline. `bin/ai_path.c` checks both roots
+and recognises the SD alias and FAT case variants when deciding whether a
+write needs the notes confirmation. `tools/ai_tools_test.py` exercises
+silent jobs, group cancellation, catalogue chunks, aliases, effort metadata,
+path boundaries and DMA band alignment under ASan/UBSan.
 
 `bin/pkg.c` installs programs from the pico-os-packages repository: its
 `index.txt` (name, version, size, SHA-256, about) and each package's
@@ -489,8 +570,8 @@ WebAssembly for instance, would be one more loader registered the same way.
 ## Testing
 
 ```sh
-make hosttest                      # the pico compiler and VM, JPEG, the text programs
-make -C lang asan                  # the a tests under AddressSanitizer and UBSan
+make hosttest                      # pico, the drivers' tests, JPEG, the text programs
+make -C lang asan                  # the pico tests under AddressSanitizer and UBSan
 make test                          # hosttest, then QEMU: no board needed
 make hwtest PORT=/dev/ttyACM0      # the shell suite on a board
 make progtest PORT=/dev/ttyACM0    # the text programs on a board, against GNU's
@@ -503,11 +584,25 @@ The board suites work in `/tmp/work` or `$HOME` and clean up. The harness
 opens the native USB port without toggling RTS/DTR, so the board keeps
 running between runs.
 
+The PC tests want Python 3, a C compiler with AddressSanitizer and UBSan,
+GNU make, coreutils and grep, ffmpeg built with libmp3lame, and libjpeg-turbo's
+`cjpeg`/`djpeg`; the board suites want pyserial, which ESP-IDF's Python
+environment has. Most of the drivers' tests compile the real driver file on
+the PC against a stub of the SDK and inject the failures a board rarely
+shows (an allocation, an I2C write, a panel command), under the sanitizers:
+`tools/*_test.c`, each run by its `.py`.
+
+`tools/video_test.py PORT CLIP` plays a clip on the board and prints the
+frames dropped; `tools/video_lifecycle_test.py` and `tools/nes_device_test.py`
+kill a clip and a game in every way there is and check the terminal and the
+memory come back. `tools/ai_screen_test.py PORT` drives the chat screen
+offline, with no key or network.
+
 ### QEMU
 
-This builds a QEMU variant (`tools/sdkconfig.qemu`) and runs
-`tools/shell_test.py`, which types commands into the shell and checks the
-output. The variant leaves out what QEMU can't emulate: display, SD, USB,
+`make test` builds the `boards/qemu.defconfig` variant and runs the shell,
+script and device language suites. The variant leaves out what QEMU can't
+emulate: display, SD, USB,
 octal PSRAM, the flash filesystems or the low-power core. `/` becomes a RAM
 disk instead.
 

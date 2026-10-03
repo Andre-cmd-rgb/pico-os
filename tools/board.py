@@ -32,6 +32,7 @@ def free_port():
 
 
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\x1b[78c]")
+PROMPT = rb"\$ (\x1b\[K)?(\r\x1b\[\d+C)?$"
 
 
 def clean(raw: bytes) -> str:
@@ -48,6 +49,7 @@ class Board:
 
     def __init__(self, target):
         self.transcript = b""
+        self.pending = b""
         self.proc = self.sock = self.ser = None
         if target.startswith("/dev/"):
             import serial
@@ -87,6 +89,9 @@ class Board:
 
     def recv(self):
         """Some bytes, b"" when the line was quiet, None when it closed."""
+        if self.pending:
+            got, self.pending = self.pending, b""
+            return got
         if self.ser:
             return self.ser.read(4096)
         try:
@@ -118,6 +123,24 @@ class Board:
             else:
                 self.sock.sendall(data[i:i + 16])
             time.sleep(0.02)
+            # The device redraws the editable command after every key. Long
+            # commands can fill the PC's USB receive queue before read_until
+            # starts, causing the bounded firmware writer to drop output.
+            if self.ser and self.ser.in_waiting:
+                self.pending += self.ser.read(self.ser.in_waiting)
+
+    def wait_prompt(self, timeout: float = 60.0) -> bytes:
+        """A fresh QEMU RAM disk starts in setup. Leave its defaults in place
+        before the suites start; a real board's setup is left to its user."""
+        if self.ser:
+            return self.read_until(PROMPT, timeout)
+        name_prompt = rb"Name \[[a-z_][a-z0-9_-]*\]: $"
+        deadline = time.monotonic() + timeout
+        got = self.read_until(rb"(?:" + PROMPT + rb"|" + name_prompt + rb")", timeout)
+        if re.search(name_prompt, got):
+            self.send(b"\x03")
+            got += self.read_until(PROMPT, max(0.0, deadline - time.monotonic()))
+        return got
 
     def run(self, cmd: str, timeout: float = 8.0) -> str:
         self.send(cmd.encode() + b"\r")

@@ -13,7 +13,7 @@
 #include "pt/sys.h"
 
 #define PT_OS_NAME	"pico-os"
-#define PT_VERSION	"1.0-beta2"
+#define PT_VERSION	"1.0-beta3"
 #define PT_MAX_FDS	16
 
 /* ------------------------------------------------------------ klog */
@@ -150,6 +150,13 @@ void	mem_release_all(struct proc *p);
  * Not for pt_realloc, which would move it to wherever pt_malloc prefers.
  */
 void	*pt_malloc_caps(size_t n, uint32_t caps);
+/*
+ * PSRAM as the chip has it, in bytes: the whole of it, and what is not
+ * free -- the heap's blocks, and what the heap was never given: the
+ * program itself, copied there at boot to run from (XIP), and what the
+ * SDK set aside. Zero and zero without PSRAM.
+ */
+void	mem_psram(size_t *total, size_t *used);
 void	dir_release_all(struct proc *p);	/* sys.c: what the program left open */
 
 /* clock.c: the time kept in /etc/clock, for a boot after the power was cut */

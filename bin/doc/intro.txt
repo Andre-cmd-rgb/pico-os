@@ -1,5 +1,5 @@
-PocketType
-==========
+pico-os
+=======
 
 A small Unix-like system for this board. It has
 processes, pipes, signals, /dev and /proc, a shell,
@@ -99,6 +99,14 @@ WHERE THINGS ARE
   `factory-reset -y` puts both filesystems back to
   empty, keeping only your Wi-Fi settings, and
   reboots.
+
+THE ASSISTANT
+
+  ai opens a chat with a language model (the key
+  goes in ~/.config/openrouter). It can read the
+  files of its folder and ~/notes, and change them
+  or run commands once you say yes. ai -d DIR picks
+  the folder; /help lists the rest.
 
 THE SHELL
 

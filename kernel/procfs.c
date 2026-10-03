@@ -43,7 +43,9 @@ static int gen_meminfo(char *b, size_t n)
 	heap_caps_get_info(&in, MALLOC_CAP_INTERNAL);
 	heap_caps_get_info(&ps, MALLOC_CAP_SPIRAM);
 	size_t in_total = in.total_free_bytes + in.total_allocated_bytes;
-	size_t ps_total = ps.total_free_bytes + ps.total_allocated_bytes;
+	size_t ps_total, ps_used;
+
+	mem_psram(&ps_total, &ps_used);
 
 	return snprintf(b, n,
 			"MemTotal:        %8zu kB\n"

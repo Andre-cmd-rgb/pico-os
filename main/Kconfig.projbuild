@@ -1,4 +1,4 @@
-menu "PocketType"
+menu "pico-os"
 
 menu "System"
 
@@ -354,9 +354,10 @@ config PT_NES
 	  picture is 256x240 in the middle of the screen, sound goes to the
 	  codec, and the keyboard stands in for a joypad.
 
-	  Nofrendo is GPL v2, so a PocketType binary built with this and
-	  then given to somebody else is GPL v2 as well. Building it for
-	  yourself changes nothing.
+	  Nofrendo is Library GPL v2 and pico-os GPL v2 or later, so a
+	  binary built with this and then given to somebody else goes
+	  under the GPL (version 3, which ESP-IDF's licence fits), with
+	  its source. Building it for yourself changes nothing.
 
 endmenu
 

@@ -108,7 +108,9 @@ like.)
 ### Speaker
 
 An 8 Ω speaker in the speaker socket. The amplifier on the board is only
-switched on while something is playing.
+switched on while something is playing. The speaker control reaches the
+codec's full output range at 100%. Check that the speaker has room to move
+inside the case: contact with the case can cause rattling and distortion.
 
 ```
 $ beep                 # 1 kHz for 200 ms
@@ -127,10 +129,11 @@ the codec; `rec -g 30` turns its gain up (0 to 42 dB).
 
 The board has no jack, but the four free pins of the IO header (below)
 take one: a PCM5102A DAC module (the purple GY-PCM5102, about 2 euro)
-on the chip's second I2S controller, fed the same mix as the speaker.
+on the chip's second I2S controller. It gets the mix in stereo and in 32
+bits, the DAC's widest, with the volume applied on the way into those 32
+bits, so a quiet setting loses none of the sound's detail.
 `CONFIG_PT_AUDIO_JACK` in menuconfig (Device drivers, Sound) turns the
-driver on; the pins are the defaults there. Written without the module
-to hand: the first one on the desk is the test.
+driver on; the pins are the defaults there.
 
 | PCM5102A | Board | |
 |---|---|---|
@@ -143,18 +146,30 @@ to hand: the first one on the desk is the test.
 | FLT, DEMP, FMT | GND | normal filter, no de-emphasis, I2S (pads H1L, H2L and H4L on the back to L) |
 | XSMT | 3V3 | not muted (pad H3L to H) |
 
+Keep BCK, LCK and DIN short, with the ground wire running alongside
+them: they carry a 2.8 MHz clock, and a long loop picks up the Wi-Fi.
+
 A socket with a switch says when a plug is in: wire the switch between
 **GPIO 21** and GND (it has a pull-up; `CONFIG_PT_AUDIO_JACK_DETECT_LOW`
 off for a switch to 3.3 V). Then sound goes to the headphones while a
 plug is in and back to the speaker when it comes out; without one,
 `volume jack` and `volume speaker` choose, and `/etc/power` keeps the
-choice. It is one or the other, never both, and the jack is mono like
-the rest of the sound here.
+choice. It is one or the other, never both, and an alarm always rings on
+the speaker.
 
-The DAC plays at line level (2.1 V RMS at full scale), far too loud for
-earbuds, so the jack's volume is a multiplier on the codec's curve: 70%
-is about -12 dB. The module's own jack is fine for a first try; in the
-case a panel-mount socket with a switch wires to its L, R and GND.
+The DAC plays at line level, 2.1 V RMS at full scale, which is far too
+loud for headphones, so the jack has a volume of its own, kept apart
+from the speaker's: it starts at 40%, and each percent is 0.6 dB (50% is
+30 dB under full scale). `volume` sets the one that is playing.
+
+The PCM5102A's output is made for a line input (1 kΩ or more). Low-impedance
+headphones work -- Sennheiser's HD 450SE are 18 Ω and need only tens of
+millivolts, so it runs nowhere near its limit -- but they draw more
+current from it than it is designed for, and loud passages distort
+first. For the cleanest sound put a small headphone amplifier after it,
+or use headphones of 100 Ω or more. Some of these boards have a 470 Ω
+resistor in series with each output (look for two `471` parts by the
+socket): then headphones come out quiet, and want the volume near the top.
 
 ### microSD card
 
@@ -373,7 +388,7 @@ speaker and a card attached:
 | Upside down | **Rotation** 3 instead of 1 |
 | `es8311: no codec` | `i2cdetect`: nothing at all means the bus is held down, probably by whatever is on the keyboard header — unplug it and reboot |
 | No sound, but the codec is found | the amplifier's pin is a shutdown input, not an enable: toggle **The amplifier runs when that pin is low** in menuconfig |
-| Sound is distorted | `volume 60` or lower; a 1 W speaker clips long before the amplifier does |
+| Sound is distorted | check the speaker's clearance and mounting in the case; lower `volume` if the speaker or amplifier is overdriven |
 | Screen lights up but stays blank | menuconfig → **Start-up sequence**: try the standard table instead of the alternative |
 | Noise or torn lines on the screen | the panel runs at 80 MHz here, which is well over its datasheet: drop **Bus clock** to 40000000 |
 | `sd: no usable card` | reseat it; try another card; `PT_SD_MMC_D1` = -1 (one-wire mode) if the card is flaky |

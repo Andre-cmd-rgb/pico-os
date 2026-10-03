@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import time
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shell_test  # noqa: E402
@@ -31,8 +32,13 @@ def main():
 
     problems = []
     samples = []
+    suffix = uuid.uuid4().hex[:8]
+    scratch = {p: p.rsplit('/', 1)[0] + '/audit-stress-' + suffix + '-' + p.rsplit('/', 1)[1]
+               for p in ('/tmp/st.tmp', '/tmp/st2.tmp', '/tmp/storm.sh', '/tmp/storm2.sh', '/st.tmp')}
 
     def run(cmd, timeout=20.0):
+        for path in sorted(scratch, key=len, reverse=True):
+            cmd = cmd.replace(path, scratch[path])
         out = b.run(cmd, timeout)
         if TROUBLE.search(out):
             problems.append((cmd, out.strip()[-300:]))

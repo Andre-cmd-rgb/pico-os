@@ -3,7 +3,7 @@
 Each file here turns on the drivers a board has and sets their pins, the
 way `arch/*/configs/*_defconfig` does in the Linux kernel. Every driver can
 also be switched on by itself in `make menuconfig` under
-*PocketType → Device drivers*; a board file is only a starting set.
+*pico-os → Device drivers*; a board file is only a starting set.
 
 ```sh
 make BOARD=freenove-fnk0104b       # the default

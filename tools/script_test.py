@@ -6,12 +6,14 @@ functions, $((...)), $(...), test, break/continue and scripts.
     python3 tools/script_test.py /dev/ttyACM0
 
 Works on a board over the serial console; the same harness as shell_test.py,
-so opening the port does not reset the board. Everything runs in /tmp/work
+so opening the port does not reset the board. Everything runs in a unique temporary directory
 and is cleaned up.
 """
 import os
+import re
 import sys
 import time
+import uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
@@ -23,6 +25,7 @@ TARGET = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "build", "qemu
 
 def main():
     b = Board(TARGET)
+    work = "/tmp/script-test-" + uuid.uuid4().hex[:8]
     checks = []
 
     def step(cmd, expect=None, reject=None, timeout=8.0):
@@ -37,9 +40,11 @@ def main():
     try:
         if b.ser:
             b.send(b"\x15\r")
-        print(clean(b.read_until(rb"\$ (\x1b\[K)?(\r\x1b\[\d+C)?$", 60)))
+        print(clean(b.wait_prompt()))
 
-        step("rm -rf /tmp/work; mkdir -p /tmp/work; cd /tmp/work; echo ready", "ready")
+        out = step(f"mkdir -p {work} && cd {work} && echo ready", "ready")
+        if not re.search(r"^ready$", out, re.M):
+            raise SystemExit("scratch setup failed; refusing to write test files")
 
         # if / elif / else
         step("if true; then echo yes; else echo no; fi", "yes", reject="no")
@@ -112,7 +117,7 @@ def main():
         # whose output was checked against bash's
         import xfer
         here = os.path.dirname(os.path.abspath(__file__))
-        if xfer.push(b, os.path.join(here, "sh_features.sh"), "/tmp/work/features.sh", "features.sh"):
+        if xfer.push(b, os.path.join(here, "sh_features.sh"), work + "/features.sh", "features.sh"):
             out = b.run("sh features.sh", 30)
             want = open(os.path.join(here, "sh_features.out")).read()
             ok = want.strip() in out
@@ -126,7 +131,10 @@ def main():
         step("rm -f ctl.sh; ls ctl.sh", "No such file")
         step("cd")
     finally:
-        b.close()
+        try:
+            b.run(f"cd; rm -rf {work}")
+        finally:
+            b.close()
 
     failed = [c for c, ok in checks if not ok]
     print("\n=== SCRIPT SUMMARY ===")

@@ -267,11 +267,16 @@ PT_PROGRAM(free, "show memory use in KB")
 		multi_heap_info_t info;
 		heap_caps_get_info(&info, pools[i].caps);
 		size_t total = info.total_free_bytes + info.total_allocated_bytes;
+		size_t used = info.total_allocated_bytes;
+
+		/* The program runs from PSRAM: count it, as Linux counts its kernel. */
+		if (pools[i].caps == MALLOC_CAP_SPIRAM)
+			mem_psram(&total, &used);
 
 		/* "low" is the least free there has ever been since boot:
 		 * the number that says how close this came to the edge. */
 		pt_printf("%-8s %7zu %7zu %7zu %7zu %7zu\n", pools[i].name, total / 1024,
-			  info.total_allocated_bytes / 1024, info.total_free_bytes / 1024,
+			  used / 1024, info.total_free_bytes / 1024,
 			  info.largest_free_block / 1024,
 			  heap_caps_get_minimum_free_size(pools[i].caps) / 1024);
 	}
@@ -356,7 +361,7 @@ PT_PROGRAM(uname, "print system information\n"
 #else
 	const char *arch = "xtensa";
 #endif
-	const char *parts[5] = { "PocketType", host, PT_VERSION, version, arch };
+	const char *parts[5] = { PT_OS_NAME, host, PT_VERSION, version, arch };
 
 	for (int i = 0, n = 0; i < 5; i++)
 		if (want[i])
@@ -854,11 +859,16 @@ static void battery_time(const struct battery_status *b, char *out, size_t size)
 static void battery_details(const struct battery_status *b)
 {
 	char time[40];
+#if CONFIG_PT_BATTERY
+	const int board_charge_ma = CONFIG_PT_BATTERY_CHARGE_MA;
+#else
+	const int board_charge_ma = 0;
+#endif
 
 	battery_time(b, time, sizeof(time));
 	pt_printf("level    %d.%d%%, %s%s\n", b->permille / 10, b->permille % 10,
 		  battery_state_name(b->state), time);
-	if (b->state == BATTERY_IDLE && !CONFIG_PT_BATTERY_CHARGE_MA)
+	if (b->state == BATTERY_IDLE && !board_charge_ma)
 		pt_printf("         the board runs from USB; the charger\n"
 			  "         module on the cell's wires charges it\n");
 	else if (b->state == BATTERY_IDLE)
@@ -876,9 +886,9 @@ static void battery_details(const struct battery_status *b)
 		pt_printf("current  none\n");
 	if (b->charge_ma)
 		pt_printf("charger  %s, pushing about %d mA\n",
-			  b->usb && CONFIG_PT_BATTERY_CHARGE_MA ? "a PC on USB" : "found by the voltage",
+			  b->usb && board_charge_ma ? "a PC on USB" : "found by the voltage",
 			  b->charge_ma);
-	else if (b->usb && !CONFIG_PT_BATTERY_CHARGE_MA)
+	else if (b->usb && !board_charge_ma)
 		pt_printf("charger  none: on USB the cell rests\n");
 	else
 		pt_printf("charger  %s\n", b->usb ? "a PC on USB, not charging now" :
@@ -1184,6 +1194,12 @@ PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 	   "  scan   where its refresh is, sampled over 25 ms\n"
 	   "  dir    which way video assumes the refresh runs")
 {
+	if (!vt_has_display()) {
+		pt_dprintf(PT_STDERR, "lcdtest: display disabled in menuconfig\n");
+		return 1;
+	}
+	if (argc >= 2 && (!strcmp(argv[1], "scan") || !strcmp(argv[1], "read")))
+		power_screen_wake();
 	if (argc == 3 && !strcmp(argv[1], "tear")) {
 		/*
 		 * Three seconds of the screen changing colour as fast as it can,
@@ -1238,7 +1254,12 @@ PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 		if (!v)
 			return fail("lcdtest", "scan", -ENOMEM);
 		for (int k = 0; k < 400; k++) {
-			lcd_read_reg(0x45, v[k].b, 4);
+			int err = lcd_read_reg(0x45, v[k].b, 4);
+
+			if (err) {
+				pt_free(v);
+				return fail("lcdtest", "scan", err);
+			}
 			v[k].at = pt_uptime_us();
 		}
 		for (int k = 0; k < 400; k++)
@@ -1273,10 +1294,6 @@ PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 	};
 	static const char *const names = "red green blue yellow magenta cyan white black";
 
-	if (!vt_has_display()) {
-		pt_dprintf(PT_STDERR, "lcdtest: display disabled in menuconfig\n");
-		return 1;
-	}
 	power_screen_wake();
 	pt_printf("bars left to right: %s\n"
 		  "then a white border and a red square; a key for each\n", names);

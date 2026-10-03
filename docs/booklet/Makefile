@@ -13,9 +13,6 @@ all: $(BOOKLETS:=.pdf)
 		file://$(CURDIR)/$<
 
 check:
-	@for b in $(BOOKLETS); do \
-		$(HEADLESS) --virtual-time-budget=3000 --dump-dom "file://$(CURDIR)/$$b.html#check" \
-			2>/dev/null | grep -o 'data-check="OVER[^"]*"' | sed "s/^/$$b: /"; \
-	done | grep . && exit 1 || echo "every page fits"
+	@python3 check.py --chromium "$(CHROMIUM)" $(BOOKLETS)
 
 .PHONY: all check

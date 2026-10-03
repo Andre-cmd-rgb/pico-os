@@ -1,4 +1,6 @@
-# PocketType
+# pico-os
+
+The operating system of the PocketType pocket computer.
 
 A small Unix-like system for the ESP32-S3 (and, built but not yet run, the
 ESP32-P4): a kernel with processes, pipes,
@@ -7,7 +9,7 @@ find, sort and the rest behave like GNU's) and a full-screen editor,
 drawn in PIXELTAPE's amber CRT colors on an ILI9341 screen.
 
 ```
-[0.00] PocketType 1.0-beta2 (esp-idf v6.1) #1 SMP Sep 25 2026 16:45:53
+[0.00] pico-os 1.0-beta3 (esp-idf v6.1) #1 SMP Oct  3 2026 11:07:50
 [0.05] mem: 218 KB internal, 6138 KB psram available
 [0.05] power: the keyboard answered 2498 of 2498 polls while asleep
 [0.05] power: woke on the keyboard, key 0x6f
@@ -56,7 +58,16 @@ Wiring, power and first-boot checks: **[docs/WIRING.md](docs/WIRING.md)**.
 
 ## Build and flash
 
-ESP-IDF v6.1 lives in `~/esp/esp-idf`. The Makefile wraps `idf.py`:
+It builds with ESP-IDF v6.1, which the Makefile looks for in
+`~/esp/esp-idf` (or wherever `IDF_PATH` says) and wraps `idf.py` round:
+
+```sh
+git clone --recursive --branch v6.1 https://github.com/espressif/esp-idf.git ~/esp/esp-idf
+~/esp/esp-idf/install.sh esp32s3,esp32p4
+```
+
+The first build downloads the managed components that
+`dependencies.lock.<chip>` pins, so it needs the network once.
 
 ```sh
 make boards         # the board files and what they switch on
@@ -66,7 +77,7 @@ make flash          # flash and reset, then set its clock from the PC's
 make time           # set the board's clock from the PC's
 make term           # serial console; Ctrl-] quits
 make test           # PC tests, then QEMU with the device suites
-make hosttest       # the PC tests: the pico language, JPEG, the text programs
+make hosttest       # PC: language, AI UI/tools, audio, JPEG, text programs
 make hwtest         # the shell suite on the board
 make progtest       # grep, sort, find and the rest on the board, against GNU's
 make scripttest     # shell control flow (if/for/while/case, functions)
@@ -77,11 +88,12 @@ make stress         # hammer the board for 10 minutes (SECONDS=...)
 ```
 
 Every target takes `BOARD=`, and each board builds into its own
-`build/<board>/`, so switching between them costs nothing. The board file
+`build/<board>/`. Build different boards sequentially: the component manager
+shares its downloaded directory between targets. The board file
 picks the console too: the Freenove board has one USB-C port and talks over
 USB Serial/JTAG, while the DevKitC flashes through its **COM** port and
-keeps the native **USB** port for a keyboard (`CONSOLE=usb` moves the
-console there instead).
+keeps the native **USB** port for a keyboard. Change the ESP-IDF console
+choice with `make BOARD=devkit-uno-shield menuconfig` to move it.
 
 If the board does not appear as `/dev/ttyACM*`, hold **BOOT**, tap
 **RESET**, release **BOOT**, then `make flash`.
@@ -256,31 +268,49 @@ put your key on one line in `~/.config/openrouter` and it is ready.
 ai                        # a chat, in study mode: a tutor, in Italian
 ai code ~/pico/snake      # a coding assistant working in that folder
 ai web                    # answers from a web search, with their sources
+ai -d ~/notes/history     # any mode can work in a selected folder
 ai study chi era Guicciardini    # one answer, then back to the shell
+ai resume                 # pick an older chat to read and continue
+ai resume last            # reopen the most recently saved chat
 ```
+
+With no question it is a full-screen chat: a line at the top with the
+mode, the tokens and what the chat has cost, the conversation, and the
+prompt at the bottom. Up and Down bring back earlier prompts, Tab completes
+the `/` commands (`/help` lists them), PgUp/PgDn or Fn A and the arrows
+scroll back, Esc stops an answer or a command and, with nothing running,
+leaves. Chats are saved as they go, in `~/.config/ai-sessions`: `ai resume`
+or `/sessions` picks an old one, `/history` reads the whole of it in
+`notes`, `/new` starts another.
 
 - **study** explains, summarises (*riassunto*, *schema*), links topics
   (*collegamenti*) and tests you like an oral exam (*interrogami*: one
-  question at a time, then a mark).
-- **code** has tools, like a small Claude Code: it lists, reads, writes and
-  edits the files of the project folder and runs commands there (`pico
-  file.pico`), reads the errors and fixes them. Every change and every
-  command is shown and asked for first (y, n, or a for all of them), and
-  nothing outside the folder can be touched.
+  question at a time, then a mark). It works in `~/notes`.
+- **code** works on a project, like a small Claude Code: it reads and
+  edits its files, runs its programs (`pico file.pico`), reads the errors
+  and fixes them.
 - **web** has the model search the web and answer from the results,
-  numbering its sources ($0.005 a search with the default engine).
+  numbering its sources. Searches cost a little, even with free models.
 - `/voice` records the question (cleaned as `rec` cleans it), has a model
-  that hears write it down, and sends it once you have read it.
-  OpenRouter only takes audio with $0.50 or more in the account.
+  that hears write it down, and leaves it in the prompt to check. OpenRouter
+  only takes audio with $0.50 or more in the account.
 
-Each mode's models are in `~/.config/ai`, the one wanted first and the others
-tried when it is busy; the free ones (`:free`) often are. `/model` changes
-them for the session, paid ones included; after every answer a dim line
-says which model answered and what it cost, and `/cost` what the account has
-left. Free models allow 50 requests a day, or 1000 once $10 has been bought
-in all. What each mode tells its model is `bin/ai/*.txt`, or your own
-`~/.config/ai-study.txt` (and so on). `/save` adds the last answer to
-`~/notes/ai/` as Markdown, for `notes`.
+Every mode can list, read, write and edit the files of its folder (`-d DIR`
+or `/folder DIR`) and of `~/notes`, and run commands there. Reading just
+happens; every change is shown first and asked for (`a` lets the rest of a
+project's edits through, but notes and commands are asked every time), and
+nothing outside those two folders can be touched. A command that takes a
+while goes on as a job the model can look in on or stop; `/stop` stops
+them all, and so does leaving.
+
+Each mode's models are in `~/.config/ai`, the one wanted first and the
+others tried when it is busy; the free ones (`:free`) often are. `/model`
+picks another from OpenRouter's list, prices shown, and `/effort` how hard
+it thinks. Every answer ends with how long it took; `/stats` has the
+tokens and the cost, `/cost` what the account has left. What each mode
+tells its model is `bin/ai/*.txt`, or your own `~/.config/ai-study.txt`
+(and so on). `/save` adds the last answer to `~/notes/ai/` as Markdown,
+for `notes`.
 
 ### Moving files on and off
 
@@ -304,26 +334,26 @@ make pull FILE=~/hello.pico DEST=copy.pico
 ### Clips
 
 The board plays its own clip format, `.ptv`: a JPEG a frame and plain PCM
-sound, which is what a 240 MHz chip can decode at 30 frames a second. The
-PC converts a video with ffmpeg, and fetches one first with yt-dlp; both
-need to be on the PATH. A copy stays in `clips/`.
+sound, which is what a 240 MHz chip can decode at 25 frames a second.
+`tools/mkvideo.py` converts anything ffmpeg reads, with the settings that
+looked and sounded best on the board as its defaults: the screen filled,
+JPEG quality 2, half as much colour again, the shadows lifted out of the
+panel's first greys, the English sound track (if there is one) levelled
+for a small speaker, in stereo for headphones. It shows how far it has got,
+and where the PC's graphics can decode the source (VA-API) they do,
+about half again as fast as the processor alone.
 
 ```sh
-make video FILE=film.mp4                 # convert and send to ~/video
-make yt URL=https://...                  # fetch, convert and send
-python3 tools/mkvideo.py film.mp4 film.ptv --fps 24   # just convert
-python3 tools/mkvideo.py ep.mkv ep.ptv --fill --audio eng  # full screen, the English track
+make video FILE=film.mkv                 # into clips/, then to ~/video if small
+python3 tools/mkvideo.py film.mkv        # film.ptv beside it
+python3 tools/mkvideo.py ep.mkv --audio ita --fit   # Italian, whole picture
+python3 tools/mkvideo.py old.mp4 --denoise 2 --start 1:00 --length 30
 ```
 
-A 16:9 picture is letterboxed to 320x176 unless `--fill` covers the
-screen and cuts the sides; `--audio` picks one sound track of several
-(a language, or a number from 0). A dark film's shadows (a luma of 5 to
-20) land where the board cuts to black, and come out as black blots in
-a dim face and specks in a dark sweater: `--lift 1` raises them clear
-while black stays black. `--loud -14` brings quiet film sound up and
-evens it out for the small speaker. A long clip is big (a 45-minute
-episode is about a gigabyte): copying it onto the card on the PC is
-quicker than `make push`, which goes at about 100 KB/s.
+A 45-minute episode converts in two or three minutes and comes out at
+about 1.5 GB, which the serial port would take hours over: `make video`
+leaves a big clip in `clips/` to be copied into `video/` on the card.
+Downloading from the web is in the separate pico-os-tools (`ytgrab.py`).
 
 ## Speed and power
 
@@ -426,6 +456,10 @@ from 1970.
 | `/tmp` write, a line at a time | 49,300 lines/s |
 | display bus, full frames | 53 fps (7.8 MB/s) on the Freenove panel at 80 MHz |
 
+The NES runs at 37 frames a second drawing every one (`nes -f 0`), and at
+full speed drawing every other one, the default. The panel refreshes at
+71 Hz.
+
 The `/` numbers are what the flash sustains once its blocks have been used:
 every 4 KB must be erased before it is written again. Freshly formatted flash
 writes about four times faster (500 KB/s, 9,300 lines/s) until it has been
@@ -493,8 +527,11 @@ docs/       wiring, architecture, the language
 
 ## Licence
 
-Copyright 2026 Andre. PocketType is free software under the GNU General
-Public License, version 2 (`LICENSE`): use it, change it and share it, as
-long as what you share goes out under the same licence, with its source.
-The NES emulator core in `third_party/nofrendo/` is GPL v2 as well; the MP3
-decoder in `third_party/minimp3/` is public domain (CC0).
+Copyright 2026 Andre. pico-os is free software under the GNU General
+Public License, version 2 or (at your option) any later version
+(`LICENSE` is version 2): use it, change it and share it, as long as what
+you share goes out under the same licence, with its source. A firmware
+image goes out under version 3, the one that also fits ESP-IDF's Apache
+2.0 licence. The NES emulator core in `third_party/nofrendo/` is Library
+GPL v2, which allows that too; the MP3 decoder in `third_party/minimp3/`
+is public domain (CC0).

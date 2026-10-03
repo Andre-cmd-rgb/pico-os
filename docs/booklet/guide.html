@@ -28,7 +28,7 @@
 		<b>Part 2</b> calendar, music, video, games,<br>
 		the internet, looks, every command
 	</div>
-	<div><span class="ver">1.0 beta 2</span></div>
+	<div><span class="ver">1.0 beta 3</span></div>
 </section>
 
 <section class="page toc">
@@ -215,7 +215,7 @@ find ~ -name '*.mp3' | wc -l</pre>
 		themes, when something goes wrong,<br>
 		and every command on the back
 	</div>
-	<div><span class="ver">1.0 beta 2</span></div>
+	<div><span class="ver">1.0 beta 3</span></div>
 </section>
 
 <section class="page">
@@ -281,9 +281,8 @@ find ~ -name '*.mp3' | wc -l</pre>
 	</dl>
 	<h3>Making clips</h3>
 	<p>The machine plays its own kind of file, made on the PC from any video:</p>
-	<pre>tools/mkvideo.py film.mp4 film.ptv
-tools/ytgrab.py <span class="c">YOUTUBE-LINK</span></pre>
-	<p>then copy the <code>.ptv</code> into <code>video/</code> on the SD card.</p>
+	<pre>make video FILE=film.mkv</pre>
+	<p>then copy the <code>.ptv</code> from <code>clips/</code> into <code>video/</code> on the SD card.</p>
 	<h3>Photos</h3>
 	<dl>
 		<dt>view</dt><dd>JPEG or BMP from <code>~/photos</code></dd>

@@ -154,19 +154,26 @@ PACKAGES
   pkg remove NAME   pkg search WORD, pkg info NAME
 
 ASSISTANT
-  ai                a chat; study mode is a tutor
-                    that answers in Italian
+  ai                full-screen chat; study is a
+                    tutor that answers in Italian
   ai code [DIR]     a coding assistant: it reads,
                     writes and runs the files in
                     DIR, asking before each change
   ai web            answers from a web search, with
                     numbered sources
   ai study QUESTION one answer, then the shell
-  In the chat: /voice says the question aloud,
-  /model changes the model (paid ones too), /save
-  keeps the answer in ~/notes/ai, /cost shows the
-  account, /help the rest. The key is
-  ~/.config/openrouter; the models ~/.config/ai.
+  ai -d DIR         any mode, working in DIR
+  ai resume [last]  pick an old chat, or the newest
+  In the chat: Esc stops an answer, or leaves; Tab
+  completes /commands; PgUp/PgDn scroll (Fn P/N).
+  /model and /effort pick from a list, /folder DIR
+  moves, /voice speaks the question, /history reads
+  the whole chat, /new starts another, /stats and
+  /cost say what it cost, /save keeps the answer in
+  ~/notes/ai, /help the rest. Changes to files and
+  every command are asked for first. The key is
+  ~/.config/openrouter; the models ~/.config/ai;
+  chats are kept in ~/.config/ai-sessions.
 
 NETWORK
   wifi              what the radio is doing
@@ -211,8 +218,11 @@ VIDEO
   0-9               0% to 90% of the way in
   A clip goes on from where it was stopped; 0 at the
   question starts it again.
+  video -v CLIP     then say how many frames were
+                    shown and dropped, and how long
+                    each took to read, decode, send
   video -i CLIP     index an older clip: quick jumps
-  On the PC: make video FILE=something.mp4
+  On the PC: make video FILE=something.mkv
 
 PICTURES
   view              pick one from ~/photos
@@ -225,6 +235,7 @@ GAMES
   nes               pick a game from ~/roms
   nes ROM.nes       a NES emulator; q quits, p saves
                     a screenshot
+  nes -v ROM.nes    then say how fast it ran
   pad on            the Bluetooth radio
   pad scan          look for a gamepad
   pad connect N     join one

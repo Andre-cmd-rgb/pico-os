@@ -4,7 +4,7 @@
     make test                    boot build/qemu/flash.bin in QEMU
     make hwtest PORT=/dev/ttyACM0   run the same checks on a real board
 
-On a board the checks work in /tmp/work and clean up after themselves. Opening
+On a board the checks use a unique temporary directory and clean up afterward. Opening
 the port does not reset the board.
 
 Needs Espressif's QEMU: `python $IDF_PATH/tools/idf_tools.py install qemu-xtensa`
@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+import uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
@@ -32,9 +33,12 @@ def main():
 
 
 def run_tests(b):
+    suffix = uuid.uuid4().hex[:8]
+    work = "/tmp/work-" + suffix
+    persist = ".pico-audit-" + suffix
     if b.ser:
         b.send(b"\x15\r")	# a board is already running: just get a fresh prompt
-    boot = clean(b.read_until(rb"\$ (\x1b\[K)?(\r\x1b\[\d+C)?$", 60))
+    boot = clean(b.wait_prompt())
     print("=== BOOT ===")
     print(boot)
 
@@ -57,22 +61,35 @@ def run_tests(b):
         print(out)
         return out
 
-    scratch = " ".join("/tmp/work/" + f for f in
+    scratch = " ".join(work + "/" + f for f in
                        "test.txt a d s.sh notes.txt notes.txt.tmp big.txt x1.txt x2.txt".split())
     step("rm -rf " + scratch + "; cd")
-    step("uname -a", "PocketType pockettype 1.0-beta2")
+    with open(os.path.join(ROOT, "kernel/include/pt/kernel.h")) as f:
+        version = re.search(r'#define\s+PT_VERSION\s+"([^"]+)"', f.read()).group(1)
+    step("uname -a", ["pico-os ", version])
     step("help", ["ls", "edit", "ps", "Commands"])
     step("help ls", "list directory contents")
     step("ls /", ["bin/", "dev/", "etc/", "home/", "mnt/", "proc/", "tmp/"], reject="flash")
     step("ls /proc", ["meminfo", "version"])
-    step("cat /proc/version", "PocketType version")
+    step("cat /proc/version", "pico-os version")
     step("cat /proc/meminfo", "MemTotal")
-    step("pwd", "/home/andre")
-    step("mkdir -p /tmp/work && cd /tmp/work && pwd", "/tmp/work")
+    identity = b.run("printf '\\n@@USER:%s@@\\n' \"$USER\"")
+    user = re.search(r"(?m)^@@USER:([a-z_][a-z0-9_-]*)@@$", identity)
+    if not user:
+        raise RuntimeError("cannot read the board's user name: " + identity)
+    user = user.group(1)
+    step("pwd", "/home/" + user)
+    # FAT cannot set file times before 1980; a fresh QEMU clock is 1970.
+    now = time.time()
+    step(time.strftime("date -s '%Y-%m-%d %H:%M:%S' && date +%Y-%m-%dT%H:%M", time.localtime(now)),
+         any_of=[time.strftime("%Y-%m-%dT%H:%M", time.localtime(t)) for t in (now, now + 60)])
+    out = step(f"mkdir -p {work} && cd {work} && pwd", work)
+    if not re.search(rf"^{re.escape(work)}$", out, re.M):
+        raise SystemExit("scratch setup failed; refusing to write test files")
     step("ls -la /", ["bin/", "etc/", "home/"])
-    step("echo hello > /tmp/work/test.txt; cat /tmp/work/test.txt", "hello")
+    step(f"echo hello > {work}/test.txt; cat {work}/test.txt", "hello")
     step("echo more >> test.txt; wc test.txt", " 2  2 11 test.txt")
-    step("mkdir -p /tmp/work/a/b/c && ls /tmp/work/a/b", "c/")
+    step(f"mkdir -p {work}/a/b/c && ls {work}/a/b", "c/")
     step("cp test.txt a/ && mv a/test.txt a/t2.txt && ls a", ["b/", "t2.txt"])
     step("rm a; echo $?", ["is a directory", "1"])
     step("rm -r a && ls", reject="a/")
@@ -80,9 +97,9 @@ def run_tests(b):
     # /proc grows a file per driver that registers one, so check the names
     step("ls /proc", ["cpuinfo", "kmsg", "meminfo", "mounts", "uptime", "version"])
     step("cat /proc/mounts", [" / ", "/tmp tmpfs"])
-    step("echo keep > $HOME/.persist && cat $HOME/.persist", "keep")
+    step(f"echo keep > $HOME/{persist} && cat $HOME/{persist}", "keep")
     step("cat < test.txt | wc -c", "11")
-    step("echo $HOME $USER", "/home/andre andre")
+    step("echo $HOME $USER", f"/home/{user} {user}")
     step("false; echo status=$?", "status=1")
     step("true && echo yes || echo no", "yes", reject="no")
     step("false && echo yes || echo no", "no", reject="yes\n")
@@ -96,17 +113,12 @@ def run_tests(b):
     step("ps -a", "KERNEL TASK")
     step("free", ["internal", "psram"])
     step("df", ["/", "/tmp"])
-    step("dmesg | head -n 3", "PocketType")
+    step("dmesg | head -n 3", "pico-os")
     step("uptime", "processes")
-    # set it to this PC's time: the board keeps it (/etc/clock), so a
-    # made-up date would stay behind after the test
-    now = time.time()
-    step(time.strftime("date -s '%Y-%m-%d %H:%M:%S' && date +%Y-%m-%dT%H:%M", time.localtime(now)),
-         any_of=[time.strftime("%Y-%m-%dT%H:%M", time.localtime(t)) for t in (now, now + 60)])
     step("cp test.txt test.txt; mv test.txt ./test.txt; cat test.txt",
          ["are the same file", "hello", "more"])
     step("mkdir d && cp -r d d/inner; rm -r d", "into itself")
-    step("rm -r /tmp; rm -rf /; ls /tmp/work", ["refusing to remove /tmp", "refusing to remove /", "test.txt"])
+    step(f"rm -r /tmp; rm -rf /; ls {work}", ["refusing to remove /tmp", "refusing to remove /", "test.txt"])
     step("cat /proc/kmsg /proc/kmsg /proc/kmsg /proc/kmsg /proc/kmsg > big.txt; wc -c big.txt")
     step("cat big.txt | head -n 1; echo pipe=$?", ["pipe=0"], reject="Broken pipe")
     step("rm big.txt")
@@ -115,7 +127,7 @@ def run_tests(b):
     step("ls /nope > /dev/null 2>&1; echo quiet=$?", "quiet=2", reject="No such")
     step("export PS1='[\\W]\\$ '", None)
     step("echo prompt")
-    checks[-1] = ("PS1 prompt", b"[work]$ " in b.last_raw)
+    checks[-1] = ("PS1 prompt", ("[" + work.rsplit("/", 1)[-1] + "]$ ").encode() in b.last_raw)
     step("unset PS1", None)
     step("hexdump test.txt", ["68 65 6c 6c 6f", "|hello"])
     step("head -n 1 test.txt; tail -n 1 test.txt", ["hello", "more"])
@@ -193,23 +205,26 @@ def run_tests(b):
     step("i2cdetect", any_of=[missing, "devices", "device\n", "usage: i2cdetect"])
     step("volume", any_of=[missing, "volume ", "no audio codec"])
     # a beep that works says nothing at all, so ask the shell how it went
-    step("beep 440 50; echo beep=$?", any_of=[missing, "no audio codec", "beep=0"])
+    if os.environ.get("PT_TEST_SILENT") == "1":
+        print("SKIP beep: PT_TEST_SILENT=1")
+    else:
+        step("beep 440 50; echo beep=$?", any_of=[missing, "no audio codec", "beep=0"])
     step("play /nope.wav", any_of=[missing, "no audio codec", "No such file"])
-    step("rec -t 1 /tmp/work/r.wav", any_of=[missing, "no audio codec", "recording"],
+    step(f"rec -t 1 {work}/r.wav", any_of=[missing, "no audio codec", "recording"],
          timeout=12)
     step("backlight", any_of=[missing, "backlight "])
     step("ls /dev", any_of=["null", "zero"])
     step("wifi", any_of=[missing, "wifi:"])
-    step("picofetch", ["OS: PocketType", "CPU:", "Memory:", "Disk (/):"])
+    step("picofetch", ["OS: pico-os", "CPU:", "Memory:", "Disk (/):"])
     step("calc '2^10/4'; calc 50%", ["256", "0.5"])
-    step("HOME=/tmp/work ai study x 2>&1; echo $?", ["no key", "1"])
+    step(f"HOME={work} ai study x 2>&1; echo $?", ["put your key", "\n1\n"])
     step("pkg frobnicate 2>&1; echo $?", ["usage: pkg", "2"])
     step("wifi scan", any_of=[missing, "networks", "network", "radio is off"], timeout=20)
     step("ntp", any_of=[missing, "no network", ":"], timeout=15)
-    step("modem", any_of=[missing, "no modem", "module"])
+    step("modem", any_of=[missing, "no modem", "module", "radio off", "radio on"])
     step("sms", any_of=[missing, "no modem", "message", "SIM"])
     step("cat /proc/net", any_of=[missing, "No such file", "interface wlan0", "wifi: off"])
-    step("screenshot /tmp/work/shot.bmp", any_of=[missing, "no screen", ".bmp"], timeout=20)
+    step(f"screenshot {work}/shot.bmp", any_of=[missing, "no screen", ".bmp"], timeout=20)
     step("nes /nope.nes", any_of=[missing, "no screen", "No such file", "not a ROM"])
 
     # the greeting a restarted login shell prints (/etc/motd)
@@ -217,7 +232,7 @@ def run_tests(b):
     step("echo back", "back")
     step("cat /proc/kmsg | grep init", "restarting")
 
-    b.run("rm -rf /tmp/work $HOME/.persist; cd")
+    b.run(f"rm -rf {work} $HOME/{persist}; cd")
     print("\n=== SUMMARY ===")
     failed = [c for c, ok in checks if not ok]
     for c, ok in checks:

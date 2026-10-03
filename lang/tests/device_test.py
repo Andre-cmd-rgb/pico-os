@@ -5,11 +5,12 @@
 
 It types a small program into the shell, compiles and runs it both ways
 (`pico program.pico` and `picoc` then `./program`), and checks a runtime error and
-the built-in help. Everything happens under $HOME and is cleaned up.
+the built-in help. Everything happens in a fresh /tmp directory and is cleaned up.
 """
 import os
 import sys
 import time
+import uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
@@ -49,6 +50,7 @@ BAD = [
 
 def main():
     b = Board(TARGET)
+    work = "/tmp/lang-" + uuid.uuid4().hex[:8]
     checks = []
 
     def step(cmd, expect=None, reject=None, timeout=20.0):
@@ -63,22 +65,24 @@ def main():
     try:
         if b.ser:
             b.send(b"\x15\r")
-        print(clean(b.read_until(rb"\$ (\x1b\[K)?(\r\x1b\[\d+C)?$", 60)))
+        print(clean(b.wait_prompt()))
 
-        step("cd; rm -f hello.pico hello bad.pico lang.txt; echo ready", "ready")
+        out = step(f"mkdir {work} && cd {work} && pwd", work)
+        if work not in out:
+            raise RuntimeError("cannot establish device test scratch directory")
         for i, line in enumerate(PROGRAM):
             b.run(f"echo '{line}' {'>' if i == 0 else '>>'} hello.pico")
         for i, line in enumerate(BAD):
             b.run(f"echo '{line}' {'>' if i == 0 else '>>'} bad.pico")
 
-        step("wc -l hello.pico", "hello.pico")
+        step("wc -l hello.pico", f"{len(PROGRAM)} hello.pico")
         step("help pico", "run a pico program")
         step("help picoc", "compile a pico program")
         # compile in memory and run
         step("pico hello.pico andre", ["hello andre, dist2 = 25", "squares: [1, 4, 9, 16, 25]",
                                   "read back: written by a"])
         # compile to a file, then run it through the loader
-        step("picoc hello.pico && ls -l hello", "hello")
+        step("picoc hello.pico && ls -l hello", "hello", reject="error:")
         step("./hello board", ["hello board, dist2 = 25", "squares: [1, 4, 9, 16, 25]"])
         step("./hello; echo status=$?", "status=0")
         # runtime errors name the line and stop with a non-zero status
@@ -104,6 +108,7 @@ def main():
 
         step("rm -f hello.pico hello bad.pico bad2.pico lang.txt spawn.pico loop.pico; ls hello.pico", "No such file")
     finally:
+        b.run(f"cd; rm -rf {work}")
         b.close()
 
     bad = [c for c, ok in checks if not ok]

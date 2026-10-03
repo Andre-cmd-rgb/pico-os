@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "esp_psram.h"
 
 #include "pt/kernel.h"
 
@@ -127,4 +128,14 @@ void mem_release_all(struct proc *p)
 		h = next;
 	}
 	p->allocs = NULL;
+}
+
+void mem_psram(size_t *total, size_t *used)
+{
+	size_t chip = esp_psram_get_size();
+	size_t heap = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+	size_t free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+
+	*total = chip > heap ? chip : heap;
+	*used = *total - free;
 }

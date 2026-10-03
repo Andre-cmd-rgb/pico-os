@@ -1,7 +1,7 @@
 /*
  * picofetch: the machine at a glance, the way fastfetch shows a PC -- a
- * picture of it on the left, what it is and how it is doing on the right,
- * and the theme's colours underneath. Everything is read from where the
+ * what it is and how it is doing, with the theme's colours underneath.
+ * Everything is read from where the
  * other commands read it (uname, free, df, battery, wifi, theme), and it
  * fits the 53 columns.
  */
@@ -19,28 +19,11 @@
 #include "pt/program.h"
 #include "util.h"
 
-#define LOGO_W		13
-
-/* The pocket computer itself: its screen with a prompt, and its keys. */
-static const char *const logo[] = {
-	" ___________ ",
-	"|  _______  |",
-	"| |>_     | |",
-	"| |_______| |",
-	"|  o o o o  |",
-	"|  o o o o  |",
-	"|  o o o o  |",
-	"|___________|",
-};
-
-#define LOGO_H	(int)(sizeof(logo) / sizeof(logo[0]))
-
 struct fetch {
-	int	row;
 	int	width;
 };
 
-/* A line of the right-hand column, beside the logo's next line. */
+/* Keep each value within the terminal's width. */
 static void line(struct fetch *f, const char *key, const char *fmt, ...)
 	__attribute__((format(printf, 3, 4)));
 
@@ -53,8 +36,7 @@ static void line(struct fetch *f, const char *key, const char *fmt, ...)
 	va_start(ap, fmt);
 	vsnprintf(value, sizeof(value), fmt, ap);
 	va_end(ap);
-	pt_printf("\x1b[1;33m%s\x1b[0m  ", f->row < LOGO_H ? logo[f->row] : "             ");
-	room = f->width - LOGO_W - 2;
+	room = f->width;
 	if (key) {
 		room -= (int)strlen(key) + 2;
 		pt_printf("\x1b[1;33m%s\x1b[0m: %.*s\n", key, room > 0 ? (int)utf8_prefix(value,
@@ -62,7 +44,6 @@ static void line(struct fetch *f, const char *key, const char *fmt, ...)
 	} else {
 		pt_printf("%.*s\n", (int)utf8_prefix(value, strlen(value), room), value);
 	}
-	f->row++;
 }
 
 static void size_of(uint64_t bytes, char *out, size_t n)
@@ -127,7 +108,8 @@ PT_PROGRAM(picofetch, "the machine at a glance, as fastfetch shows a PC\n"
 	struct theme_state th;
 	struct battery_status bat;
 	struct wifi_info net;
-	multi_heap_info_t in, ps;
+	multi_heap_info_t in;
+	size_t ps_total, ps_used;
 	esp_chip_info_t chip;
 	char bin[PT_PATH_MAX], rule[40];
 	unsigned long m = pt_uptime_us() / 60000000;
@@ -142,12 +124,11 @@ PT_PROGRAM(picofetch, "the machine at a glance, as fastfetch shows a PC\n"
 
 	n = snprintf(rule, sizeof(rule), "%s@%s", user, host);
 	/* printed whole: its colours would count as width in line() */
-	pt_printf("\x1b[1;33m%s\x1b[0m  \x1b[1;33m%s\x1b[0m@\x1b[1;33m%s\x1b[0m\n", logo[f.row++],
-		  user, host);
+	pt_printf("\x1b[1;33m%s\x1b[0m@\x1b[1;33m%s\x1b[0m\n", user, host);
 	memset(rule, '-', n < (int)sizeof(rule) ? n : (int)sizeof(rule) - 1);
 	rule[n < (int)sizeof(rule) ? n : (int)sizeof(rule) - 1] = '\0';
 	line(&f, NULL, "%s", rule);
-	line(&f, "OS", "PocketType %s", PT_VERSION);
+	line(&f, "OS", PT_OS_NAME " %s", PT_VERSION);
 	line(&f, "Kernel", "ESP-IDF %s", app->idf_ver);
 	if (m < 60)
 		line(&f, "Uptime", "%lu min", m);
@@ -170,11 +151,10 @@ PT_PROGRAM(picofetch, "the machine at a glance, as fastfetch shows a PC\n"
 #endif
 	     chip.cores, lo, hi);
 	heap_caps_get_info(&in, MALLOC_CAP_INTERNAL);
-	heap_caps_get_info(&ps, MALLOC_CAP_SPIRAM);
+	mem_psram(&ps_total, &ps_used);
 	line(&f, "Memory", "%zu/%zu KB, PSRAM %.1f/%.1f MB", in.total_allocated_bytes / 1024,
 	     (in.total_allocated_bytes + in.total_free_bytes) / 1024,
-	     ps.total_allocated_bytes / 1048576.0,
-	     (ps.total_allocated_bytes + ps.total_free_bytes) / 1048576.0);
+	     ps_used / 1048576.0, ps_total / 1048576.0);
 	disk(&f, "Disk (/)", "/");
 	disk(&f, "Disk (~)", "/mnt/sd");
 	if (!battery_status(&bat) && bat.state != BATTERY_NONE && bat.state != BATTERY_USB)
@@ -193,11 +173,7 @@ PT_PROGRAM(picofetch, "the machine at a glance, as fastfetch shows a PC\n"
 			k += snprintf(blocks + k, sizeof(blocks) - k, "\x1b[%dm   ",
 				      (row ? 100 : 40) + c);
 		snprintf(blocks + k, sizeof(blocks) - k, "\x1b[0m");
-		pt_printf("\x1b[1;33m%s\x1b[0m  %s\n", f.row < LOGO_H ? logo[f.row] : "             ",
-			  blocks);
-		f.row++;
+		pt_printf("%s\n", blocks);
 	}
-	while (f.row < LOGO_H)
-		line(&f, NULL, "%s", "");
 	return 0;
 }
