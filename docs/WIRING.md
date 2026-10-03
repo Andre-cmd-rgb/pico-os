@@ -150,9 +150,14 @@ Keep BCK, LCK and DIN short, with the ground wire running alongside
 them: they carry a 2.8 MHz clock, and a long loop picks up the Wi-Fi.
 
 A socket with a switch says when a plug is in: wire the switch between
-**GPIO 21** and GND (it has a pull-up; `CONFIG_PT_AUDIO_JACK_DETECT_LOW`
-off for a switch to 3.3 V). Then sound goes to the headphones while a
-plug is in and back to the speaker when it comes out; without one,
+**GPIO 21** and GND. menuconfig's **The plug switch** says which kind it
+is: one that closes when a plug goes in (the default), one that opens
+(the purple module's own socket: on the one tried, of its five legs the
+two furthest from the opening touch each other until a plug goes in --
+a meter beeps across them with the socket empty and not with a plug in;
+one to GND, the other to GPIO 21), or one that closes to 3.3 V. Then sound goes to the
+headphones while a plug is in and back to the speaker when it comes
+out, and `dmesg` says `audio: headphones in` and `out`; without one,
 `volume jack` and `volume speaker` choose, and `/etc/power` keeps the
 choice. It is one or the other, never both, and an alarm always rings on
 the speaker.

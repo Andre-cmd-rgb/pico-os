@@ -820,14 +820,34 @@ config PT_AUDIO_JACK_DETECT
 	range -1 48
 	default 21
 
-config PT_AUDIO_JACK_DETECT_LOW
-	bool "A plug going in pulls that pin low"
+choice PT_AUDIO_JACK_DETECT_KIND
+	prompt "The plug switch"
 	depends on PT_AUDIO_JACK_DETECT >= 0
-	default y
+	default PT_AUDIO_JACK_DETECT_LOW
 	help
-	  A socket whose switch connects the pin to ground while a plug is
-	  in (the pin has a pull-up). Off for one that connects it to 3.3 V
-	  (with a pull-down).
+	  How the socket's switch, wired to that pin, tells a plug is in.
+
+config PT_AUDIO_JACK_DETECT_LOW
+	bool "closes to ground when a plug goes in"
+	help
+	  The pin has a pull-up and reads low while a plug is in.
+
+config PT_AUDIO_JACK_DETECT_OPENS
+	bool "opens, from ground, when a plug goes in"
+	help
+	  A switch that is closed with the socket empty -- the kind on the
+	  purple GY-PCM5102's socket, the two legs furthest from the
+	  opening on the one tried (a meter beeps across them with the
+	  socket empty, not with a plug in) -- one leg to ground and the
+	  other to the pin. The pin has a pull-up and reads high while a
+	  plug is in.
+
+config PT_AUDIO_JACK_DETECT_HIGH
+	bool "closes to 3.3 V when a plug goes in"
+	help
+	  The pin has a pull-down and reads high while a plug is in.
+
+endchoice
 
 endif
 

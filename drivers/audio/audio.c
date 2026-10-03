@@ -280,6 +280,7 @@ static bool plug_now(void)
 #ifdef CONFIG_PT_AUDIO_JACK_DETECT_LOW
 	return gpio_get_level(CONFIG_PT_AUDIO_JACK_DETECT) == 0;
 #else
+	/* a switch that opens from ground, or one that closes to 3.3 V */
 	return gpio_get_level(CONFIG_PT_AUDIO_JACK_DETECT) == 1;
 #endif
 #else
@@ -348,10 +349,10 @@ static void jack_init(void)
 	gpio_config_t io = {
 		.pin_bit_mask = 1ULL << CONFIG_PT_AUDIO_JACK_DETECT,
 		.mode = GPIO_MODE_INPUT,
-#ifdef CONFIG_PT_AUDIO_JACK_DETECT_LOW
-		.pull_up_en = GPIO_PULLUP_ENABLE,
-#else
+#ifdef CONFIG_PT_AUDIO_JACK_DETECT_HIGH
 		.pull_down_en = GPIO_PULLDOWN_ENABLE,
+#else
+		.pull_up_en = GPIO_PULLUP_ENABLE,
 #endif
 	};
 
