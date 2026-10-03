@@ -133,6 +133,14 @@ EXTRA = {
     # gap to the next cell, so the arcs run across it.
     '\ue000': '001111 010000 100111 001000 000011 000100 000001 000000',
     '\ue001': '111000 000100 110010 001000 100000 010000 000000 000000',
+    # the same with the outer arc gone (a fair signal), and with only the
+    # inner one (a weak signal), as a phone shows it
+    '\ue002': '000000 000000 000111 001000 000011 000100 000001 000000',
+    '\ue003': '000000 000000 110000 001000 100000 010000 000000 000000',
+    '\ue004': '000000 000000 000000 000000 000011 000100 000001 000000',
+    '\ue005': '000000 000000 000000 000000 100000 010000 000000 000000',
+    # headphones: the band, and a cup each side, level with the text
+    '\ue006': '00000 01110 10001 10001 10001 11011 11011 00000',
     'Ç': '01110 10001 10000 10000 10000 10001 01110 00100',
     'ß': '01100 10010 10010 10100 10010 10001 10110 00000',
 
@@ -185,6 +193,27 @@ EXTRA = {
     'Σ': '11111 10000 01000 00100 01000 10000 11111 00000',
     'Ω': '01110 10001 10001 10001 01010 01010 11011 00000',
 }
+
+
+def cell_bars(bars):
+    """Mobile data, two cells wide: four bars rising to the right, as many
+    filled as the signal is strong and the rest a stub along the bottom,
+    as a phone shows it."""
+    heights = (2, 3, 5, 7)
+    lines = []
+    for r in range(8):
+        line = ''
+        for c in range(12):
+            b = c // 3
+            on = c % 3 != 2 and r < 7 and (r >= 7 - heights[b] if b < bars else r == 6)
+            line += '1' if on else '0'
+        lines.append(line)
+    return ' '.join(x[:6] for x in lines), ' '.join(x[6:] for x in lines)
+
+
+# one bar to four: U+E008 and U+E009 the weakest, U+E00E and U+E00F the strongest
+for n in range(1, 5):
+    EXTRA[chr(0xe006 + 2 * n)], EXTRA[chr(0xe007 + 2 * n)] = cell_bars(n)
 
 ACCENTS = {
     'grave': '01000 00100',
@@ -264,6 +293,10 @@ def main():
     print(f"#define FONT_BOLT\t{len(chars) + extra.index('⚡')}")
     print(f"#define FONT_ALARM\t{len(chars) + extra.index('⏰')}")
     print(f"#define FONT_WIFI\t{len(chars) + extra.index(chr(0xe000))}")
+    print(f"#define FONT_WIFI_FAIR\t{len(chars) + extra.index(chr(0xe002))}")
+    print(f"#define FONT_WIFI_WEAK\t{len(chars) + extra.index(chr(0xe004))}")
+    print(f"#define FONT_PHONES\t{len(chars) + extra.index(chr(0xe006))}")
+    print(f"#define FONT_CELL\t{len(chars) + extra.index(chr(0xe008))}\t/* + 2 a bar more */")
     print("#define FONT_UNKNOWN\t('?' - FONT_FIRST)\n")
     print("/* one byte per row, bit 4 is the leftmost column; bit 5 is a sixth, the\n"
           " * gap to the next cell, set only by icons two cells wide */")

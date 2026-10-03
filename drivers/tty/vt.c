@@ -669,8 +669,8 @@ static int to_glyphs(const char *s, uint8_t *out, int max)
 
 /*
  * The line along the bottom: which terminal you are on, the time, the
- * next alarm if it is within a day, what is left in the battery and
- * what the radio is doing. While an alarm rings the whole line is that
+ * next alarm if it is within a day, headphones when sound goes to them,
+ * the network and how strong it is, and what is left in the battery. While an alarm rings the whole line is that
  * alarm, flashing. It is painted once a second by the renderer, straight
  * to the panel, and is not part of any terminal's text -- nothing a
  * program writes can disturb it.
@@ -729,10 +729,27 @@ static void draw_status(uint8_t *pixels)
 			snprintf(text, sizeof(text), "%02d:%02d  ", at.tm_hour, at.tm_min);
 			n += to_glyphs(text, right + n, sizeof(right) - n);
 		}
-		/* on a network: its sign, as a phone shows it; `wifi` names it */
+		/* sound in the headphones */
+		if (audio_to_jack()) {
+			right[n++] = FONT_PHONES;
+			right[n++] = ' ' - FONT_FIRST;
+		}
+		/* on a network: its sign, as a phone shows it, with as many
+		 * arcs or bars as the signal is strong; Wi-Fi first, mobile
+		 * data when that is the way out; `wifi`, `modem` name them */
 		if (!wifi_state(&net) && net.up) {
-			right[n++] = FONT_WIFI;		/* two cells wide */
-			right[n++] = FONT_WIFI + 1;
+			int sign = net.rssi > -62 ? FONT_WIFI : net.rssi > -74 ? FONT_WIFI_FAIR :
+				   FONT_WIFI_WEAK;
+
+			right[n++] = sign;		/* two cells wide */
+			right[n++] = sign + 1;
+			right[n++] = ' ' - FONT_FIRST;
+		} else if (modem_data_up()) {
+			int dbm = modem_signal();
+			int bars = !dbm ? 2 : dbm > -75 ? 4 : dbm > -85 ? 3 : dbm > -95 ? 2 : 1;
+
+			right[n++] = FONT_CELL + 2 * (bars - 1);
+			right[n++] = FONT_CELL + 2 * (bars - 1) + 1;
 			right[n++] = ' ' - FONT_FIRST;
 		}
 		/* no cell fitted: nothing to show */

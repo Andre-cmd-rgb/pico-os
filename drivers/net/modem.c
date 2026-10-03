@@ -100,6 +100,9 @@ static char		 model[48], imei[20];
 static ppp_pcb		*ppp;
 static struct netif	 ppp_netif;
 static volatile bool	 ppp_up, ppp_stop;
+/* The signal as last read (dBm, 0 unknown), for the status line: with
+ * the data link up the port carries PPP and cannot be asked. */
+static volatile int	 last_dbm;
 
 /* ------------------------------------------------------------ AT */
 
@@ -488,6 +491,7 @@ int modem_info(struct modem_info *out)
 
 		/* 0..31 maps onto -113..-51 dBm; 99 means it cannot tell. */
 		out->rssi = rssi == 99 ? 0 : -113 + 2 * rssi;
+		last_dbm = out->rssi;
 	}
 	if (!modem_at("AT+COPS?", reply, sizeof(reply), 3000) && (p = field(reply, "+COPS: "))) {
 		const char *name = strchr(p, '"');
@@ -787,6 +791,11 @@ bool modem_data_up(void)
 	return ppp_up;
 }
 
+int modem_signal(void)
+{
+	return last_dbm;
+}
+
 /*
  * /etc/modem, a line each: "apn NAME", "user NAME", "password WORD" (from
  * `modem apn`, else menuconfig's), and "radio off" (from `modem off`).
@@ -1068,6 +1077,14 @@ int modem_data(bool on)
 	snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"IP\",\"%s\"", apn);
 	if ((err = modem_at(cmd, NULL, 0, 5000)))
 		return err;
+
+	/* the signal now, for the status line while the port is busy with PPP */
+	if (!modem_at("AT+CSQ", line, sizeof(line), 2000)) {
+		const char *p = field(line, "+CSQ: ");
+		int csq = p ? atoi(p) : 99;
+
+		last_dbm = csq == 99 ? 0 : -113 + 2 * csq;
+	}
 
 	/* ATD dials the packet service; the answer is CONNECT, then PPP. */
 	xSemaphoreTake(lock, portMAX_DELAY);
@@ -1539,5 +1556,6 @@ int  modem_sms_read(int index, struct sms *out) { return -ENODEV; }
 int  modem_sms_delete(int index) { return -ENODEV; }
 int  modem_data(bool on) { return -ENODEV; }
 bool modem_data_up(void) { return false; }
+int  modem_signal(void) { return 0; }
 
 #endif

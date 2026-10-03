@@ -483,14 +483,11 @@ PT_PROGRAM(volume, "show or set the volume, and where sound goes\n"
 		pt_printf("volume %d%%\n", audio_volume());
 		return 0;
 	}
-	pt_printf("volume %d%%, to the %s%s\n", audio_volume(),
-		  audio_to_jack() ? "headphones" : "speaker",
-		  audio_output() != AUDIO_OUT_AUTO ? " (kept there)" :
-		  audio_jack_switch() ? " (auto: a plug says)" : "");
-	if (audio_to_jack())
-		pt_printf("  (the speaker's is %d%%)\n", audio_out_volume(AUDIO_OUT_SPEAKER));
-	else
-		pt_printf("  (the headphones' is %d%%)\n", audio_out_volume(AUDIO_OUT_JACK));
+	pt_printf("volume %d%% (%s)\n", audio_volume(), audio_to_jack() ? "headphones" : "speaker");
+	/* only when it is not the plug choosing, which is the usual */
+	if (audio_output() != AUDIO_OUT_AUTO && audio_jack_switch())
+		pt_printf("kept on the %s: `volume auto` lets the plug choose\n",
+			  audio_to_jack() ? "headphones" : "speaker");
 	return 0;
 }
 

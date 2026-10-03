@@ -288,6 +288,7 @@ int	modem_sms_read(int index, struct sms *out);
 int	modem_sms_delete(int index);
 int	modem_data(bool on);		/* the PPP link: mobile internet */
 bool	modem_data_up(void);
+int	modem_signal(void);		/* dBm as last read, 0 unknown: for the status line */
 
 /* power/battery.c */
 /* A lithium cell is flat at 3.3 V and its protection cuts out around 2.5 V,
