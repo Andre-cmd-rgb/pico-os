@@ -219,6 +219,9 @@ static int spi_bus_remove_device(void *handle)
 	return 0;
 }
 #define READ_HZ 4000000
+/* lcd_io_stream()'s device is optional and not exercised here. */
+static spi_device_handle_t streamer;
+static void __attribute__((unused)) stream_add(void) { }
 #include "spi_under_test.h"
 static int lcd_io_reset_gpio(void) { return CONFIG_PT_LCD_SPI_RST; }
 static int lcd_io_set_clock(void **panel, int hz) { assert(panel && hz); return 0; }

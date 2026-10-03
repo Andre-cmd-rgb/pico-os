@@ -7,7 +7,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 source = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "drivers/video/io_spi.c"
-read = source.read_text().split("int lcd_io_read(", 1)[1].split("uint8_t *lcd_io_alloc", 1)[0]
+read = source.read_text().split("int lcd_io_read(", 1)[1].split("/* Chip select by hand", 1)[0]
 with tempfile.TemporaryDirectory(prefix="pico-lcd-io-") as tmp:
     (Path(tmp) / "lcd_read_under_test.h").write_text("int lcd_io_read(" + read)
     exe = str(Path(tmp) / "lcd_io_test")

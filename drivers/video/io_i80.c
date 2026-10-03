@@ -104,6 +104,11 @@ fail:
 	return -EIO;
 }
 
+int lcd_io_stream(const struct lcd_io_step *steps, int n)
+{
+	return -ENOTSUP;
+}
+
 uint8_t *lcd_io_alloc(size_t bytes)
 {
 	return bus_io ? esp_lcd_i80_alloc_draw_buffer(bus_io, bytes, 0) : NULL;

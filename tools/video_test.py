@@ -7,6 +7,9 @@ import uuid
 
 from board import Board, PROMPT, clean
 
+Q_AT_PROMPT = rb"\$ q(\x1b\[K)?(\r\x1b\[\d+C)?$"
+PROMPT_OR_Q = PROMPT + rb"|" + Q_AT_PROMPT
+
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
@@ -33,7 +36,11 @@ def main():
             stopped = b.read_until(PROMPT, args.seconds)
         if not re.search(PROMPT, stopped):
             b.send(b"q")
-            stopped = b.read_until(PROMPT, 15)
+            stopped = b.read_until(PROMPT_OR_Q, 15)
+            if re.search(Q_AT_PROMPT, stopped):
+                # the clip had ended just before: the q went to the shell
+                b.send(b"\x15")
+                stopped = b.read_until(PROMPT, 5)
         assert re.search(PROMPT, stopped), "playback did not stop"
         playing = False
         out = b.run(f"cat {stats}")

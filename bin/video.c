@@ -1224,7 +1224,7 @@ done:
 	if (blit.missed)
 		pt_printf("  %d panel transfers failed\n", blit.missed);
 	if (blit.late)
-		pt_printf("  %d panel transfers finished after their refresh window\n", blit.late);
+		pt_printf("  %d frames late for the refresh: a seam possible\n", blit.late);
 	if (shown_n)
 		pt_printf("  panel %lld ms average, %lld ms maximum (including refresh wait)\n",
 			  blit.transfer_us / 1000 / shown_n, blit.transfer_max_us / 1000);

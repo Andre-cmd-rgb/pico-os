@@ -27,6 +27,22 @@ const char *lcd_io_name(void);
 /* A register of the panel read back, n bytes; -ENOTSUP where it cannot be. */
 int	lcd_io_read(uint8_t cmd, uint8_t *out, int n);
 
+/*
+ * Commands and their data queued all at once and sent back to back by
+ * the bus's interrupt, so that nothing between two of them waits on a
+ * task: a whole frame's bands goes out at the wire's own pace. Data over
+ * four bytes is sent from where it is (PSRAM too, from a cache line).
+ * The caller holds the bus. With no steps it says whether it can be done:
+ * 0, or -ENOTSUP.
+ */
+struct lcd_io_step {
+	uint8_t		 cmd;
+	const uint8_t	*data;
+	size_t		 len;
+};
+
+int	lcd_io_stream(const struct lcd_io_step *steps, int n);
+
 /* The bus clock, changed at run time; -ENOTSUP where it cannot be. */
 int	lcd_io_set_clock(esp_lcd_panel_io_handle_t *io, int hz);
 int	lcd_io_clock(void);

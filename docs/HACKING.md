@@ -212,39 +212,40 @@ that music on another terminal left no room for.
 ## Clips without tearing
 
 The ILI9341 refreshes from its memory a row at a time along its own
-portrait rows, whatever orientation is sent; a landscape frame takes
-16 ms to send and a refresh 12, so every refresh during a send showed
-parts of two frames along slanting seams. The TE pin is not wired on the
-Freenove board, but the panel's SDO is (GPIO13), so `io_spi.c` adds a
-second, 4 MHz SPI device for reads -- chip select taken by hand for the
-moment -- and `lcd_draw_native()` asks the panel which line it is
+portrait rows, whatever orientation is sent: 324 lines (four of porch) in
+14 ms on this panel, while a landscape frame takes 15.4 ms to send, so
+every refresh during a send showed parts of two frames, cut along a seam.
+The TE pin is not wired on the Freenove board, but the panel's SDO is
+(GPIO13), so `io_spi.c` adds a 4 MHz SPI device for reads -- chip select
+taken by hand for the moment, D/C driven (ESP-IDF's colour callback
+leaves it undriven) -- and the panel can be asked which line it is
 refreshing (0x45, Get Scanline; a dummy bit first, so the count arrives
-shifted by one). The clip player turns each frame into the panel's own
-order (`canvas_blit_native`, 16-pixel tiles) and sends it in bands of
-rows, each only once the refresh has passed it. FRMCTR1 uses RTNA=31
-(nominal 61 Hz) to give the transfer more time. Each transfer starts near
-the start of a refresh. Bands use 32 rows, or 64 for odd pixel widths,
-and keep their PSRAM DMA addresses on 64-byte
-cache lines, including cropped frames and reversed scan order; varying
-their height used to trigger internal-RAM bounce buffers mid-frame.
-The blitter and helper decoders share core 0 at priority 4, leaving the
-main decoder and SD reader on core 1. Moving a priority-6 blitter onto
-that core worsened playback in the user's test and has been reverted.
-If a refresh catches up, finish the
-same frame and report it as late, rather than leave half of an old image.
-Long polling gaps can hide a wrap and are counted as late too. Actual
-transfer errors remain separate; playback reports the average and maximum
-panel time, including waits for the refresh. Failed native transfers,
-allocations or rotation do not become unsynchronised landscape writes.
-`tools/video_scanout_test.py` runs the actual function against a simulated
-panel/DMA clock, including cropped and reversed bands, whole-frame
-coherence, preemption and I/O errors. Hardware still needs a visual check.
-The ESP-IDF LCD colour callback disables the D/C GPIO output before it
-wakes the sender. `lcd_io_read()` must acquire the SPI reader's bus before
-remapping CS and re-enable D/C output before sending Get Scanline: merely
-setting the pin's level leaves it undriven. This defect made refresh reads
-unreliable after pixel transfers. `tools/lcd_io_test.py` exercises the real
-read function with D/C initially disabled, both CS routes and error cleanup.
+shifted by one).
+
+The clip player turns each frame into the panel's own order
+(`canvas_blit_native`, 16-pixel tiles) and `lcd_draw_native()` sends it in
+bands of 32 rows (64 for odd widths, so that each band's PSRAM address
+stays on a cache line), in the order the refresh meets them. With MY set
+the refresh runs from the last row to the first while writing runs from
+the first, so a frame cannot go in one piece: each band has its own row
+command. ESP-IDF sends a command only once what it queued has finished,
+so the sender used to wait on a task between every two bands -- behind a
+decoder of the same priority, Wi-Fi, a tick -- and a frame took 31 ms on
+average and was often caught by the refresh. Now `lcd_io_stream()` queues
+the whole frame, commands and bands, on an SPI device of its own and the
+bus's interrupt sends them back to back: about 15.8 ms, whatever the
+tasks do. `scanout.h` works out the lines the frame may start at: every
+band written after one refresh has read it and finished before the next
+reads it, checked with the quickest the frame can go against the refresh
+it must follow and the slowest it has gone against the one it must not
+meet. That is most of a refresh (lines 40 to about 230), so a frame
+rarely waits. The refresh is measured when a clip starts, the frame's
+overhead learned as it plays, and a frame that took longer than its
+window allowed is counted as late (`video -v`).
+`tools/video_scanout_test.py` runs the real function against a simulated
+panel and bus -- every start, both directions, four shapes, three refresh
+rates, the porch off by three lines either way, stalls mid-frame -- and
+fails if a frame it calls clean was torn or a torn one is not reported.
 Two things only the panel could show: its row order bit
 (MY) turns the refresh round too, so it is never changed between frames;
 and with MY set the refresh runs from the last row to the first.
