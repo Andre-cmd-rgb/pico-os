@@ -210,9 +210,13 @@ int pick_file(const char *dir, const char *const *exts, const char *title,
 	      char *out, size_t size)
 {
 	struct list l = { 0 };
-	char here[PT_PATH_MAX];
+	char here[PT_PATH_MAX], last[PT_PATH_MAX];
 	int sel = 0, top = 0, cols, rows, body, ret;
 	bool reread = true, redraw = true;
+
+	/* what `out` names as it comes in, the one picked last time: it is
+	 * where the list starts, if it is in it */
+	strlcpy(last, out, size < sizeof(last) ? size : sizeof(last));
 
 	if (pt_abspath(dir, here, sizeof(here)))
 		strlcpy(here, dir, sizeof(here));
@@ -228,6 +232,18 @@ int pick_file(const char *dir, const char *const *exts, const char *title,
 			if ((ret = list_read(&l, here, exts)))
 				goto done;
 			sel = top = 0;
+			for (int i = 0; i < l.n && last[0]; i++) {
+				char path[PT_PATH_MAX];
+
+				if (join_path(here, l.e[i].name, path, sizeof(path)) &&
+				    !strcmp(path, last)) {
+					sel = i;
+					top = sel - body / 2 > l.n - body ? l.n - body : sel - body / 2;
+					top = top < 0 ? 0 : top;
+					break;
+				}
+			}
+			last[0] = '\0';	/* the first time only */
 			reread = false;
 			redraw = true;
 		}

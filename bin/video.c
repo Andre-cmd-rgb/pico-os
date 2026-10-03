@@ -780,20 +780,13 @@ static void bar_at(const char *what, int seconds, const char *after)
 
 PT_COMPLETE(video, ": -v -i <file:.ptv>\n*: <file:.ptv>\n")
 
-PT_PROGRAM_STACK(video, 8, "play a clip\n"
-		 "usage: video [-v] [clip.ptv]    video -i clip.ptv\n"
-		 "With no file, what is in ~/video is offered as a list.\n"
-		 "Space pauses, q or Esc stops, s saves the screen.\n"
-		 "Left/right go 10 s back or on, up/down a minute,\n"
-		 "0-9 a tenth of the way in each. A clip goes on from\n"
-		 "where it was left, unless 0 is pressed at the start.\n"
-		 "-v  at the end, frames shown and dropped, and the\n"
-		 "    time each frame took to read, decode and send\n"
-		 "-i  write an index into an older clip, so that\n"
-		 "    jumping in it is quick (new clips have one)\n"
-		 "On the PC: make video FILE=something.mkv")
+/*
+ * One clip played, or indexed (`index_only`); its status, as the program's.
+ * `listed`: it was picked from the list, which comes back after it -- when
+ * it ends or Esc is pressed, not for q -- and *back says which it was.
+ */
+static int play_clip(const char *path, bool index_only, bool verbose, bool listed, bool *back)
 {
-	static const char *const exts[] = { ".ptv", NULL };
 	struct canvas page[2] = { { 0 }, { 0 } }, slice0 = { 0 }, *shown = &page[0];
 	struct helper helpers[MAX_SLICES - 1] = { 0 };
 	struct blitter blit = { 0 };
@@ -801,12 +794,11 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	struct clip clip = { 0 };
 	struct index idx = { 0 };
 	struct slot *slots = NULL;
-	char chosen[PT_PATH_MAX], shot[PT_PATH_MAX];
-	bool index_only = false, verbose = false;
-	const char *path = chosen, *name;
+	char shot[PT_PATH_MAX];
+	const char *name;
 	void *native_mem[2] = { NULL, NULL };
 	uint8_t *native[2] = { NULL, NULL };
-	int ret, next = 0, ahead = 0, nread = 0, end, arg;
+	int ret, next = 0, ahead = 0, nread = 0, end;
 	int shown_n = 0, dropped = 0, frame_us, buffer_us = 0, i = 0, from = 0, target;
 	int thinned = 0, every_us = 0, ncw, np0, nph;	/* every_us: the panel's pace */
 	int64_t read_us = 0, decode_us = 0, blit_us = 0, started;
@@ -819,36 +811,9 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	};
 	uint32_t from_off = 0;
 	unsigned gen = vt_screen_gen();
+	int key0;
 
-	for (arg = 1; arg < argc && argv[arg][0] == '-' && argv[arg][1]; arg++) {
-		if (!strcmp(argv[arg], "-i"))
-			index_only = true;
-		else if (!strcmp(argv[arg], "-v"))
-			verbose = true;
-		else
-			break;
-	}
-	if (arg < argc && argv[arg][0] != '-')
-		path = argv[arg++];
-	if (arg < argc || (index_only && (path == chosen || verbose))) {
-		pt_dprintf(PT_STDERR, "usage: video [-v] [clip.ptv]    video -i clip.ptv\n");
-		return 2;
-	}
-	if (!index_only && !vt_has_display()) {
-		pt_dprintf(PT_STDERR, "video: there is no screen\n");
-		return 1;
-	}
-	if (path == chosen) {
-		char dir[64];
-
-		home_dir(dir, sizeof(dir), "video");
-		ret = pick_file(dir, exts, "clips", chosen, sizeof(chosen));
-		if (ret == -ECANCELED)
-			return 0;
-		if (ret)
-			return fail("video", dir, ret);
-	}
-
+	*back = false;
 	name = path_basename(path);	/* what /etc/resume knows it by */
 	if ((rd.fd = pt_open(path, index_only ? O_RDWR : O_RDONLY)) < 0)
 		return fail("video", path, rd.fd);
@@ -979,10 +944,11 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 	/* Left part of the way through last time: on from there, unless 0. */
 	if (resume_get(name, &clip, &from, &from_off) && frame_at(rd.fd, from_off)) {
 		bar_at("go on from", from / clip.fps, "?  enter: yes  0: from the start");
-		switch (pt_readkey_timeout(PT_STDIN, RESUME_ASK_MS)) {
+		switch ((key0 = pt_readkey_timeout(PT_STDIN, RESUME_ASK_MS))) {
 		case 'q':
 		case PT_KEY_ESC:
 		case PT_CTRL('c'):
+			*back = listed && key0 == PT_KEY_ESC;
 			goto done;
 		case '0':
 		case PT_KEY_HOME:
@@ -1138,8 +1104,10 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			keys = false;
 			continue;
 		}
-		if (key == 'q' || key == PT_KEY_ESC || key == PT_CTRL('c'))
+		if (key == 'q' || key == PT_KEY_ESC || key == PT_CTRL('c')) {
+			*back = listed && key == PT_KEY_ESC;
 			break;
+		}
 		if ((target = seek_key(key, i, &clip)) >= 0)
 			goto jump;
 		if (key == 's' || key == ' ') {
@@ -1164,8 +1132,10 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 				power_keep_screen(true);
 				repaint(shown);		/* the bar goes */
 				if (key == 'q' || key == PT_KEY_ESC || key == PT_CTRL('c') ||
-				    key == PT_KEY_EOF || key == PT_KEY_ERROR)
+				    key == PT_KEY_EOF || key == PT_KEY_ERROR) {
+					*back = listed && key == PT_KEY_ESC;
 					break;
+				}
 				if ((target = seek_key(key, i, &clip)) >= 0) {
 					step = true;	/* to show where it went */
 					goto jump;
@@ -1202,6 +1172,8 @@ jump:
 			started += decode_guess + SHOW_LEAD_US;
 	}
 	ret = 0;
+	if (i >= end)
+		*back = listed;		/* to the end: the list again */
 	/* Where it was left, for next time; played to the end, or all but, is done with. */
 	if (played && i < end && i / clip.fps >= RESUME_EDGE_S &&
 	    (clip.frames - i) / clip.fps >= RESUME_EDGE_S && idx.off[i])
@@ -1257,6 +1229,66 @@ done:
 			  read_us / 1000 / seen, shown_n ? decode_us / 1000 / shown_n : 0,
 			  shown_n ? blit_us / 1000 / shown_n : 0);
 	return 0;
+}
+
+PT_PROGRAM_STACK(video, 8, "play a clip\n"
+		 "usage: video [-v] [clip.ptv]    video -i clip.ptv\n"
+		 "With no file, what is in ~/video is offered as a list.\n"
+		 "Space pauses, q stops, s saves the screen; Esc\n"
+		 "goes back to the list, if it came from one.\n"
+		 "Left/right go 10 s back or on, up/down a minute,\n"
+		 "0-9 a tenth of the way in each. A clip goes on from\n"
+		 "where it was left, unless 0 is pressed at the start.\n"
+		 "-v  at the end, frames shown and dropped, and the\n"
+		 "    time each frame took to read, decode and send\n"
+		 "-i  write an index into an older clip, so that\n"
+		 "    jumping in it is quick (new clips have one)\n"
+		 "On the PC: make video FILE=something.mkv")
+{
+	static const char *const exts[] = { ".ptv", NULL };
+	char chosen[PT_PATH_MAX] = "";
+	bool index_only = false, verbose = false;
+	const char *path = NULL;
+	int arg, ret;
+
+	for (arg = 1; arg < argc && argv[arg][0] == '-' && argv[arg][1]; arg++) {
+		if (!strcmp(argv[arg], "-i"))
+			index_only = true;
+		else if (!strcmp(argv[arg], "-v"))
+			verbose = true;
+		else
+			break;
+	}
+	if (arg < argc && argv[arg][0] != '-')
+		path = argv[arg++];
+	if (arg < argc || (index_only && (!path || verbose))) {
+		pt_dprintf(PT_STDERR, "usage: video [-v] [clip.ptv]    video -i clip.ptv\n");
+		return 2;
+	}
+	if (!index_only && !vt_has_display()) {
+		pt_dprintf(PT_STDERR, "video: there is no screen\n");
+		return 1;
+	}
+	if (path) {
+		bool back;
+
+		return play_clip(path, index_only, verbose, false, &back);
+	}
+	/* the list, a clip, and the list again with that clip picked */
+	for (;;) {
+		char dir[64];
+		bool back;
+
+		home_dir(dir, sizeof(dir), "video");
+		ret = pick_file(dir, exts, "clips", chosen, sizeof(chosen));
+		if (ret == -ECANCELED)
+			return 0;
+		if (ret)
+			return fail("video", dir, ret);
+		ret = play_clip(chosen, false, verbose, true, &back);
+		if (!back || pt_interrupted())
+			return ret;
+	}
 }
 
 #else

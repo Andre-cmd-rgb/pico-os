@@ -35,7 +35,7 @@ PT_PROGRAM_STACK(nes, 16, "play a NES game\n"
 {
 	struct nes_options opt = { .sound = true, .frameskip = 1 };
 	struct nes_stats stats;
-	char rom[PT_PATH_MAX];
+	char rom[PT_PATH_MAX] = "";
 	bool verbose = false;
 	int i = 1, ret;
 

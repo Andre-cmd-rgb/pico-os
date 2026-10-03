@@ -59,7 +59,7 @@ PT_PROGRAM_STACK(view, 8, "look at a picture\n"
 {
 	static const char *const exts[] = { ".bmp", ".jpg", ".jpeg", NULL };
 	struct canvas c = { 0 };
-	char chosen[PT_PATH_MAX], shot[PT_PATH_MAX], photos[64];
+	char chosen[PT_PATH_MAX] = "", shot[PT_PATH_MAX], photos[64];
 	char *picked[1] = { chosen };
 	char **files = argv + 1;
 	int n = argc - 1, at = 0, ret;

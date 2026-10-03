@@ -1529,7 +1529,7 @@ PT_PROGRAM_STACK(notes, 12, "read Markdown or text notes on the screen\n"
 	struct opt o = { .ind = 1 };
 	bool print = false;
 	int width = 0, c, ret = 0;
-	char dir[PT_PATH_MAX], path[PT_PATH_MAX];
+	char dir[PT_PATH_MAX], path[PT_PATH_MAX] = "";
 	const char *home;
 
 	while ((c = getopt_pt(&o, "notes", argc, argv, "pw:")) != -1) {
