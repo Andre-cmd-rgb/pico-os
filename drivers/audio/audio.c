@@ -118,6 +118,7 @@ static int			jack_rate;
 static enum audio_out		out_wanted = AUDIO_OUT_AUTO;
 static bool			to_jack;	/* where the last block went */
 static bool			plugged;	/* the socket's switch, settled */
+static SemaphoreHandle_t	jack_opened;	/* jack_open_task() has done */
 static int			plug_seen;	/* blocks it has said otherwise */
 static int			jack_percent = JACK_VOLUME;
 static int32_t			jack_gain;	/* jack_percent as a multiplier */
@@ -320,17 +321,39 @@ static bool jack_wanted(bool fresh)
  * DMA buffers are internal RAM, which a machine whose jack is never
  * used should not give up. Locked. Without one, the speaker only.
  */
-static int jack_open(void)
+static void jack_open_task(void *arg)
 {
 	i2s_chan_config_t cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
 	i2s_std_config_t std = jack_config(rate);
+	int *ret = arg;
 
 	cfg.auto_clear = true;
 	cfg.dma_desc_num = DMA_BUFS;
 	cfg.dma_frame_num = BLOCK;
 	/* "controller 0 has been occupied" is the search for a free one */
 	esp_log_level_set("i2s_platform", ESP_LOG_ERROR);
-	if (i2s_new_channel(&cfg, &jack, NULL) || i2s_channel_init_std_mode(jack, &std)) {
+	*ret = i2s_new_channel(&cfg, &jack, NULL) || i2s_channel_init_std_mode(jack, &std) ?
+	       -EIO : 0;
+	xSemaphoreGive(jack_opened);
+	vTaskDelete(NULL);
+}
+
+/*
+ * Taken on the programs' core: the DMA's interrupt goes to the core
+ * that asks for it, and the kernel's has none left by the time the
+ * jack is first wanted -- Wi-Fi, the screen, USB, the card and the
+ * codec have them all ("no free interrupt inputs").
+ */
+static int jack_open(void)
+{
+	int ret = -ENOMEM;
+
+	if (!jack_opened)
+		jack_opened = xSemaphoreCreateBinary();
+	if (jack_opened &&
+	    xTaskCreatePinnedToCore(jack_open_task, "kjack", 3072, &ret, 18, NULL, 1) == pdPASS)
+		xSemaphoreTake(jack_opened, portMAX_DELAY);
+	if (ret) {
 		klog("audio: no I2S controller left for the headphone jack");
 		if (jack)
 			i2s_del_channel(jack);
