@@ -7,6 +7,7 @@
 #include <stdbool.h>
 
 int	es8311_init(int sda, int scl, int rate);
+void	es8311_deinit(void);
 int	es8311_set_rate(int rate);
 int	es8311_power(bool on);		/* standby, and back */
 int	es8311_set_volume(int percent);

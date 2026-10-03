@@ -178,7 +178,7 @@ int	audio_set_rate(int hz);
 int	audio_rate(void);
 int	audio_buffer_us(void);		/* the caller's queue and the DMA, full, in us */
 int	audio_queued_us(void);		/* until a sample written now is heard, in us */
-int	audio_set_volume(int percent);
+int	audio_set_volume(int percent);	/* of where the sound goes now */
 int	audio_volume(void);
 int	audio_set_mic_gain(int db);	/* the analogue scale, 0-42 dB */
 int	audio_set_mic_alc(bool on, int max_db);	/* let the codec ride the gain */
@@ -194,6 +194,8 @@ bool	audio_jack_switch(void);	/* the socket says when a plug is in */
 int	audio_set_output(enum audio_out out);	/* -ENODEV with no jack */
 enum audio_out audio_output(void);	/* as it was asked for */
 bool	audio_to_jack(void);		/* where sound would go now */
+int	audio_set_out_volume(enum audio_out out, int percent);	/* SPEAKER or JACK */
+int	audio_out_volume(enum audio_out out);
 
 /* net/wifi.c */
 struct wifi_ap {

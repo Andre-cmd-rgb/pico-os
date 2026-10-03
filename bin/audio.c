@@ -55,11 +55,12 @@ static int no_codec(const char *prog)
 #define MUSIC_LATENCY_MS 1000
 
 /*
- * Everything that plays goes through here as 16-bit frames. A stereo file
- * is mixed down on the way, because the speaker is mono and the codec
- * would otherwise play the left channel on its own.
+ * Everything that plays goes through here as 16-bit frames, stereo as it
+ * came: the mixer folds it for the speaker and keeps both sides for
+ * headphones.
  *
- * The checksum and the timing are what `play -n` reports: it decodes
+ * The checksum (of the frames mixed down to one, as it always was) and
+ * the timing are what `play -n` reports: it decodes
  * without touching the codec, which is how a file -- and the speed of the
  * decoder -- can be checked on a board with no speaker attached.
  */
@@ -109,16 +110,17 @@ static int sink_play(struct sink *s, const int16_t *pcm, size_t frames, int chan
 		const int16_t *mono = pcm;
 		ssize_t wrote;
 
-		if (channels == 2) {
+		if (s->dry && channels == 2) {
 			for (size_t i = 0; i < n; i++)
 				s->mono[i] = (pcm[2 * i] + pcm[2 * i + 1]) / 2;
 			mono = s->mono;
 		}
-		s->crc = crc32_of(s->crc, mono, n * sizeof(*mono));
+		if (s->dry)
+			s->crc = crc32_of(s->crc, mono, n * sizeof(*mono));
 		s->frames += n;
 		if (s->dry && s->frames / PASS_FRAMES % 8 == 0)
 			pt_sleep_ms(1);		/* the idle task's turn */
-		if (!s->dry && (wrote = audio_write(mono, n * sizeof(*mono), 1)) < 0)
+		if (!s->dry && (wrote = audio_write(pcm, n * channels * sizeof(*pcm), channels)) < 0)
 			return wrote;
 		pcm += n * channels;
 		frames -= n;
@@ -434,10 +436,13 @@ PT_COMPLETE(volume, ": speaker jack auto\n")
 
 PT_PROGRAM(volume, "show or set the volume, and where sound goes\n"
 	   "usage: volume [0-100] [speaker | jack | auto]\n"
+	   "The number is the volume of wherever the sound goes.\n"
 	   "With a headphone jack, speaker or jack sends all the\n"
 	   "sound there, and auto (the start) sends it to the\n"
 	   "jack while a plug is in, if the socket can tell.\n"
-	   "Both are kept in /etc/power.")
+	   "The speaker and the headphones keep a volume each,\n"
+	   "the headphones starting low; all of it is kept in\n"
+	   "/etc/power. An alarm always rings on the speaker.")
 {
 	long percent = -1;
 	int out = -1;
@@ -462,19 +467,25 @@ PT_PROGRAM(volume, "show or set the volume, and where sound goes\n"
 			   "  Device drivers, Sound)\n");
 		return 1;
 	}
-	if (percent >= 0)
-		audio_set_volume((int)percent);
+	/* where first: `volume 30 jack` is the headphones at 30 */
 	if (out >= 0 && audio_has_jack())
 		audio_set_output((enum audio_out)out);
+	if (percent >= 0)
+		audio_set_volume((int)percent);
 	if (percent >= 0 || out >= 0)
 		power_levels_changed();		/* kept in /etc/power */
-	if (!audio_has_jack())
+	if (!audio_has_jack()) {
 		pt_printf("volume %d%%\n", audio_volume());
+		return 0;
+	}
+	pt_printf("volume %d%%, to the %s%s\n", audio_volume(),
+		  audio_to_jack() ? "headphones" : "speaker",
+		  audio_output() != AUDIO_OUT_AUTO ? " (kept there)" :
+		  audio_jack_switch() ? " (auto: a plug says)" : "");
+	if (audio_to_jack())
+		pt_printf("  (the speaker's is %d%%)\n", audio_out_volume(AUDIO_OUT_SPEAKER));
 	else
-		pt_printf("volume %d%%, to the %s%s\n", audio_volume(),
-			  audio_to_jack() ? "jack" : "speaker",
-			  audio_output() != AUDIO_OUT_AUTO ? " (kept there)" :
-			  audio_jack_switch() ? " (auto: a plug says)" : "");
+		pt_printf("  (the headphones' is %d%%)\n", audio_out_volume(AUDIO_OUT_JACK));
 	return 0;
 }
 

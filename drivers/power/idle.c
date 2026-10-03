@@ -517,10 +517,12 @@ static void idle_load(void)
 		else if (sscanf(line, "backlight %d", &v) == 1 && v >= LIGHT_MIN && v <= 100)
 			lcd_backlight_set(v);
 		else if (sscanf(line, "volume %d", &v) == 1 && v >= 0 && v <= 100) {
-			audio_set_volume(v);
+			audio_set_out_volume(AUDIO_OUT_SPEAKER, v);
 			if (v)
 				unmuted = v;
-		} else if (!strncmp(line, "output ", 7))
+		} else if (sscanf(line, "headphones %d", &v) == 1 && v >= 0 && v <= 100)
+			audio_set_out_volume(AUDIO_OUT_JACK, v);
+		else if (!strncmp(line, "output ", 7))
 			audio_set_output(!strncmp(line + 7, "jack", 4) ? AUDIO_OUT_JACK :
 					 AUDIO_OUT_SPEAKER);
 	}
@@ -538,14 +540,16 @@ static int save_config(void)
 		return -EIO;
 	fprintf(f, "# seconds without a key before the screen dims, goes dark,\n"
 		"# and the system suspends; 0 is never. And light sleep between\n"
-		"# events. `power` sets these. The brightness and the volume as\n"
+		"# events. `power` sets these. The brightness and the volumes as\n"
 		"# they were last set (backlight, volume, Fn 5 to Fn 9).\n"
 		"dim %d\nblank %d\nsuspend %d\nsleep %s\n", times.dim_s, times.blank_s,
 		times.suspend_s, sleep_wanted() ? "on" : "off");
 	if (light >= LIGHT_MIN)
 		fprintf(f, "backlight %d\n", light);	/* never a dark screen at boot */
 	if (audio_present())
-		fprintf(f, "volume %d\n", audio_volume());
+		fprintf(f, "volume %d\n", audio_out_volume(AUDIO_OUT_SPEAKER));
+	if (audio_has_jack())
+		fprintf(f, "headphones %d\n", audio_out_volume(AUDIO_OUT_JACK));
 	if (audio_has_jack() && audio_output() != AUDIO_OUT_AUTO)
 		fprintf(f, "output %s\n", audio_output() == AUDIO_OUT_JACK ? "jack" : "speaker");
 	return fclose(f) ? -EIO : 0;

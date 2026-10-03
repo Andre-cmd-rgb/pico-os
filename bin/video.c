@@ -9,7 +9,8 @@
  * The file is:
  *
  *	 0  "PTV2"
- *	 4  u16 width, u16 height, u16 frames a second, u16 flags (1: sound)
+ *	 4  u16 width, u16 height, u16 frames a second, u16 flags (1: sound,
+ *	    2: the sound is stereo, left and right side by side)
  *	12  u32 frames, u32 sample rate, u32 sound bytes per frame
  *	24  u16 slices, two bytes kept back, u32 where the index is (0: none)
  *	32  each frame: for each slice u32 length and that many bytes of
@@ -95,6 +96,7 @@ struct slot {
 struct clip {
 	int	 w, h, fps, frames;
 	int	 rate, audio_bytes;	/* per frame; 0 when silent */
+	int	 channels;		/* of the sound: 1 or 2 */
 	int	 slices;
 	uint32_t index_at;		/* where its index is, or 0 */
 };
@@ -394,10 +396,11 @@ static int read_header(struct reader *r, struct clip *c)
 	c->frames = (int)le32(h + 12);
 	c->rate = (int)le32(h + 16);
 	c->audio_bytes = le16(h + 10) & 1 ? (int)le32(h + 20) : 0;
+	c->channels = le16(h + 10) & 2 ? 2 : 1;
 	c->slices = memcmp(h, "PTV1", 4) ? le16(h + 24) : 1;
 	c->index_at = memcmp(h, "PTV1", 4) ? le32(h + 28) : 0;
 	if (c->w <= 0 || c->h <= 0 || c->fps <= 0 || c->fps > 120 || c->frames < 0 ||
-	    c->audio_bytes < 0 || c->audio_bytes > 1 << 16 || c->audio_bytes & 1)
+	    c->audio_bytes < 0 || c->audio_bytes > 1 << 17 || c->audio_bytes % (2 * c->channels))
 		return -EINVAL;
 	if (c->slices < 1 || c->slices > MAX_SLICES || c->h % c->slices)
 		return -EINVAL;
@@ -409,7 +412,7 @@ static int read_header(struct reader *r, struct clip *c)
 	 * most of a tenth of a second by the end of a song.
 	 */
 	if (c->audio_bytes) {
-		c->rate = c->audio_bytes / 2 * c->fps;
+		c->rate = c->audio_bytes / 2 / c->channels * c->fps;
 		if (c->rate < 8000 || c->rate > 48000)
 			return -ENOTSUP;
 	}
@@ -688,7 +691,7 @@ static void requeue(struct slot *slots, int ahead, int from, int to, const struc
 
 		if (c->audio_bytes) {
 			f->play_at = esp_timer_get_time() + audio_queued_us();
-			audio_write(f->pcm, c->audio_bytes, 1);
+			audio_write(f->pcm, c->audio_bytes, c->channels);
 		} else {
 			f->play_at += away;
 		}
@@ -1025,7 +1028,7 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 				r->play_at = now;	/* shown at once, and heard never */
 			} else if (clip.audio_bytes) {
 				r->play_at = now + audio_queued_us();
-				audio_write(r->pcm, clip.audio_bytes, 1);
+				audio_write(r->pcm, clip.audio_bytes, clip.channels);
 			} else {
 				r->play_at = started + (int64_t)nread * frame_us;
 			}

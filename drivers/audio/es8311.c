@@ -13,6 +13,7 @@
 
 #include "drivers/drivers.h"
 #include "es8311.h"
+#include "levels.h"
 
 #if CONFIG_PT_AUDIO
 
@@ -81,16 +82,20 @@ static int clock_config(int rate)
 
 	ret |= wr(REG_CLK2, 0x00);			/* pre-divide 1, multiply 1 */
 	ret |= wr(REG_CLK5, 0x00);			/* ADC and DAC dividers 1 */
-	ret |= rd(REG_CLK3, &reg);
+	if (rd(REG_CLK3, &reg))
+		return -EIO;
 	ret |= wr(REG_CLK3, (reg & 0x80) | 0x10);	/* single speed, ADC osr 16 */
-	ret |= rd(REG_CLK4, &reg);
+	if (rd(REG_CLK4, &reg))
+		return -EIO;
 	ret |= wr(REG_CLK4, (reg & 0x80) | (rate <= 16000 ? 0x20 : 0x10));
-	ret |= rd(REG_CLK7, &reg);
+	if (rd(REG_CLK7, &reg))
+		return -EIO;
 	ret |= wr(REG_CLK7, reg & 0xc0);		/* LRCK divider 256 */
 	ret |= wr(REG_CLK8, 0xff);
-	ret |= rd(REG_CLK6, &reg);
+	if (rd(REG_CLK6, &reg))
+		return -EIO;
 	ret |= wr(REG_CLK6, (reg & 0xe0) | 0x03);	/* BCLK = MCLK / 4 */
-	return ret;
+	return ret ? -EIO : 0;
 }
 
 int es8311_init(int sda, int scl, int rate)
@@ -102,7 +107,7 @@ int es8311_init(int sda, int scl, int rate)
 		.scl_speed_hz = 100000,
 	};
 	uint8_t id1 = 0, id2 = 0, reg;
-	int ret;
+	int ret = 0;
 
 	if (!dev) {
 		if ((ret = i2c_bus_get(sda, scl, (struct i2c_master_bus_t **)&bus)))
@@ -120,55 +125,71 @@ int es8311_init(int sda, int scl, int rate)
 	}
 
 	/* Power up the analogue side and let the chip settle. */
-	wr(REG_PWR, 0xfa);
-	wr(REG_GPIO, 0x08);	/* the codec ignores the very first write now and then */
-	wr(REG_GPIO, 0x08);
-	wr(REG_CLK1, 0x30);
-	wr(REG_CLK2, 0x00);
-	wr(REG_CLK3, 0x10);
-	wr(REG_MIC_GAIN, 0x24);
-	wr(REG_CLK4, 0x10);
-	wr(REG_CLK5, 0x00);
-	wr(REG_SYS0B, 0x00);
-	wr(REG_SYS0C, 0x00);
-	wr(REG_SYS10, 0x1f);
-	wr(REG_SYS11, 0x7f);
-	wr(REG_RESET, 0x80);
+	ret |= wr(REG_PWR, 0xfa);
+	ret |= wr(REG_GPIO, 0x08);	/* the codec ignores the very first write now and then */
+	ret |= wr(REG_GPIO, 0x08);
+	ret |= wr(REG_CLK1, 0x30);
+	ret |= wr(REG_CLK2, 0x00);
+	ret |= wr(REG_CLK3, 0x10);
+	ret |= wr(REG_MIC_GAIN, 0x24);
+	ret |= wr(REG_CLK4, 0x10);
+	ret |= wr(REG_CLK5, 0x00);
+	ret |= wr(REG_SYS0B, 0x00);
+	ret |= wr(REG_SYS0C, 0x00);
+	ret |= wr(REG_SYS10, 0x1f);
+	ret |= wr(REG_SYS11, 0x7f);
+	ret |= wr(REG_RESET, 0x80);
+	if (ret)
+		goto fail;
 
 	/* We are the I2S master and we provide MCLK, so the codec is a slave. */
-	if (rd(REG_RESET, &reg))
-		return -EIO;
-	wr(REG_RESET, reg & 0xbf);
-	wr(REG_CLK1, 0x3f);		/* clocks on, MCLK from the MCLK pin */
-	if (rd(REG_CLK6, &reg) == 0)
-		wr(REG_CLK6, reg & ~0x20);	/* BCLK not inverted */
-	wr(REG_OUT, 0x10);
-	wr(REG_ADC_HPF1, 0x0a);
-	wr(REG_ADC_HPF2, 0x6a);		/* high-pass filter: no DC offset on the mic */
-	wr(REG_GPIO, 0x00);
+	if ((ret = rd(REG_RESET, &reg)))
+		goto fail;
+	ret |= wr(REG_RESET, reg & 0xbf);
+	ret |= wr(REG_CLK1, 0x3f);		/* clocks on, MCLK from the MCLK pin */
+	if (rd(REG_CLK6, &reg)) {
+		ret = -EIO;
+		goto fail;
+	}
+	ret |= wr(REG_CLK6, reg & ~0x20);	/* BCLK not inverted */
+	ret |= wr(REG_OUT, 0x10);
+	ret |= wr(REG_ADC_HPF1, 0x0a);
+	ret |= wr(REG_ADC_HPF2, 0x6a);	/* high-pass filter: no DC offset on the mic */
+	ret |= wr(REG_GPIO, 0x00);
+	if (ret)
+		goto fail;
 
 	if ((ret = clock_config(rate)))
-		return ret;
+		goto fail;
 
 	/* 16 bits per sample, I2S (Philips) framing, in both directions. */
-	if (rd(REG_SDPIN, &reg) == 0)
-		wr(REG_SDPIN, (reg & 0xfc) | 0x0c);
-	if (rd(REG_SDPOUT, &reg) == 0)
-		wr(REG_SDPOUT, (reg & 0xfc) | 0x0c);
+	if ((ret = rd(REG_SDPIN, &reg)))
+		goto fail;
+	ret |= wr(REG_SDPIN, (reg & 0xfc) | 0x0c);
+	if (rd(REG_SDPOUT, &reg)) {
+		ret = -EIO;
+		goto fail;
+	}
+	ret |= wr(REG_SDPOUT, (reg & 0xfc) | 0x0c);
 
 	/* Start: un-mute both paths, power up the DAC, analogue microphone. */
-	wr(REG_SDPIN, 0x0c);
-	wr(REG_SDPOUT, 0x0c);
-	wr(REG_ADC_VOL, 0xbf);		/* 0 dB */
-	wr(REG_PWR2, 0x02);
-	wr(REG_DACEN, 0x00);
-	wr(REG_PGA, 0x1a);		/* analogue microphone, PGA on */
-	wr(REG_PWR, 0x01);
-	wr(REG_ADC_RAMP, 0x40);
-	wr(REG_DAC_RAMP, 0x08);
-	wr(REG_GP, 0x00);
+	ret |= wr(REG_SDPIN, 0x0c);
+	ret |= wr(REG_SDPOUT, 0x0c);
+	ret |= wr(REG_ADC_VOL, 0xbf);	/* 0 dB */
+	ret |= wr(REG_PWR2, 0x02);
+	ret |= wr(REG_DACEN, 0x00);
+	ret |= wr(REG_PGA, 0x1a);		/* analogue microphone, PGA on */
+	ret |= wr(REG_PWR, 0x01);
+	ret |= wr(REG_ADC_RAMP, 0x40);
+	ret |= wr(REG_DAC_RAMP, 0x08);
+	ret |= wr(REG_GP, 0x00);
+	if (ret)
+		goto fail;
 	klog("es8311: codec at 0x%02x, %d Hz", ADDR, rate);
 	return 0;
+fail:
+	es8311_deinit();
+	return -EIO;
 }
 
 /*
@@ -206,6 +227,16 @@ int es8311_power(bool on)
 	return ret ? -EIO : 0;
 }
 
+/* A failed audio startup gives the shared I2C bus its device slot back. */
+void es8311_deinit(void)
+{
+	if (!dev)
+		return;
+	es8311_power(false);
+	i2c_master_bus_rm_device(dev);
+	dev = NULL;
+}
+
 int es8311_set_rate(int rate)
 {
 	return dev ? clock_config(rate) : -ENODEV;
@@ -213,12 +244,11 @@ int es8311_set_rate(int rate)
 
 /*
  * The DAC volume register is 0.5 dB per step: 0 is silence, 0xbf is 0 dB.
- * Percent maps onto the top 40 dB of that, which is the useful range for a
- * small speaker.
+ * Percent maps onto the top 40 dB, including the full 0 dB setting.
  */
 int es8311_set_volume(int percent)
 {
-	int reg = percent <= 0 ? 0 : 0xbf - (100 - percent) * 4 / 5;
+	int reg = speaker_volume_reg(percent);
 
 	return dev ? wr(REG_DAC_VOL, reg) : -ENODEV;
 }
@@ -250,6 +280,7 @@ int es8311_set_mic_gain(int db)
 int es8311_set_alc(bool on, int max_db)
 {
 	int ceiling = 0xbf + max_db * 2;	/* 0xbf is 0 dB, half a dB a step */
+	int ret;
 
 	if (!dev)
 		return -ENODEV;
@@ -258,15 +289,17 @@ int es8311_set_alc(bool on, int max_db)
 	if (ceiling > 0xff)
 		ceiling = 0xff;
 	if (!on) {
-		wr(REG_ALC, 0x00);
-		return wr(REG_ADC_VOL, 0xbf);	/* plain 0 dB again */
+		ret = wr(REG_ALC, 0x00);
+		ret |= wr(REG_ADC_VOL, 0xbf);	/* plain 0 dB again */
+		return ret ? -EIO : 0;
 	}
-	wr(REG_ADC_VOL, ceiling);
+	ret = wr(REG_ADC_VOL, ceiling);
 	/* Target between -10 dB and -7 dB of full scale: loud, with room
 	 * left for a door slamming. Window 6 is a quarter of a dB every
 	 * 128 samples, so it follows speech without pumping. */
-	wr(REG_ALC_LEVEL, (13 << 4) | 9);
-	return wr(REG_ALC, 0x80 | 0x06);
+	ret |= wr(REG_ALC_LEVEL, (13 << 4) | 9);
+	ret |= wr(REG_ALC, 0x80 | 0x06);
+	return ret ? -EIO : 0;
 }
 
 int es8311_mute(bool on)

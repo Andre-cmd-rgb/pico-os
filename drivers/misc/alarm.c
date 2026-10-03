@@ -405,7 +405,7 @@ static void snooze(const struct alarm *a, int count)
 
 static void ring(const struct alarm *a)
 {
-	int volume = audio_volume(), light = lcd_backlight_get();
+	int volume = 0, light = lcd_backlight_get();
 	int limit = a->kind == ALARM_CHIME ? CHIME_S : RING_S;
 	int64_t start = esp_timer_get_time();
 	bool sound = audio_present();
@@ -417,8 +417,11 @@ static void ring(const struct alarm *a)
 	al.ringing = true;
 	power_activity();		/* light a dark screen to ring */
 	klog("alarm: %02d:%02d %s", a->hour, a->min, a->label[0] ? a->label : "(no label)");
-	if (buf)
+	if (buf) {
+		/* the speaker's, now: an alarm rings there, headphones or not */
 		audio_claim(true);
+		volume = audio_volume();
+	}
 	if (a->kind == ALARM_CHIME) {
 		if (buf) {
 			chime(buf);
