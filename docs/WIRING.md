@@ -391,10 +391,12 @@ speaker and a card attached:
    line if a cell is fitted, and `sd` if a card is in).
 4. `lcdtest` draws eight colour bars: red, green, blue, yellow, magenta,
    cyan, white, black. `backlight 20` dims the screen.
-5. `i2cdetect` should list `0x18  ES8311 audio codec`, plus `0x5f` with a
+5. In a development build (menuconfig, System: **Development build**),
+   `i2cdetect` should list `0x18  ES8311 audio codec`, plus `0x5f` with a
    CardKB attached.
 6. `beep`, then `rec -t 3 /tmp/t.wav && play /tmp/t.wav`.
-7. `keytest` if a CardKB is attached; press q three times to quit.
+7. `keytest` (a development build too) if a CardKB is attached; press q
+   three times to quit.
 
 ## When something looks wrong
 
@@ -404,11 +406,11 @@ speaker and a card attached:
 | Red and blue swapped | menuconfig → **Panel expects BGR** |
 | Looks like a photo negative | **Invert colours** |
 | Upside down | **Rotation** 3 instead of 1 |
-| `es8311: no codec` | `i2cdetect`: nothing at all means the bus is held down, probably by whatever is on the keyboard header — unplug it and reboot |
+| `es8311: no codec` | `i2cdetect` (a development build): nothing at all means the bus is held down, probably by whatever is on the keyboard header — unplug it and reboot |
 | No sound, but the codec is found | the amplifier's pin is a shutdown input, not an enable: toggle **The amplifier runs when that pin is low** in menuconfig |
 | Sound is distorted | check the speaker's clearance and mounting in the case; lower `volume` if the speaker or amplifier is overdriven |
 | Screen lights up but stays blank | menuconfig → **Start-up sequence**: try the standard table instead of the alternative |
-| Noise or torn lines on the screen | the panel runs at 40 MHz here, which is over its datasheet: `lcdtest verify` reads frames back from it; drop **Bus clock** to 26000000 if they come back wrong |
+| Noise or torn lines on the screen | the panel runs at 40 MHz here, which is over its datasheet: a development build's `lcdtest verify` reads frames back from it; drop **Bus clock** to 26000000 if they come back wrong |
 | `sd: no usable card` | reseat it; try another card; `PT_SD_MMC_D1` = -1 (one-wire mode) if the card is flaky |
 | `battery` says "no battery fitted" with a cell fitted | check the socket polarity and that the cell is not below its protection cut-out |
 | `cardkb: keyboard disconnected` again and again | the bus is shared with the codec on weak internal pull-ups: shorten the cable, or add 4.7 kΩ from SDA and SCL to 3V3 |
@@ -472,7 +474,8 @@ low-power core can read I2C on, which is what lets a key wake the board from
 ## Diagnosing a blank parallel panel
 
 `lcdprobe` drives every pin by hand and reads the controller's ID; `lcdreg`
-sends commands and reads registers one at a time. Both take the pins away
+sends commands and reads registers one at a time (both in a development
+build). Both take the pins away
 from the display bus until the next reboot, so reboot after using them.
 The one thing that did change behaviour during that hunt is now in the
 driver for good: a 2 ms pause after every start-up command, because the

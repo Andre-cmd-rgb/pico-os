@@ -243,7 +243,7 @@ The bus runs at 40 MHz. At 80 the panel now and then wrote a pixel
 twice early in a long run -- every pixel after it in that run one place
 on, a column of the picture askew -- in half the frames, from PSRAM or
 internal RAM alike, with the SPI controller reporting nothing amiss; at
-40, never. `lcdtest verify` is how it showed: frames of noise sent as
+40, never. `lcdtest verify` (a development build) is how it showed: frames of noise sent as
 video sends them, read back from the panel's memory (Memory Read,
 RGB666 at 4 MHz, half a second a frame) and compared pixel for pixel.
 
@@ -277,8 +277,9 @@ mid-frame, and at 40 MHz the porches slowing the simulated refresh and
 torn one is not reported. Two things only the panel could show: its row
 order bit (MY) turns the refresh round too, so it is never changed
 between frames; and with MY set the refresh runs from the last row to
-the first. `lcdtest tear up|down|land` flashes red and blue frames sent
-each way: all at once is right, a seam is tearing.
+the first. `lcdtest tear` (a development build) flashes red and blue
+frames sent as video sends them, `lcdtest tear land` plain landscape: all
+at once is right, a seam is tearing.
 
 The panel also sat on the wrong SPI controller until 1.0: the board file
 says `SPI_HOST=2` for SPI2, and ESP-IDF numbers from SPI1, so 2 was SPI3,
@@ -608,6 +609,11 @@ make scripttest PORT=/dev/ttyACM0  # if/for/while/case, functions, scripts
 make langtest PORT=/dev/ttyACM0    # the pico language on the board
 make stress PORT=/dev/ttyACM0      # 10 minutes of process, file and signal churn
 ```
+
+What is only for finding things out -- `keytest`, `i2cdetect`,
+`lcdprobe`, `lcdreg`, `lcdtest clock|tear|verify`, `volume jack` with no
+plug in -- is in a development build only (menuconfig, pico-os > System >
+**Development build**, `PT_DEV`); the board suites skip what is missing.
 
 The board suites work in `/tmp/work` or `$HOME` and clean up. The harness
 opens the native USB port without toggling RTS/DTR, so the board keeps

@@ -534,7 +534,7 @@ static int slowed;			/* lines added to the porches */
 static int native_users;		/* lcd_native_begin()s not yet ended */
 static float native_px_us;		/* the last begun frame's bands, without the overhead */
 
-static bool scan_down = true;		/* with MY set; `lcdtest dir` turns it */
+static bool scan_down = true;		/* with MY set: the refresh runs from the last row */
 static struct scanout_panel refresh = {
 	.lines_per_us = (NATIVE_H + PORCH_LINES) / 14000.0f,
 	.lines = NATIVE_H + PORCH_LINES,
@@ -545,16 +545,6 @@ static struct scanout_panel refresh = {
  * interrupts -- as frames have gone: up at once, down slowly. */
 #define OVERHEAD_US	1500		/* what 13 bands at 40 MHz have cost */
 static float overhead_us = OVERHEAD_US;
-
-void lcd_native_order(bool upwards)
-{
-	scan_down = upwards;
-}
-
-bool lcd_native_upwards(void)
-{
-	return scan_down;
-}
 
 /*
  * The line being refreshed, 0 at the start of vertical sync. The panel
@@ -1190,8 +1180,6 @@ int lcd_read_reg(uint8_t cmd, uint8_t *out, int n) { return -ENODEV; }
 bool lcd_native_begin(int cw, int p0, int ph, int frame_us) { return false; }
 int lcd_native_every(void) { return 0; }
 bool lcd_native_end(bool wait) { return true; }
-void lcd_native_order(bool upwards) { }
-bool lcd_native_upwards(void) { return false; }
 int lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph) { return -ENODEV; }
 int lcd_read_native(uint8_t *raw, size_t n, int c0, int cw, int p0, int ph) { return -ENODEV; }
 int lcd_capture_begin(void) { return -ENODEV; }

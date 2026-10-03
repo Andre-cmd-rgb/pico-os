@@ -26,6 +26,7 @@ CHECKING IT
 
   dmesg               what each driver found at boot
   i2cdetect           what answers on the I2C bus
+                      (in a development build)
   lcdtest             colour bars
   backlight 0-100     dim the screen
   beep / rec / play   the sound path

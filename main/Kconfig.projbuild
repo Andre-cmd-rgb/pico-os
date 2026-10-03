@@ -100,6 +100,15 @@ config PT_KLOG_SIZE
 	range 2048 262144
 	default 16384
 
+config PT_DEV
+	bool "Development build: the test and debug tools"
+	default n
+	help
+	  Adds what is only for trying things out and finding faults:
+	  keytest, i2cdetect, lcdprobe and lcdreg, `lcdtest clock`, `tear`
+	  and `verify`, and `volume jack` with no plug in. Off, the build
+	  has none of them; the board's test suites skip what is missing.
+
 endmenu
 
 #
@@ -129,7 +138,8 @@ config PT_LCD_ILI9341_I80
 	select PT_LCD
 	help
 	  The 2.4" Uno shield. Needs 12 wires and careful timing; see
-	  docs/WIRING.md and the lcdprobe and lcdreg commands.
+	  docs/WIRING.md and the lcdprobe and lcdreg commands (a development
+	  build's).
 
 endchoice
 
@@ -334,9 +344,9 @@ config PT_LCD_RD
 	help
 	  The display is only written to, so RD normally goes straight to
 	  3V3. Wired to a GPIO instead, the driver holds it high, and
-	  lcdprobe and lcdreg use it to read the controller back. It must
-	  never float: the shield then turns its data buffer around and
-	  fights the bus.
+	  lcdprobe and lcdreg (a development build's) use it to read the
+	  controller back. It must never float: the shield then turns its
+	  data buffer around and fights the bus.
 
 endmenu
 
@@ -852,7 +862,7 @@ endchoice
 
 config PT_AUDIO_JACK_FORCE
 	bool "Let `volume jack` keep sound on the jack with no plug (development)"
-	depends on PT_AUDIO_JACK_DETECT >= 0
+	depends on PT_AUDIO_JACK_DETECT >= 0 && PT_DEV
 	default n
 	help
 	  With a socket that can tell, the plug decides where sound goes and

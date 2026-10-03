@@ -1,6 +1,8 @@
 /*
  * System programs: help ps kill free dmesg uptime uname date sleep env which
- * clear reboot poweroff true false, and the hardware checks lcdtest keytest.
+ * clear reboot poweroff true false, and the hardware check lcdtest; in a
+ * development build (PT_DEV) also keytest, i2cdetect, lcdprobe, lcdreg and
+ * lcdtest's clock, tear and verify.
  */
 #include <ctype.h>
 #include <stdio.h>
@@ -1180,7 +1182,9 @@ static void lcdtest_picture(int which, const uint16_t bars[8])
 	vt_screen_end();
 }
 
-PT_COMPLETE(lcdtest, ": clock tear read scan dir verify\ntear: up down land\ndir: up down\n")
+#if CONFIG_PT_DEV
+
+PT_COMPLETE(lcdtest, ": clock tear verify\ntear: land\n")
 
 /* ------------------------------------------------------------ lcdtest verify */
 
@@ -1308,129 +1312,95 @@ out:
 	return ret ? 1 : bad ? 1 : 0;
 }
 
+/*
+ * Three seconds of the screen changing colour as fast as it can, sent the
+ * way `video` sends frames, or plain landscape (`land`). In step with
+ * the refresh it changes all at once; out of step it splits into two
+ * colours along a seam.
+ */
+static int lcd_tear(bool land)
+{
+	static const uint16_t colors[2] = { 0x001f, 0xf800 };	/* blue, red */
+	size_t bytes = (size_t)lcd_width() * lcd_height() * 2;
+	uint8_t *mem = pt_malloc(bytes + 63);
+	uint8_t *px = mem ? (uint8_t *)(((uintptr_t)mem + 63) & ~(uintptr_t)63) : NULL;
+	int64_t end = pt_uptime_us() + 3000000;
+	int frames = 0, late = 0;
+
+	if (!px)
+		return fail("lcdtest", "tear", -ENOMEM);
+	pt_sigcatch(true);
+	power_screen_wake();
+	vt_hold_screen(true);
+	/* as video does: the CPU at full speed, the refresh slowed if a frame needs it */
+	cpufreq_boost(true);
+	if (!land && !lcd_native_begin(lcd_height(), 0, lcd_width(), 0))
+		land = true;
+	for (int n = 0; pt_uptime_us() < end && !pt_interrupted(); n++) {
+		uint16_t c = colors[n & 1];
+
+		for (size_t i = 0; i < bytes / 2; i++) {
+			px[2 * i] = c >> 8;
+			px[2 * i + 1] = c & 0xff;
+		}
+		if (vt_screen_begin()) {
+			if (land)
+				lcd_draw(0, 0, lcd_width(), lcd_height(), px);
+			else
+				late += lcd_draw_native(px, 0, lcd_height(), 0, lcd_width()) == -EAGAIN;
+			frames++;
+		}
+		vt_screen_end();
+	}
+	if (!land)
+		lcd_native_end(true);
+	cpufreq_boost(false);
+	vt_hold_screen(false);
+	pt_free(mem);
+	if (!land)
+		pt_printf("%d frames, %d late (a late one may show a seam)\n", frames, late);
+	return 0;
+}
+
+#define LCDTEST_USAGE	"usage: lcdtest [clock [MHZ] | tear [land] |\n" \
+			"               verify [N]]\n"
+#define LCDTEST_MORE	"\n  clock  the panel's bus clock, until the next boot\n" \
+			"  tear   3 s of red/blue frames sent as video sends them:\n" \
+			"         all at once is good, a seam is tearing\n" \
+			"  verify frames sent as video sends them, read back\n" \
+			"         from the panel and compared (10 by default)"
+#else
+#define LCDTEST_USAGE	"usage: lcdtest\n"
+#define LCDTEST_MORE	""
+#endif /* CONFIG_PT_DEV */
+
 PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
-	   "usage: lcdtest [clock [MHZ] | tear up|down|land |\n"
-	   "               read HEX | scan | dir up|down |\n"
-	   "               verify [FRAMES]]\n"
+	   LCDTEST_USAGE
 	   "Shows 8 color bars, then a border. Wrong colors or garbage\n"
-	   "mean a data line is swapped or loose; see docs/WIRING.md.\n"
-	   "  clock  the panel's bus clock, until the next boot\n"
-	   "  tear   3 s of red/blue frames sent as video sends them:\n"
-	   "         all at once is good, a seam is tearing\n"
-	   "  read   a register of the panel (its SDO is wired)\n"
-	   "  scan   where its refresh is, sampled over 25 ms\n"
-	   "  dir    which way video assumes the refresh runs\n"
-	   "  verify frames sent as video sends them, read back\n"
-	   "         from the panel and compared (10 by default)")
+	   "mean a data line is swapped or loose; see docs/WIRING.md."
+	   LCDTEST_MORE)
 {
 	if (!vt_has_display()) {
 		pt_dprintf(PT_STDERR, "lcdtest: display disabled in menuconfig\n");
 		return 1;
 	}
-	if (argc >= 2 && (!strcmp(argv[1], "scan") || !strcmp(argv[1], "read")))
-		power_screen_wake();
+#if CONFIG_PT_DEV
 	if (argc <= 3 && argc >= 2 && !strcmp(argv[1], "verify"))
 		return lcd_verify(argc == 3 && atoi(argv[2]) > 0 ? atoi(argv[2]) : 10);
-	if (argc == 3 && !strcmp(argv[1], "tear")) {
-		/*
-		 * Three seconds of the screen changing colour as fast as it can,
-		 * sent the way `video` sends frames: in the panel's order with
-		 * the refresh read "up" or "down", or plain landscape ("land").
-		 * In step with the refresh, it changes all at once; out of step,
-		 * it splits into two colours along a seam.
-		 */
-		static const uint16_t colors[2] = { 0x001f, 0xf800 };	/* blue, red */
-		size_t bytes = (size_t)lcd_width() * lcd_height() * 2;
-		uint8_t *mem = pt_malloc(bytes + 63);
-		uint8_t *px = mem ? (uint8_t *)(((uintptr_t)mem + 63) & ~(uintptr_t)63) : NULL;
-		bool land = !strcmp(argv[2], "land"), native = false;
-		int64_t end = pt_uptime_us() + 3000000;
-		int frames = 0, late = 0;
-
-		if (!px)
-			return fail("lcdtest", "tear", -ENOMEM);
-		pt_sigcatch(true);
-		power_screen_wake();
-		vt_hold_screen(true);
-		/* as video does: the CPU at full speed, the refresh slowed if a frame needs it */
-		cpufreq_boost(true);
-		if (!land && (native = lcd_native_begin(lcd_height(), 0, lcd_width(), 0)))
-			lcd_native_order(!strcmp(argv[2], "up"));
-		else
-			land = true;
-		for (int n = 0; pt_uptime_us() < end && !pt_interrupted(); n++) {
-			uint16_t c = colors[n & 1];
-
-			for (size_t i = 0; i < bytes / 2; i++) {
-				px[2 * i] = c >> 8;
-				px[2 * i + 1] = c & 0xff;
-			}
-			if (vt_screen_begin()) {
-				if (land)
-					lcd_draw(0, 0, lcd_width(), lcd_height(), px);
-				else
-					late += lcd_draw_native(px, 0, lcd_height(), 0, lcd_width()) == -EAGAIN;
-				frames++;
-			}
-			vt_screen_end();
-		}
-		lcd_native_order(true);
-		if (native)
-			lcd_native_end(true);
-		cpufreq_boost(false);
-		vt_hold_screen(false);
-		pt_free(mem);
-		if (!land)
-			pt_printf("%d frames, %d late (a late one may show a seam)\n", frames, late);
-		return 0;
-	}
-	if (argc == 3 && !strcmp(argv[1], "dir")) {
-		/* which way the panel's refresh runs, for sending video in step */
-		lcd_native_order(!strcmp(argv[2], "up"));
-		return 0;
-	}
-	if (argc == 2 && !strcmp(argv[1], "scan")) {
-		/* where the panel's refresh is, sampled as fast as it can be;
-		 * on the heap, as each copy's own */
-		struct { uint8_t b[4]; int64_t at; } *v = pt_calloc(400, sizeof(*v));
-
-		if (!v)
-			return fail("lcdtest", "scan", -ENOMEM);
-		for (int k = 0; k < 400; k++) {
-			int err = lcd_read_reg(0x45, v[k].b, 4);
-
-			if (err) {
-				pt_free(v);
-				return fail("lcdtest", "scan", err);
-			}
-			v[k].at = pt_uptime_us();
-		}
-		for (int k = 0; k < 400; k++)
-			pt_printf("%lld %02x %02x %02x\n", (long long)(v[k].at - v[0].at), v[k].b[0],
-				  v[k].b[1], v[k].b[2]);
-		pt_free(v);
-		return 0;
-	}
-	if (argc == 3 && !strcmp(argv[1], "read")) {
-		/* a register of the panel, in hex: lcdtest read 45 */
-		uint8_t b[4] = { 0 };
-		int err;
-
-		for (int k = 0; k < 8; k++) {
-			if ((err = lcd_read_reg((uint8_t)strtoul(argv[2], NULL, 16), b, 4)))
-				return fail("lcdtest", "read", err);
-			pt_printf("%02x %02x %02x %02x\n", b[0], b[1], b[2], b[3]);
-			pt_sleep_ms(3);
-		}
-		return 0;
-	}
-	if (argc >= 2 && !strcmp(argv[1], "clock")) {
+	if (argc <= 3 && argc >= 2 && !strcmp(argv[1], "tear"))
+		return lcd_tear(argc == 3 && !strcmp(argv[2], "land"));
+	if (argc <= 3 && argc >= 2 && !strcmp(argv[1], "clock")) {
 		int err;
 
 		if (argc == 3 && (err = lcd_set_clock(atoi(argv[2]) * 1000000)))
 			return fail("lcdtest", "clock", err);
 		pt_printf("panel bus clock %d MHz\n", lcd_clock() / 1000000);
 		return 0;
+	}
+#endif
+	if (argc > 1) {
+		pt_dprintf(PT_STDERR, LCDTEST_USAGE);
+		return 2;
 	}
 	static const uint16_t bars[8] = {
 		0xf800, 0x07e0, 0x001f, 0xffe0, 0xf81f, 0x07ff, 0xffff, 0x0000,
@@ -1461,7 +1431,7 @@ PT_PROGRAM(lcdtest, "draw test patterns to check display wiring\n"
 	return 0;
 }
 
-#if CONFIG_PT_LCD_ILI9341_I80
+#if CONFIG_PT_LCD_ILI9341_I80 && CONFIG_PT_DEV
 
 /*
  * One register read twice, with the data pins pulled up and then down. Bits
@@ -1661,7 +1631,7 @@ PT_PROGRAM(lcdreg, "send commands to the display and read registers, by hand\n"
 	return 0;
 }
 
-#endif /* CONFIG_PT_LCD_ILI9341_I80 */
+#endif /* CONFIG_PT_LCD_ILI9341_I80 && CONFIG_PT_DEV */
 
 #if CONFIG_PT_LCD_BACKLIGHT >= 0
 PT_PROGRAM(backlight, "show or set the screen brightness\n"
@@ -1860,6 +1830,7 @@ PT_PROGRAM(screenshot, "save a picture of the screen\n"
 	return 0;
 }
 
+#if CONFIG_PT_DEV
 /*
  * The board's I2C bus is shared, and every bring-up question about it ("is
  * the keyboard seen? is the codec there?") is the same question, so: the
@@ -1918,6 +1889,7 @@ PT_PROGRAM(i2cdetect, "list the devices on an I2C bus\n"
 		pt_printf("that many is usually a bus with no pull-up resistors\n");
 	return 0;
 }
+#endif /* CONFIG_PT_DEV */
 
 PT_COMPLETE(chvt, ": 1 2 3 4\n")
 
@@ -1944,6 +1916,7 @@ PT_PROGRAM(chvt, "switch to another terminal\n"
 	return tty_switch(n - 1) ? 1 : 0;
 }
 
+#if CONFIG_PT_DEV
 PT_PROGRAM(keytest, "show what each key sends\nPress q three times in a row to quit.")
 {
 	int quits = 0;
@@ -1963,3 +1936,4 @@ PT_PROGRAM(keytest, "show what each key sends\nPress q three times in a row to q
 	pt_tty_raw(PT_STDIN, false);
 	return 0;
 }
+#endif /* CONFIG_PT_DEV */

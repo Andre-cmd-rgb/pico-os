@@ -83,7 +83,10 @@ SYSTEM
   ps top kill free dmesg uptime uname date time
   whoami hostname
   sleep env which clear reboot chvt screenshot
-  i2cdetect keytest bench lcdtest backlight
+  bench lcdtest backlight
+  in a development build (PT_DEV) also: keytest
+  i2cdetect lcdprobe lcdreg, lcdtest clock tear
+  verify
   setup       your name, time zone, Wi-Fi, clock,
               colours; setup NAME-OF-ONE for one
   rotate      turn the screen upside down (again:

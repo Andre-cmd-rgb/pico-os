@@ -55,8 +55,6 @@ bool	lcd_native_end(bool wait);
 int	lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph);
 /* the same rectangle read back from the panel: a dummy byte, then RGB666 */
 int	lcd_read_native(uint8_t *raw, size_t n, int c0, int cw, int p0, int ph);
-void	lcd_native_order(bool upwards);	/* which way the refresh runs */
-bool	lcd_native_upwards(void);
 
 #if CONFIG_PT_LCD_ILI9341_I80
 /* Parallel-bus wiring tests (lcdprobe, lcdreg): they drive every pin by
