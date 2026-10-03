@@ -14,7 +14,9 @@
  * and `repo` there can name another repository -- an address, or a
  * folder, which is how a package is tried before it is published.
  */
+#include <limits.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -22,6 +24,7 @@
 #include "psa/crypto.h"
 
 #include "pt/program.h"
+#include "pt/kernel.h"
 #include "util.h"
 
 #define REPO_DEFAULT	"https://raw.githubusercontent.com/Andre-cmd-rgb/pico-os-packages/main"
@@ -29,7 +32,7 @@
 #define LINE_MAX_PKG	256
 
 struct entry {
-	char	name[24];
+	char	name[25];
 	char	version[16];
 	long	size;
 	char	sha[65];
@@ -40,6 +43,30 @@ struct pkgs {
 	struct entry	*e;
 	int		 n;
 };
+
+/* Fixed temporary names and the installed DB belong to one operation at a
+ * time. Keep its PID lease until both owner and helpers have exited after
+ * force-kill, without leaving a locked mutex. */
+static atomic_int pkg_owner;
+
+static bool pkg_enter(void)
+{
+	int owner = atomic_load(&pkg_owner), pid = pt_getpid();
+
+	for (;;) {
+		if (owner && (proc_alive(owner) || proc_group_alive(owner)))
+			return false;
+		if (atomic_compare_exchange_weak(&pkg_owner, &owner, pid))
+			return true;
+	}
+}
+
+static void pkg_leave(void)
+{
+	int pid = pt_getpid();
+
+	atomic_compare_exchange_strong(&pkg_owner, &pid, 0);
+}
 
 /* ~/.config/pkg/NAME, the folders made on the way. */
 static bool pkg_path(const char *name, char *out, size_t size)
@@ -73,10 +100,22 @@ static void repo(char *out, size_t size)
 		out[len - 1] = '\0';
 }
 
+/* Installed files and metadata must follow the same process HOME. */
+static int pkg_bin_dir(char *out, size_t size)
+{
+	const char *home = pt_getenv("HOME");
+
+	if (!home || !*home)
+		return -ENOENT;
+	return (size_t)snprintf(out, size, "%s/bin", home) < size ? 0 : -ENAMETOOLONG;
+}
+
 /* A command run to its end; its exit status, or <0. Ctrl-C reaches it. */
 static int run(char *const argv[])
 {
-	struct pt_spawn req = { .cmd = argv[0], .fd = { -1, -1, -1 } };
+	struct pt_spawn req = {
+		.cmd = argv[0], .fd = { -1, -1, -1 }, .pgid = pt_getpid(),
+	};
 	int pid, status = 0;
 
 	while (argv[req.argc])
@@ -98,7 +137,7 @@ static int run(char *const argv[])
 static int copy(const char *from, const char *to)
 {
 	char buf[1024];
-	int in = pt_open(from, O_RDONLY), out, err = 0;
+	int in = pt_open(from, O_RDONLY), out, closed, err = 0;
 	ssize_t n;
 
 	if (in < 0)
@@ -107,15 +146,27 @@ static int copy(const char *from, const char *to)
 		pt_close(in);
 		return out;
 	}
-	while ((n = pt_read(in, buf, sizeof(buf))) > 0)
-		if (pt_write(out, buf, n) != n) {
-			err = -EIO;
-			break;
+	while ((n = pt_read(in, buf, sizeof(buf))) > 0) {
+		size_t done = 0;
+
+		while (done < (size_t)n) {
+			ssize_t w = pt_write(out, buf + done, n - done);
+
+			if (w <= 0) {
+				err = w < 0 ? (int)w : -EIO;
+				break;
+			}
+			done += w;
 		}
+		if (err)
+			break;
+	}
 	if (n < 0)
 		err = (int)n;
 	pt_close(in);
-	pt_close(out);
+	closed = pt_close(out);
+	if (!err)
+		err = closed;
 	return err;
 }
 
@@ -140,59 +191,101 @@ static bool sha256_of(const char *path, char hex[65], long *size)
 	uint8_t buf[512], sum[32];
 	size_t len = 0;
 	ssize_t n;
-	int fd = pt_open(path, O_RDONLY);
+	int fd = pt_open(path, O_RDONLY), closed;
 
 	*size = 0;
 	if (fd < 0 || psa_crypto_init() != PSA_SUCCESS ||
 	    psa_hash_setup(&op, PSA_ALG_SHA_256) != PSA_SUCCESS) {
 		if (fd >= 0)
 			pt_close(fd);
+		psa_hash_abort(&op);
 		return false;
 	}
 	while ((n = pt_read(fd, buf, sizeof(buf))) > 0) {
-		psa_hash_update(&op, buf, n);
+		if (n > LONG_MAX - *size || psa_hash_update(&op, buf, n) != PSA_SUCCESS) {
+			pt_close(fd);
+			psa_hash_abort(&op);
+			return false;
+		}
 		*size += n;
 	}
-	pt_close(fd);
-	if (psa_hash_finish(&op, sum, sizeof(sum), &len) != PSA_SUCCESS)
+	closed = pt_close(fd);
+	if (n < 0 || closed < 0 ||
+	    psa_hash_finish(&op, sum, sizeof(sum), &len) != PSA_SUCCESS || len != sizeof(sum)) {
+		psa_hash_abort(&op);
 		return false;
+	}
 	for (int i = 0; i < 32; i++)
 		snprintf(hex + 2 * i, 3, "%02x", sum[i]);
 	return true;
 }
 
 /* The lines of a file, each handed to fn. */
-static void each_line(const char *path, void (*fn)(char *line, void *ctx), void *ctx)
+static int each_line(const char *path, void (*fn)(char *line, void *ctx), void *ctx)
 {
 	char buf[512], line[LINE_MAX_PKG];
 	size_t len = 0;
 	ssize_t n;
-	int fd = pt_open(path, O_RDONLY);
+	int fd = pt_open(path, O_RDONLY), closed, err = 0;
 
 	if (fd < 0)
-		return;
+		return fd;
 	while ((n = pt_read(fd, buf, sizeof(buf))) > 0)
 		for (ssize_t i = 0; i < n; i++) {
 			if (buf[i] != '\n') {
-				if (len < sizeof(line) - 1)
-					line[len++] = buf[i];
+				if (len == sizeof(line) - 1) {
+					pt_close(fd);
+					return -EOVERFLOW;
+				}
+				line[len++] = buf[i];
 				continue;
 			}
 			line[len] = '\0';
 			fn(line, ctx);
 			len = 0;
 		}
-	if (len) {
+	if (n < 0)
+		err = (int)n;
+	if (!err && len) {
 		line[len] = '\0';
 		fn(line, ctx);
 	}
-	pt_close(fd);
+	closed = pt_close(fd);
+	return err ? err : closed;
+}
+
+/* The publisher uses [a-z][a-z0-9_-]{0,23}; names also become paths. */
+static bool name_ok(const char *name)
+{
+	size_t len = strlen(name);
+
+	if (!len || len > 24 || name[0] < 'a' || name[0] > 'z')
+		return false;
+	for (size_t i = 1; i < len; i++)
+		if ((name[i] < 'a' || name[i] > 'z') &&
+		    (name[i] < '0' || name[i] > '9') && name[i] != '_' && name[i] != '-')
+			return false;
+	return true;
+}
+
+static bool version_ok(const char *version)
+{
+	size_t len = strlen(version);
+
+	if (!len || len >= sizeof(((struct entry *)0)->version))
+		return false;
+	for (size_t i = 0; i < len; i++)
+		if ((unsigned char)version[i] <= ' ' || (unsigned char)version[i] >= 127)
+			return false;
+	return true;
 }
 
 static void index_line(char *line, void *ctx)
 {
 	struct pkgs *p = ctx;
 	char *f[5];
+	char *end;
+	long size;
 	int k = 0;
 
 	if (line[0] == '#' || !line[0] || p->n == ENTRIES_MAX)
@@ -206,9 +299,18 @@ static void index_line(char *line, void *ctx)
 			*s++ = '\0';
 		}
 	}
+	if (!name_ok(f[0]) || !version_ok(f[1]) || strlen(f[3]) != 64)
+		return;
+	for (int i = 0; i < 64; i++)
+		if ((f[3][i] < '0' || f[3][i] > '9') && (f[3][i] < 'a' || f[3][i] > 'f'))
+			return;
+	errno = 0;
+	size = strtol(f[2], &end, 10);
+	if (errno || !*f[2] || *end || size < 0)
+		return;
 	strlcpy(p->e[p->n].name, f[0], sizeof(p->e[0].name));
 	strlcpy(p->e[p->n].version, f[1], sizeof(p->e[0].version));
-	p->e[p->n].size = atol(f[2]);
+	p->e[p->n].size = size;
 	strlcpy(p->e[p->n].sha, f[3], sizeof(p->e[0].sha));
 	strlcpy(p->e[p->n].about, f[4], sizeof(p->e[0].about));
 	p->n++;
@@ -223,22 +325,26 @@ static void installed_line(char *line, void *ctx)
 	if (!sp || p->n == ENTRIES_MAX)
 		return;
 	*sp = '\0';
+	if (!name_ok(line) || !version_ok(sp + 1))
+		return;
 	memset(&p->e[p->n], 0, sizeof(p->e[0]));
 	strlcpy(p->e[p->n].name, line, sizeof(p->e[0].name));
 	strlcpy(p->e[p->n].version, sp + 1, sizeof(p->e[0].version));
 	p->n++;
 }
 
-static bool load(struct pkgs *p, const char *file, void (*fn)(char *, void *))
+static int load(struct pkgs *p, const char *file, void (*fn)(char *, void *))
 {
 	char path[PT_PATH_MAX];
+	int err;
 
 	p->n = 0;
 	if (!p->e && !(p->e = pt_calloc(ENTRIES_MAX, sizeof(*p->e))))
-		return false;
-	if (pkg_path(file, path, sizeof(path)))
-		each_line(path, fn, p);
-	return true;
+		return -ENOMEM;
+	if (!pkg_path(file, path, sizeof(path)))
+		return -ENAMETOOLONG;
+	err = each_line(path, fn, p);
+	return err == -ENOENT ? 0 : err;
 }
 
 static struct entry *find(struct pkgs *p, const char *name)
@@ -252,17 +358,30 @@ static struct entry *find(struct pkgs *p, const char *name)
 static int save_installed(const struct pkgs *inst)
 {
 	char path[PT_PATH_MAX], tmp[PT_PATH_MAX + 8];
-	int fd;
+	int fd, closed, err = 0;
 
 	if (!pkg_path("installed", path, sizeof(path)))
 		return -ENAMETOOLONG;
 	snprintf(tmp, sizeof(tmp), "%s.new", path);
 	if ((fd = pt_open(tmp, O_WRONLY | O_CREAT | O_TRUNC)) < 0)
 		return fd;
-	for (int i = 0; i < inst->n; i++)
-		pt_dprintf(fd, "%s %s\n", inst->e[i].name, inst->e[i].version);
-	pt_close(fd);
-	return pt_rename(tmp, path);
+	for (int i = 0; i < inst->n; i++) {
+		int n = pt_dprintf(fd, "%s %s\n", inst->e[i].name, inst->e[i].version);
+		size_t wanted = strlen(inst->e[i].name) + strlen(inst->e[i].version) + 2;
+
+		if (n < 0 || (size_t)n != wanted) {
+			err = n < 0 ? n : -EIO;
+			break;
+		}
+	}
+	closed = pt_close(fd);
+	if (!err)
+		err = closed;
+	if (!err)
+		err = pt_rename(tmp, path);
+	if (err)
+		pt_unlink(tmp);
+	return err;
 }
 
 static int update(struct pkgs *idx)
@@ -275,11 +394,11 @@ static int update(struct pkgs *idx)
 		return fail("pkg", "~/.config/pkg", -ENAMETOOLONG);
 	snprintf(tmp, sizeof(tmp), "%s.new", path);
 	pt_printf("pkg: the index from %s\n", base);
-	if ((err = fetch("index.txt", tmp)) || (err = pt_rename(tmp, path))) {
+	if ((err = fetch("index.txt", tmp)) ||
+	    (err = load(idx, "index.txt.new", index_line)) || (err = pt_rename(tmp, path))) {
 		pt_unlink(tmp);
 		return fail("pkg", "the index", err);
 	}
-	load(idx, "index.txt", index_line);
 	pt_printf("pkg: %d package%s\n", idx->n, idx->n == 1 ? "" : "s");
 	return 0;
 }
@@ -287,8 +406,10 @@ static int update(struct pkgs *idx)
 /* The index, fetched first if it has never been. */
 static int ready(struct pkgs *idx)
 {
-	if (!load(idx, "index.txt", index_line))
-		return fail("pkg", NULL, -ENOMEM);
+	int err = load(idx, "index.txt", index_line);
+
+	if (err)
+		return fail("pkg", "the index", err);
 	return idx->n ? 0 : update(idx);
 }
 
@@ -303,14 +424,14 @@ static bool built_in(const char *name)
 static int install(struct pkgs *idx, struct pkgs *inst, const char *name)
 {
 	char src_dir[PT_PATH_MAX], src[PT_PATH_MAX + 32], tmp[PT_PATH_MAX + 40];
-	char rel[96], bin[PT_PATH_MAX], out[PT_PATH_MAX + 32], sha[65];
-	char *argv[] = { "picoc", "-o", out, src, NULL };
+	char rel[96], bin[PT_PATH_MAX], out[PT_PATH_MAX + 32], image[PT_PATH_MAX + 40], sha[65];
+	char *argv[] = { "picoc", "-o", image, tmp, NULL };
 	const struct entry *e = find(idx, name);
 	struct entry *have;
 	long size;
 	int err, st;
 
-	if (!e) {
+	if (!name_ok(name) || !e) {
 		pt_dprintf(PT_STDERR, "pkg: %s: no such package (pkg update, pkg list)\n", name);
 		return 1;
 	}
@@ -323,7 +444,7 @@ static int install(struct pkgs *idx, struct pkgs *inst, const char *name)
 		return fail("pkg", NULL, -ENAMETOOLONG);
 	pt_mkdir(src_dir);
 	snprintf(src, sizeof(src), "%s/%s.pico", src_dir, name);
-	snprintf(tmp, sizeof(tmp), "%s.new", src);
+	snprintf(tmp, sizeof(tmp), "%s/%s.new.pico", src_dir, name);
 	snprintf(rel, sizeof(rel), "packages/%s/%s.pico", name, name);
 	pt_printf("pkg: %s %s: fetching\n", name, e->version);
 	if ((err = fetch(rel, tmp))) {
@@ -336,14 +457,24 @@ static int install(struct pkgs *idx, struct pkgs *inst, const char *name)
 				      "nothing installed (pkg update, and again)\n", name);
 		return 1;
 	}
-	if ((err = pt_rename(tmp, src)))
-		return fail("pkg", name, err);
-	pt_mkdir(home_dir(bin, sizeof(bin), "bin"));
+	if ((err = pkg_bin_dir(bin, sizeof(bin))) ||
+	    ((err = pt_mkdir(bin)) && err != -EEXIST)) {
+		pt_unlink(tmp);
+		return fail("pkg", "~/bin", err);
+	}
 	snprintf(out, sizeof(out), "%s/%s", bin, name);
+	snprintf(image, sizeof(image), "%s.new", out);
 	pt_printf("pkg: %s: compiling\n", name);
 	if ((st = run(argv))) {
+		pt_unlink(tmp);
+		pt_unlink(image);
 		pt_dprintf(PT_STDERR, "pkg: %s: it did not compile here (%d)\n", name, st);
 		return 1;
+	}
+	if ((err = pt_rename(tmp, src)) || (err = pt_rename(image, out))) {
+		pt_unlink(tmp);
+		pt_unlink(image);
+		return fail("pkg", name, err);
 	}
 	if ((have = find(inst, name)))
 		strlcpy(have->version, e->version, sizeof(have->version));
@@ -363,15 +494,23 @@ static int uninstall(struct pkgs *inst, const char *name)
 	struct entry *e = find(inst, name);
 	int err;
 
-	if (!e) {
+	if (!name_ok(name) || !e) {
 		pt_dprintf(PT_STDERR, "pkg: %s: not installed\n", name);
 		return 1;
 	}
-	snprintf(path, sizeof(path), "%s/%s", home_dir(dir, sizeof(dir), "bin"), name);
-	pt_unlink(path);
+	if ((err = pkg_bin_dir(dir, sizeof(dir))))
+		return fail("pkg", "~/bin", err);
+	if ((size_t)snprintf(path, sizeof(path), "%s/%s", dir, name) >= sizeof(path))
+		return fail("pkg", name, -ENAMETOOLONG);
+	err = pt_unlink(path);
+	if (err && err != -ENOENT)
+		return fail("pkg", name, err);
 	if (pkg_path("src", dir, sizeof(dir))) {
-		snprintf(path, sizeof(path), "%s/%s.pico", dir, name);
-		pt_unlink(path);
+		if ((size_t)snprintf(path, sizeof(path), "%s/%s.pico", dir, name) >= sizeof(path))
+			return fail("pkg", name, -ENAMETOOLONG);
+		err = pt_unlink(path);
+		if (err && err != -ENOENT)
+			return fail("pkg", name, err);
 	}
 	*e = inst->e[--inst->n];
 	if ((err = save_installed(inst)))
@@ -405,8 +544,10 @@ static void pkg_more(const char *after, pt_complete_add add, void *ctx)
 	struct pkgs p = { 0 };
 	bool removing = !strcmp(after, "remove");
 
-	if (!load(&p, removing ? "installed" : "index.txt", removing ? installed_line : index_line))
+	if (load(&p, removing ? "installed" : "index.txt", removing ? installed_line : index_line)) {
+		pt_free(p.e);
 		return;
+	}
 	for (int i = 0; i < p.n; i++)
 		add(ctx, p.e[i].name);
 	pt_free(p.e);
@@ -425,11 +566,14 @@ PT_PROGRAM(pkg, "install programs from the pico-os-packages repository\n"
 	const char *cmd = argc > 1 ? argv[1] : "list";
 	struct pkgs idx = { 0 }, inst = { 0 };
 	struct pt_winsize ws = { 53, 23 };
-	int status = 0;
+	int status = 0, err;
 
+	if (!pkg_enter())
+		return fail("pkg", "another package operation is running", -EBUSY);
 	pt_ioctl(PT_STDOUT, PT_TTY_GETSIZE, &ws);
-	if (!load(&inst, "installed", installed_line)) {
-		status = fail("pkg", NULL, -ENOMEM);
+	err = load(&inst, "installed", installed_line);
+	if (err) {
+		status = fail("pkg", "~/.config/pkg/installed", err);
 		goto out;
 	}
 	if (!strcmp(cmd, "update") && argc == 2) {
@@ -498,5 +642,6 @@ PT_PROGRAM(pkg, "install programs from the pico-os-packages repository\n"
 out:
 	pt_free(idx.e);
 	pt_free(inst.e);
+	pkg_leave();
 	return status;
 }
