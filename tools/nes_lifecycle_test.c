@@ -37,7 +37,8 @@ static void *blocks[32];
 static int allocations, fail_allocation, live, shutdowns, releases, frames;
 static int rate_error, latency_error, write_error, read_calls, audio_stops, tty_busy;
 static bool short_audio, rom_error, pal, screenshot, forced, startup_exit, capture_busy;
-static bool captured, raw, held, ctrl_c;
+static bool captured, raw, held, ctrl_c, sending;
+static int sent_rows;
 static int read_timeout = -1;
 static int ctrl_c_calls;
 static int64_t clock_us, slept_us;
@@ -96,11 +97,13 @@ static void lcd_fill(int x, int y, int w, int h, int color)
 {
 	(void)x; (void)y; (void)w; (void)h; (void)color;
 }
-static void lcd_draw(int x, int y, int w, int h, const void *pixels)
+static void lcd_draw_start(int x, int y, int w, int h, const void *pixels)
 {
-	(void)x; (void)y;
-	assert(w == 256 && h == 24 && pixels);
+	assert(x == 32 && y >= 0 && w == 256 && h >= 1 && y + h <= 240 && pixels);
+	assert(((uintptr_t)pixels & 63) == 0);	/* DMA straight from PSRAM */
+	sent_rows += h;
 }
+static bool lcd_draw_wait(int ms) { assert(!ms); return !sending; }
 static int audio_set_rate(int rate) { assert(rate == 16000); return rate_error; }
 static int audio_set_latency(int ms) { assert(ms == 50); return latency_error; }
 static ssize_t audio_write(const void *samples, size_t bytes, int channels)
@@ -184,6 +187,12 @@ static void forced_exit(void)
 		assert(!exit_hook(exit_arg) && rom_memory && captured);
 		capture_busy = false;
 	}
+	/* The panel still reading the last picture: its buffer is kept. */
+	int held_blocks = live;
+
+	sending = true;
+	assert(!exit_hook(exit_arg) && rom_memory && live == held_blocks);
+	sending = false;
 	tty_busy = 1;
 	assert(!exit_hook(exit_arg) && !rom_memory && !captured && read_timeout == 200);
 	int count = shutdowns;
@@ -296,7 +305,8 @@ static void reset(void)
 	allocations = fail_allocation = shutdowns = releases = frames = 0;
 	rate_error = latency_error = write_error = read_calls = audio_stops = tty_busy = 0;
 	short_audio = rom_error = pal = screenshot = forced = startup_exit = capture_busy = false;
-	captured = held = ctrl_c = false;
+	captured = held = ctrl_c = sending = false;
+	sent_rows = 0;
 	ctrl_c_calls = 0;
 	clock_us = slept_us = 0;
 	assert(!atomic_load(&owner));
@@ -311,18 +321,18 @@ int main(void)
 
 	process.fd[PT_STDIN] = &tty;
 	reset();
-	assert(!nes_run("normal.nes", &opt) && frames == 1 && !held);
+	assert(!nes_run("normal.nes", &opt) && frames == 1 && !held && sent_rows == 240);
 	ntsc_sleep = slept_us;
 	reset(); ctrl_c = true;
 	assert(!nes_run("ctrl-c.nes", &opt) && frames == 1 && ctrl_c_calls == 1);
 	assert(!raw && !held && !live && !exit_hook && read_timeout == -1);
 	reset(); pal = true;
 	assert(!nes_run("pal.nes", &opt) && slept_us > ntsc_sleep + 2000);
-	for (int fail = 1; fail <= 5; fail++) {
+	for (int fail = 1; fail <= 7; fail++) {
 		reset(); fail_allocation = fail;
 		int ret = nes_run("oom.nes", &opt);
 
-		assert(ret == (fail == 5 ? -ENOEXEC : -ENOMEM));
+		assert(ret == (fail == 7 ? -ENOEXEC : -ENOMEM));
 		assert(!live && !raw && !exit_hook && !atomic_load(&owner));
 	}
 	reset(); rom_error = true;
@@ -362,17 +372,17 @@ int main(void)
 	assert(nes_cleanup_step(&finished));
 	uint8_t *next_rows = pt_malloc(64), *next_video = pt_malloc(64);
 
-	rowbuf = rowmem = next_rows;
+	pic[0] = picmem[0] = next_rows;
 	vidbuf = next_video;
 	apu = &test_apu;
 	want_shot = true;
 	atomic_store(&owner, 2);
 	assert(nes_cleanup_step(&finished));
-	assert(rowbuf == next_rows && rowmem == next_rows && vidbuf == next_video);
+	assert(pic[0] == next_rows && picmem[0] == next_rows && vidbuf == next_video);
 	assert(apu == &test_apu && want_shot && live == 2 && atomic_load(&owner) == 2);
 	pt_free(next_rows);
 	pt_free(next_video);
-	rowbuf = rowmem = vidbuf = NULL;
+	pic[0] = picmem[0] = vidbuf = NULL;
 	apu = NULL;
 	want_shot = false;
 	atomic_store(&owner, 0);

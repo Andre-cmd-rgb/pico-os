@@ -456,9 +456,10 @@ from 1970.
 | `/tmp` write, a line at a time | 49,300 lines/s |
 | display bus, full frames | 30 fps (4.4 MB/s) on the Freenove panel at 40 MHz |
 
-The NES runs at 37 frames a second drawing every one (`nes -f 0`), and at
-full speed drawing every other one, the default. The panel refreshes at
-71 Hz.
+The NES runs at full speed, 60 frames a second, and draws every other
+one (the default); the picture goes out while the game goes on, and only
+the rows that changed. The panel refreshes at 71 Hz, and at 48 Hz while
+a clip plays, two refreshes to each of its 24 frames a second.
 
 The `/` numbers are what the flash sustains once its blocks have been used:
 every 4 KB must be erased before it is written again. Freshly formatted flash

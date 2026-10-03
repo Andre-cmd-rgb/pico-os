@@ -202,12 +202,16 @@ and the joypad state each frame. Two traps, both paid for once:
   again, which would generate a second frame from a state that has
   moved on.
 
-The 256x240 picture sits in the middle of the 320x240 panel. Drawing
-every frame needs 7.4 MB/s and the bus does 8.2 at 80 MHz, so the
-default draws every other frame: the emulation stays at 60 Hz and the
-screen gets 30. `nes -f 0` draws them all and runs at about 38. Its row
-buffer is in PSRAM, aligned for the DMA: in internal RAM it took 12 KB
-that music on another terminal left no room for.
+The 256x240 picture sits in the middle of the 320x240 panel. A whole one
+is 25 ms on the bus at 40 MHz, so the picture never holds the game up:
+a frame drawn is turned into one of two PSRAM buffers (on a cache line,
+for the DMA) and sent with `lcd_draw_start()`, which returns at once,
+while the next frames are played; one due while the last is still going
+out is played and not drawn. Only the rows from the first that changed
+to the last are sent, so a still screen costs nothing. The default draws
+at most every other frame: the game at 60 Hz, the screen at 30 (`nes -v`
+says how it went). In internal RAM the buffers would take what music on
+another terminal leaves no room for.
 
 ## Clips without tearing
 

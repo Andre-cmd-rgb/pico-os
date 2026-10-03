@@ -10,7 +10,9 @@
  * Sound is what paces the whole thing: audio_write() blocks while the
  * game's few frames of queued sound are full, and they empty at exactly
  * the rate the NES produces them. Music playing on another terminal is
- * mixed in with it.
+ * mixed in with it. The picture never holds the game up: a frame goes
+ * out while the next ones are played, and while it is still going out
+ * the next is played without being drawn.
  *
  * Switched to another terminal, the game pauses, silent, and carries on
  * where it was when its terminal comes back.
@@ -39,11 +41,15 @@
 #define SOUND_LATENCY_MS 50	/* three frames */
 #define FRAME_US	16639		/* 60.1 frames a second, as on the NES */
 #define HOLD_MS		150		/* how long a key counts as held down */
-#define ROWS_PER_DRAW	24		/* 256 x 24 x 2 bytes is 12 KB */
 #define PX_ALIGN	64		/* a data cache line, for DMA from PSRAM */
+#define PICTURE		(NES_SCREEN_WIDTH * NES_SCREEN_HEIGHT)
 
 static uint16_t	 palette[256];		/* in the order the panel reads them */
-static uint8_t	*rowbuf, *rowmem;
+static uint8_t	*picmem[2], *pic[2];	/* the panel's pixels: one goes out while the next is made */
+static uint8_t	*shown;		/* the core's picture as last sent, a byte a pixel */
+static int	 lit_rows[NES_SCREEN_HEIGHT];
+static int	 next_pic;
+static bool	 whole;		/* send every row next time: the screen was painted over */
 static uint8_t	*vidbuf;	/* what the picture unit draws into */
 static apu_t	*apu;		/* the core's own mixed output */
 static int	 origin_x, origin_y;
@@ -92,13 +98,16 @@ uint32_t rg_crc32(uint32_t crc, const uint8_t *buf, size_t len)
 
 /*
  * The core hands over one byte per pixel, an index into the palette, in a
- * buffer eight pixels wider than the screen on each side. This turns a
- * band of rows into what the panel expects and sends it.
+ * buffer eight pixels wider than the screen on each side. Only the rows
+ * from the first that changed since the last picture sent to the last
+ * that did are turned into what the panel expects and sent -- a whole
+ * screen takes 25 ms on the bus, a still one nothing -- and the game
+ * goes on while they go out (lcd_draw_start()).
  */
 static void blit(uint8_t *vidbuf)
 {
-	uint16_t *out = (uint16_t *)rowbuf;
-	int lit = 0;
+	uint16_t *out = (uint16_t *)pic[next_pic];
+	int lo = NES_SCREEN_HEIGHT, hi = -1, lit = 0;
 
 	if (!vt_screen_begin()) {
 		vt_screen_end();
@@ -106,29 +115,43 @@ static void blit(uint8_t *vidbuf)
 	}
 	stats.blits++;
 
-	for (int y = 0; y < NES_SCREEN_HEIGHT; y += ROWS_PER_DRAW) {
-		int rows = NES_SCREEN_HEIGHT - y;
+	for (int y = 0; y < NES_SCREEN_HEIGHT; y++) {
+		const uint8_t *in = NES_SCREEN_GETPTR(vidbuf, 0, y);
+		uint8_t *was = shown + y * NES_SCREEN_WIDTH;
 
-		if (rows > ROWS_PER_DRAW)
-			rows = ROWS_PER_DRAW;
-		for (int r = 0; r < rows; r++) {
-			const uint8_t *in = NES_SCREEN_GETPTR(vidbuf, 0, y + r);
-			uint16_t *line = out + r * NES_SCREEN_WIDTH;
-
-			for (int x = 0; x < NES_SCREEN_WIDTH; x++) {
-				line[x] = palette[in[x]];
-				lit += in[x] != 0;
-			}
-		}
-		lcd_draw(origin_x, origin_y + y, NES_SCREEN_WIDTH, rows, rowbuf);
+		if (!whole && !memcmp(in, was, NES_SCREEN_WIDTH))
+			continue;
+		memcpy(was, in, NES_SCREEN_WIDTH);
+		lit_rows[y] = 0;
+		for (int x = 0; x < NES_SCREEN_WIDTH; x++)
+			lit_rows[y] += in[x] != 0;
+		lo = y < lo ? y : lo;
+		hi = y;
 	}
+	/* every row between, too: this buffer last held the picture before */
+	for (int y = lo; y <= hi; y++) {
+		const uint8_t *in = NES_SCREEN_GETPTR(vidbuf, 0, y);
+		uint16_t *line = out + y * NES_SCREEN_WIDTH;
+
+		for (int x = 0; x < NES_SCREEN_WIDTH; x++)
+			line[x] = palette[in[x]];
+	}
+	if (hi >= 0) {
+		lcd_draw_start(origin_x, origin_y + lo, NES_SCREEN_WIDTH, hi - lo + 1,
+			       (uint8_t *)(out + lo * NES_SCREEN_WIDTH));
+		next_pic ^= 1;
+	}
+	whole = false;
 	vt_screen_end();
+	for (int y = 0; y < NES_SCREEN_HEIGHT; y++)
+		lit += lit_rows[y];
 	stats.lit_pixels = lit;
 }
 
 /* The black around the picture, when the terminal has been painted there. */
 static void clear_screen(void)
 {
+	whole = true;			/* and the picture all again */
 	if (vt_screen_begin())
 		lcd_fill(0, 0, lcd_width(), lcd_height(), 0x0000);
 	vt_screen_end();
@@ -243,15 +266,24 @@ static bool nes_cleanup_step(void *arg)
 		}
 		c->capture = false;
 	}
+	/* The panel may still be reading the last picture sent. */
+	if (!lcd_draw_wait(0)) {
+		xSemaphoreGive(c->guard);
+		return false;
+	}
 	if (c->core) {
 		/* The core's static ROM pointers must be cleared before exit
 		 * releases its tracked allocations, including from the reaper. */
 		nes_shutdown();
 		c->core = false;
 	}
-	pt_free(rowmem);
+	for (int i = 0; i < 2; i++) {
+		pt_free(picmem[i]);
+		picmem[i] = pic[i] = NULL;
+	}
+	pt_free(shown);
 	pt_free(vidbuf);
-	rowbuf = rowmem = vidbuf = NULL;
+	shown = vidbuf = NULL;
 	apu = NULL;
 	want_shot = false;
 	if (c->raw && c->tty && c->tty->ops->ioctl) {
@@ -284,7 +316,7 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 	struct proc *p = proc_current();
 	int64_t started, next_frame, paused_us = 0;
 	unsigned gen;
-	int frame = 0, ret = 0, frame_us = FRAME_US;
+	int since = 0, ret = 0, frame_us = FRAME_US;	/* since: frames since one was drawn */
 	bool screen = false;
 
 	if (!p)
@@ -313,23 +345,27 @@ int nes_run(const char *rom_path, const struct nes_options *opt)
 	xSemaphoreTake(cleanup.guard, portMAX_DELAY);
 
 	/*
-	 * Both buffers are in PSRAM. The row buffer goes to the display by
-	 * DMA, which reads PSRAM directly if the buffer starts on a cache
-	 * line (the panel's driver writes the cache back first); in internal
-	 * RAM it took 12 KB that music playing on another terminal leaves no
-	 * room for. Both are counted as the program's, so a kill -9 from
-	 * another terminal frees them.
+	 * All the buffers are in PSRAM. The pictures go to the display by
+	 * DMA, which reads PSRAM directly if they start on a cache line (the
+	 * panel's driver writes the cache back first); in internal RAM they
+	 * would take what music playing on another terminal leaves no room
+	 * for. All are counted as the program's, so a kill -9 from another
+	 * terminal frees them.
 	 */
-	rowmem = pt_malloc_caps(NES_SCREEN_WIDTH * ROWS_PER_DRAW * 2 + PX_ALIGN - 1,
-				MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-	rowbuf = rowmem ? (uint8_t *)(((uintptr_t)rowmem + PX_ALIGN - 1) & ~(uintptr_t)(PX_ALIGN - 1))
-			: NULL;
+	for (int i = 0; i < 2; i++) {
+		picmem[i] = pt_malloc_caps(PICTURE * 2 + PX_ALIGN - 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+		pic[i] = picmem[i] ? (uint8_t *)(((uintptr_t)picmem[i] + PX_ALIGN - 1) &
+						 ~(uintptr_t)(PX_ALIGN - 1)) : NULL;
+	}
+	shown = pt_malloc_caps(PICTURE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	vidbuf = pt_malloc_caps(NES_SCREEN_PITCH * NES_SCREEN_HEIGHT,
 				MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-	if (!rowbuf || !vidbuf) {
+	if (!pic[0] || !pic[1] || !shown || !vidbuf) {
 		ret = -ENOMEM;
 		goto startup_done;
 	}
+	next_pic = 0;
+	whole = true;
 	cleanup.core = true;
 	if (!nes_init(SYS_DETECT, SAMPLE_RATE, false, NULL) ||
 	    !nes_getptr()->apu || !nes_getptr()->apu->buffer) {
@@ -379,9 +415,11 @@ startup_done:
 
 	memset(&stats, 0, sizeof(stats));
 	started = next_frame = esp_timer_get_time();
+	since = opt->frameskip + 1;
 	for (;;) {
 		int64_t now = esp_timer_get_time();
-		bool draw = !opt->frameskip || frame % (opt->frameskip + 1) == 0;
+		/* one frame in frameskip + 1 at most, none while the last goes out */
+		bool draw = since > opt->frameskip && lcd_draw_wait(0);
 		int state;
 
 		if (!vt_screen_front()) {
@@ -408,9 +446,10 @@ startup_done:
 			captured = lcd_capture_begin();
 			cleanup.capture = !captured;
 			xSemaphoreGive(cleanup.guard);
-			if (!captured)
+			if (!captured) {
 				draw = true;
-			else {
+				whole = true;	/* the shot is of what is drawn */
+			} else {
 				want_shot = false;
 				klog("nes: screenshot failed (%d)", captured);
 			}
@@ -446,7 +485,7 @@ startup_done:
 		stats.frames++;
 		if (!draw)
 			stats.skipped++;
-		frame++;
+		since = draw ? 1 : since + 1;
 
 		/*
 		 * nes_emulate() has already mixed this frame's sound into
