@@ -80,7 +80,9 @@ int sd_format(void)
 
 	if (!was_mounted && sd_mount_format())
 		return -ENODEV;
+	etc_hold();		/* the copy of /etc comes back once it is done */
 	err = esp_vfs_fat_sdcard_format(SD_BASE, card);
+	etc_release();
 	if (err) {
 		klog("sd: format failed (%s)", esp_err_to_name(err));
 		return -EIO;
@@ -256,12 +258,16 @@ int sd_unmount(void)
 		return -EINVAL;
 	if (vfs_mount_busy(&sd_mount_entry))
 		return -EBUSY;
+	etc_save();		/* the card goes with /etc as it is now */
+	etc_hold();
 	esp_log_level_set("gpio", ESP_LOG_ERROR);	/* same CS pin quirk as above */
 	esp_err_t err = esp_vfs_fat_sdcard_unmount(SD_BASE, card);
 	esp_log_level_set("gpio", ESP_LOG_WARN);
+	if (!err)
+		card = NULL;
+	etc_release();
 	if (err)
 		return -EBUSY;
-	card = NULL;
 	klog("sd: unmounted");
 	return 0;
 }

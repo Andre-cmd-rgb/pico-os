@@ -183,6 +183,16 @@ const char *user_tz_name(void);		/* "Europe/Rome", or "" */
 int	user_set_name(const char *name);	/* -EINVAL: not a user name */
 int	user_set_tz(const char *name, const char *tz);
 
+/*
+ * etc.c: /etc kept on the card too, in .etc there, so the settings outlive
+ * the flash being erased: a / with no user takes them back at boot.
+ */
+int	etc_init(void);			/* at boot, once the card is mounted: files taken back */
+int	etc_save(void);			/* the card's copy up to date now: files written */
+void	etc_hold(void);			/* nothing written to the card until etc_release() */
+void	etc_release(void);
+void	etc_stop(void);			/* nothing more until the restart: / is being wiped */
+
 /* auth.c: the password the network shell asks for, kept hashed in /etc/shadow */
 bool	auth_is_set(void);
 int	auth_check(const char *password);	/* 0, -EACCES, or -ENOENT with none set */

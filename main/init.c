@@ -255,6 +255,10 @@ void app_main(void)
 	battery_init();		/* with what /etc/battery knows of the cell */
 	tmpfs_init();
 	sd_init();
+	/* An erased / and a card with a copy of /etc: everything above read
+	 * the empty one, so start again with the settings in place. */
+	if (root && etc_init() > 0)
+		restart_now();
 	wifi_start_supplicant();	/* now that /etc/wifi can be read */
 	alarm_init();			/* and /etc/alarms */
 	idle_init();			/* and /etc/power */

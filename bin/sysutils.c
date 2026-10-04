@@ -1752,6 +1752,7 @@ PT_PROGRAM_NAMED(factory_reset, "factory-reset", 0,
 			n = 0;
 	}
 
+	etc_stop();		/* or the card would be given the old /etc back */
 	if (sd_mounted()) {
 		pt_printf("formatting the card...\n");
 		if ((ret = sd_format()))

@@ -11,7 +11,9 @@
 3. Wi-Fi driver, then `/` (the root filesystem); restore the user's name,
    time zone, standard directories and clock before the display starts
 4. display, terminals and console; restore rotation and theme from `/etc`
-5. sound, keyboards, USB storage, battery, `/tmp`, `/mnt/sd`
+5. sound, keyboards, USB storage, battery, `/tmp`, `/mnt/sd`; a `/` with
+   no user (an erased one) takes back the card's copy of `/etc` and
+   restarts with it
 6. saved Wi-Fi networks, alarms, idle policy, network console and modem
 7. `setup -f`, the first start's questions, while there is no `/etc/user`
 8. `/etc/rc`, if it exists, then a login shell, restarted whenever it exits
@@ -468,6 +470,16 @@ core. `rec -n` records as before.
   gives `~/.config/sh_history`, `~/.config/notes_pos`,
   `~/agenda/calendar.txt` and `~/agenda/todo.md`, and moves a file an
   older system left at the top (`~/.sh_history`) into its place.
+- `kernel/etc.c`: `/etc` copied to the card's `.etc` (`~/.etc`), so the
+  settings outlive an erased flash. Its task looks for the card every 5 s
+  and at `/etc`'s names, sizes and times every 30 s, and copies what
+  differs and deletes what has gone; `sync` and `sd_unmount()` do it at
+  once. Logs and the `.tmp`/`.new` halves of a rename stay behind. Only a
+  `/` with a user gives the card its `/etc`: a fresh one would overwrite
+  the copy it should be restored from, which `etc_init()` does at boot
+  before anything is written (then the system restarts, since the user,
+  the clock, the screen and the battery have already read the empty
+  `/etc`). `sd_format()` holds it off, and `factory-reset` stops it.
 - `kernel/clock.c`: the time saved to `/etc/clock` hourly and before sleep,
   put back at boot after a power cut; `wifi.c` starts SNTP on every new
   address and hourly after. Going to sleep marks the moment in RTC memory

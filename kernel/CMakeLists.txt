@@ -3,6 +3,7 @@ idf_component_register(
 		auth.c
 		clock.c
 		devfs.c
+		etc.c
 		file.c
 		internal.c
 		keys.c

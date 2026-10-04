@@ -220,6 +220,14 @@ one back, and `%1` names one for `kill` and `wait`. Scripts run with
 | `/dev` | `null zero urandom stdin stdout stderr tty`, plus `audio` where there is a codec: raw 16-bit mono, write to play it, read to record |
 | `/proc` | `cpuinfo kmsg meminfo mounts uptime version`, plus `net` and `modem` where those drivers are on |
 
+The settings in `/etc` -- the Wi-Fi networks, your name, the time zone,
+the colours, what the battery has learnt -- are kept on the card as well,
+in `~/.etc`, within half a minute of any change (and at once on `sync`, or
+when the card is unmounted). If the flash is ever erased, the next boot
+with the card in takes them back and starts again with them. The Wi-Fi
+passwords are in plain text there, as they are in `/etc/wifi`: whoever
+has the card has them.
+
 At boot the kernel runs `/etc/rc` if it exists, then a login shell prints
 `/etc/motd` and runs `/etc/profile` and `~/.profile`. Put your own commands in
 `/bin` or `/mnt/sd/bin` (both on `PATH`) as scripts.

@@ -652,10 +652,13 @@ PT_PROGRAM(pwd, "print the working directory")
 
 /* ------------------------------------------------------------ filesystems */
 
-PT_PROGRAM(sync, "write out everything still in file buffers")
+PT_PROGRAM(sync, "write out everything still in file buffers, and bring the\n"
+	   "card's copy of /etc (~/.etc) up to date")
 {
-	int err = vfs_sync_all();
+	int err = vfs_sync_all(), copied = etc_save();
 
+	if (!err && copied < 0)
+		err = copied;
 	return err ? fail("sync", NULL, err) : 0;
 }
 
