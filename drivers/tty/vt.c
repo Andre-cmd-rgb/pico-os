@@ -919,6 +919,24 @@ static void render_rows(uint8_t *pixels, struct cell *row, int which,
 	}
 }
 
+/*
+ * Whether more than a key's echo waits to be painted on the terminal in
+ * front: three rows or more, as a burst of output or a scroll (every row)
+ * makes.
+ */
+static bool burst_waiting(void)
+{
+	struct screen *sc;
+	int n = 0;
+
+	xSemaphoreTake(lock, portMAX_DELAY);
+	sc = onscreen();
+	for (int y = 0; sc->cells && y < rows && n < 3; y++)
+		n += sc->dirty_lo[y] <= sc->dirty_hi[y];
+	xSemaphoreGive(lock);
+	return n > 2;
+}
+
 static void renderer_dispose(uint8_t *pixels, struct cell *row)
 {
 	heap_caps_free(pixels);
@@ -943,15 +961,23 @@ static void render_task(void *arg)
 	}
 	for (;;) {
 		int64_t blink_us = blink_ms * 1000LL;
+		uint32_t woken;
 		int frame_vt;
 
 		/* dark: nothing to draw until it is lit again, whatever is written */
-		ulTaskNotifyTake(pdTRUE, blanked ? portMAX_DELAY :
-				 pdMS_TO_TICKS(blink_us ? blink_ms : 1000));
+		woken = ulTaskNotifyTake(pdTRUE, blanked ? portMAX_DELAY :
+					 pdMS_TO_TICKS(blink_us ? blink_ms : 1000));
 		if (blanked)
 			continue;
-		vTaskDelay(pdMS_TO_TICKS(8));	/* let a burst of output land in one frame */
-		ulTaskNotifyTake(pdTRUE, 0);
+		/*
+		 * Let a burst of output land in one frame -- but not when the
+		 * wait ran out, for the cursor's blink or the status line, nor
+		 * for a row or two: a key's echo shows 8 ms sooner.
+		 */
+		if (woken && burst_waiting()) {
+			vTaskDelay(pdMS_TO_TICKS(8));
+			ulTaskNotifyTake(pdTRUE, 0);
+		}
 		for (int i = 0; i < CONFIG_PT_VT_COUNT; i++) {
 			if (!holder[i].held || !holder[i].pid || proc_alive(holder[i].pid))
 				continue;
