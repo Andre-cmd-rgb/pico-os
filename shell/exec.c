@@ -40,19 +40,12 @@ bool sh_unwinding(struct sh *sh)
 	       sh->interrupted;
 }
 
+/* Set when the process was spawned, and never changed. */
 int process_group(void)
 {
-	struct pt_procinfo *procs = pt_malloc(CONFIG_PT_MAX_PROCS * sizeof(*procs));
-	int self = pt_getpid(), pgid = self;
+	struct proc *p = proc_current();
 
-	if (!procs)
-		return self;
-	int n = proc_list(procs, CONFIG_PT_MAX_PROCS);
-	for (int i = 0; i < n; i++)
-		if (procs[i].pid == self)
-			pgid = procs[i].pgid;
-	pt_free(procs);
-	return pgid;
+	return p ? p->pgid : pt_getpid();
 }
 
 void sh_parse_error(const char *where, int line, const char *text, const struct parse_error *err)
