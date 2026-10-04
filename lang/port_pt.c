@@ -17,12 +17,16 @@ _Static_assert((int)PICO_KEY_UP == (int)PT_KEY_UP && (int)PICO_KEY_F4 == (int)PT
 	       (int)PICO_KEY_UNKNOWN == (int)PT_KEY_UNKNOWN && (int)PICO_KEY_EOF == (int)PT_KEY_EOF,
 	       "key codes must match pt/keys.h");
 
-PT_COMPLETE(picoc, ": -o -d <file:.pico.al>\n*: <file:.pico.al>\n")
+PT_COMPLETE(picoc, ": -o -d -t <file:.pico.al>\n-t: <file>\n*: <file:.pico.al>\n")
 
 PT_PROGRAM_STACK(picoc, 16, "compile a pico program\n"
 		 "usage: picoc [-o program] [-d] file.pico\n"
-		 "  -o  name of the program (default: the file without .pico)\n"
+		 "       picoc -t program\n"
+		 "  -o  name of the program (default: the file without\n"
+		 "      .pico)\n"
 		 "  -d  print the bytecode instead of writing a program\n"
+		 "  -t  check a program compiled elsewhere: 0 if this\n"
+		 "      system would run it, as pkg does with packages\n"
 		 "Run the result with ./program. See `man pico`.")
 {
 	return pico_main_compile(argc, argv);

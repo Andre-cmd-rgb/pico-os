@@ -8,9 +8,14 @@
  *	pkg remove snake
  *
  * A package is pico source. It is downloaded, checked against the
- * SHA-256 the index gives, and compiled here by picoc, so that it always
- * matches the language this board speaks; the source is kept in
- * ~/.config/pkg/src. ~/.config/pkg holds the index and what is installed,
+ * SHA-256 the index gives, and kept in ~/.config/pkg/src. The repository
+ * compiles every package itself (GitHub, with pico-os's picoc) and lists
+ * the programs in images.txt with the source each was made from: when
+ * there is one for this very source, it is downloaded, checked against
+ * its own SHA-256, and given to `picoc -t`, which says whether this
+ * system would run it. Otherwise -- no list, another source, a program
+ * for another version of the language -- the source is compiled here, as
+ * it always was. ~/.config/pkg holds the index and what is installed,
  * and `repo` there can name another repository -- an address, or a
  * folder, which is how a package is tried before it is published.
  */
@@ -42,6 +47,14 @@ struct entry {
 struct pkgs {
 	struct entry	*e;
 	int		 n;
+};
+
+/* A line of images.txt: images/NAME, compiled from the source with that SHA-256. */
+struct image {
+	const char	*name, *source;	/* what is wanted */
+	long		 size;
+	char		 sha[65];
+	bool		 found;
 };
 
 /* Fixed temporary names and the installed DB belong to one operation at a
@@ -280,6 +293,16 @@ static bool version_ok(const char *version)
 	return true;
 }
 
+static bool sha_ok(const char *hex)
+{
+	if (strlen(hex) != 64)
+		return false;
+	for (int i = 0; i < 64; i++)
+		if ((hex[i] < '0' || hex[i] > '9') && (hex[i] < 'a' || hex[i] > 'f'))
+			return false;
+	return true;
+}
+
 static void index_line(char *line, void *ctx)
 {
 	struct pkgs *p = ctx;
@@ -299,11 +322,8 @@ static void index_line(char *line, void *ctx)
 			*s++ = '\0';
 		}
 	}
-	if (!name_ok(f[0]) || !version_ok(f[1]) || strlen(f[3]) != 64)
+	if (!name_ok(f[0]) || !version_ok(f[1]) || !sha_ok(f[3]))
 		return;
-	for (int i = 0; i < 64; i++)
-		if ((f[3][i] < '0' || f[3][i] > '9') && (f[3][i] < 'a' || f[3][i] > 'f'))
-			return;
 	errno = 0;
 	size = strtol(f[2], &end, 10);
 	if (errno || !*f[2] || *end || size < 0)
@@ -314,6 +334,35 @@ static void index_line(char *line, void *ctx)
 	strlcpy(p->e[p->n].sha, f[3], sizeof(p->e[0].sha));
 	strlcpy(p->e[p->n].about, f[4], sizeof(p->e[0].about));
 	p->n++;
+}
+
+/* images.txt: "name source-sha256 size sha256", tab-separated; the wanted one. */
+static void image_line(char *line, void *ctx)
+{
+	struct image *im = ctx;
+	char *f[4], *end;
+	long size;
+	int k = 0;
+
+	if (line[0] == '#' || im->found)
+		return;
+	for (char *s = line; k < 4; k++) {
+		f[k] = s;
+		if (k < 3) {
+			if (!(s = strchr(s, '\t')))
+				return;
+			*s++ = '\0';
+		}
+	}
+	if (strcmp(f[0], im->name) || strcmp(f[1], im->source) || !sha_ok(f[3]))
+		return;
+	errno = 0;
+	size = strtol(f[2], &end, 10);
+	if (errno || !*f[2] || *end || size <= 0)
+		return;
+	im->size = size;
+	strlcpy(im->sha, f[3], sizeof(im->sha));
+	im->found = true;
 }
 
 /* Installed: "name version" lines, into the same entries. */
@@ -400,6 +449,15 @@ static int update(struct pkgs *idx)
 		return fail("pkg", "the index", err);
 	}
 	pt_printf("pkg: %d package%s\n", idx->n, idx->n == 1 ? "" : "s");
+	/* the ready-made programs, if the repository has them: none is no
+	 * loss, only slower, and an old list must not outlive its index */
+	if (pkg_path("images.txt", path, sizeof(path))) {
+		snprintf(tmp, sizeof(tmp), "%s.new", path);
+		if (fetch("images.txt", tmp) || pt_rename(tmp, path)) {
+			pt_unlink(tmp);
+			pt_unlink(path);
+		}
+	}
 	return 0;
 }
 
@@ -419,6 +477,30 @@ static bool built_in(const char *name)
 		if (!strcmp(p->name, name))
 			return true;
 	return false;
+}
+
+/*
+ * The repository's own compile of this source into `image`: fetched,
+ * checked against images.txt, and passed by `picoc -t`. False, with
+ * nothing left behind, if there is none or it will not do here.
+ */
+static bool ready_made(const struct entry *e, const char *image)
+{
+	struct image im = { .name = e->name, .source = e->sha };
+	char path[PT_PATH_MAX], rel[96], sha[65];
+	char *argv[] = { "picoc", "-t", (char *)image, NULL };
+	long size;
+
+	if (!pkg_path("images.txt", path, sizeof(path)) || each_line(path, image_line, &im) ||
+	    !im.found)
+		return false;
+	snprintf(rel, sizeof(rel), "images/%s", e->name);
+	if (fetch(rel, image) || !sha256_of(image, sha, &size) || size != im.size ||
+	    strcmp(sha, im.sha) || run(argv)) {
+		pt_unlink(image);
+		return false;
+	}
+	return true;
 }
 
 static int install(struct pkgs *idx, struct pkgs *inst, const char *name)
@@ -464,12 +546,16 @@ static int install(struct pkgs *idx, struct pkgs *inst, const char *name)
 	}
 	snprintf(out, sizeof(out), "%s/%s", bin, name);
 	snprintf(image, sizeof(image), "%s.new", out);
-	pt_printf("pkg: %s: compiling\n", name);
-	if ((st = run(argv))) {
-		pt_unlink(tmp);
-		pt_unlink(image);
-		pt_dprintf(PT_STDERR, "pkg: %s: it did not compile here (%d)\n", name, st);
-		return 1;
+	if (ready_made(e, image)) {
+		pt_printf("pkg: %s: compiled by the repository, checked here\n", name);
+	} else {
+		pt_printf("pkg: %s: compiling\n", name);
+		if ((st = run(argv))) {
+			pt_unlink(tmp);
+			pt_unlink(image);
+			pt_dprintf(PT_STDERR, "pkg: %s: it did not compile here (%d)\n", name, st);
+			return 1;
+		}
 	}
 	if ((err = pt_rename(tmp, src)) || (err = pt_rename(image, out))) {
 		pt_unlink(tmp);
@@ -558,10 +644,11 @@ PT_COMPLETE_MORE(pkg, ": update list search info install remove upgrade\n"
 
 PT_PROGRAM(pkg, "install programs from the pico-os-packages repository\n"
 	   "usage: pkg [update | list | search WORD | info NAME |\n"
-	   "            install NAME... | remove NAME... | upgrade]\n"
-	   "Packages are pico programs: fetched, checked, and compiled\n"
-	   "here into ~/bin. ~/.config/pkg/repo can name another\n"
-	   "repository, an address or a folder.")
+	   "         install NAME... | remove NAME... | upgrade]\n"
+	   "Packages are pico programs, fetched and checked into\n"
+	   "~/bin: compiled by the repository when it has them\n"
+	   "ready for this system, else here. ~/.config/pkg/repo\n"
+	   "can name another repository, an address or a folder.")
 {
 	const char *cmd = argc > 1 ? argv[1] : "list";
 	struct pkgs idx = { 0 }, inst = { 0 };
@@ -636,7 +723,7 @@ PT_PROGRAM(pkg, "install programs from the pico-os-packages repository\n"
 			pt_printf("pkg: everything is up to date\n");
 	} else {
 		pt_dprintf(PT_STDERR, "usage: pkg [update | list | search WORD | info NAME |\n"
-				      "            install NAME... | remove NAME... | upgrade]\n");
+				      "         install NAME... | remove NAME... | upgrade]\n");
 		status = 2;
 	}
 out:

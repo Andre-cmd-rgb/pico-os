@@ -59,8 +59,13 @@ for t in *.pico; do
 		printf 'exit status %s, expected %s\n' "$got" "$status" > "$tmp/diff"
 	fi
 
-	# the same program, compiled to a file first
+	# the same program, compiled to a file first, which picoc -t passes
 	if [ "$ok" = 1 ] && "$AC" -o "$tmp/prog" "$t" > "$tmp/acerr" 2>&1; then
+		if ! "$AC" -t "$tmp/prog" > "$tmp/acerr" 2>&1 || [ -s "$tmp/acerr" ]; then
+			ok=0
+			printf 'picoc -t refused the program:\n' > "$tmp/diff"
+			cat "$tmp/acerr" >> "$tmp/diff"
+		fi
 		# shellcheck disable=SC2086
 		PICO_NOQUICKEN=1 PICO_LEAKCHECK=1 PICO_TMP="$tmp" "$A" "$tmp/prog" $args < "$tmp/in" > "$tmp/out2" 2> "$tmp/err2"
 		got2=$?
@@ -80,6 +85,18 @@ for t in *.pico; do
 		sed 's/^/    /' "$tmp/diff" | head -25
 	fi
 done
+
+# picoc -t refuses a damaged program, and source
+"$AC" -o "$tmp/prog" hello.pico 2> /dev/null
+printf 'x' | dd of="$tmp/prog" bs=1 seek=40 conv=notrunc 2> /dev/null
+if "$AC" -t "$tmp/prog" > "$tmp/out" 2>&1 || ! grep -q "checksum" "$tmp/out" ||
+   "$AC" -t hello.pico > /dev/null 2>&1; then
+	fail=$((fail + 1))
+	printf 'FAIL picoc -t passed a damaged program, or source\n'
+	cat "$tmp/out"
+else
+	pass=$((pass + 1))
+fi
 
 printf '%d/%d tests passed\n' "$pass" "$((pass + fail))"
 [ "$fail" = 0 ]

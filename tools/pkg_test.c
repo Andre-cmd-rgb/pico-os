@@ -10,7 +10,8 @@
 static char test_home[PT_PATH_MAX];
 static bool missing_home;
 static int short_write, write_error, close_error, rename_error, unlink_error;
-static int printf_short, hash_update_error, hash_finish_short, compiler_error;
+static int printf_short, hash_update_error, hash_finish_short, compiler_error, checker_error;
+static int compiles, checks, last_status;
 static const char *read_error_path;
 static bool writable[1024], read_error_fd[1024];
 static int hash_aborts;
@@ -194,16 +195,24 @@ static void test_path(char *out, size_t n, const char *base, const char *tail)
 int pt_spawn(const struct pt_spawn *req)
 {
 	assert(req->pgid == current_pid);
-	assert(!strcmp(req->cmd, "picoc") && req->argc == 4);
-	assert(strstr(req->argv[3], ".pico"));
+	assert(!strcmp(req->cmd, "picoc"));
+	if (req->argc == 3) {		/* picoc -t: would this system run it? */
+		assert(!strcmp(req->argv[1], "-t") && !access(req->argv[2], F_OK));
+		checks++;
+		last_status = checker_error;
+		return 123;
+	}
+	assert(req->argc == 4 && strstr(req->argv[3], ".pico"));
 	write_text(req->argv[2], compiler_error ? "partial image" : "new image");
+	compiles++;
+	last_status = compiler_error;
 	return 123;
 }
 int pt_wait(int pid, int *status, int flags)
 {
 	(void)flags;
 	assert(pid == 123);
-	*status = compiler_error;
+	*status = last_status;
 	return pid;
 }
 
@@ -362,6 +371,49 @@ static void installation(const char *root)
 	expect_text(index, "old index\n");
 	assert(!update(&fetched) && fetched.n == 1);
 	expect_text(index, line);
+
+	/* The repository's own compile, used when it is of this very source. */
+	char images[PT_PATH_MAX], ready[PT_PATH_MAX], list[PT_PATH_MAX], image_sha[65];
+	long image_size;
+
+	test_path(path, sizeof(path), repository, "images"); assert(!pt_mkdir(path));
+	test_path(ready, sizeof(ready), repository, "images/snake");
+	write_text(ready, "ready image");
+	assert(sha256_of(ready, image_sha, &image_size));
+	test_path(images, sizeof(images), repository, "images.txt");
+	snprintf(line, sizeof(line), "# made by the repository\nsnake\t%s\t%ld\t%s\n",
+		 e.sha, image_size, image_sha);
+	write_text(images, line);
+	assert(!update(&fetched));
+	assert(pkg_path("images.txt", list, sizeof(list)));
+	expect_text(list, line);
+	compiles = checks = 0;
+	assert(!install(&idx, &inst, "snake"));
+	expect_text(binary, "ready image");
+	assert(!compiles && checks == 1);
+	absent(temp_image); absent(temp_source);
+
+	/* ...and not otherwise: refused by picoc -t, damaged, of another source */
+	checker_error = 1;
+	assert(!install(&idx, &inst, "snake"));
+	checker_error = 0;
+	expect_text(binary, "new image");
+	assert(compiles == 1 && checks == 2);
+	write_text(ready, "a damaged image");
+	assert(!install(&idx, &inst, "snake"));
+	expect_text(binary, "new image");
+	assert(compiles == 2 && checks == 2);
+	write_text(ready, "ready image");
+	snprintf(line, sizeof(line), "snake\t%064d\t%ld\t%s\n", 0, image_size, image_sha);
+	write_text(list, line);
+	assert(!install(&idx, &inst, "snake"));
+	assert(compiles == 3 && checks == 2);
+	absent(temp_image); absent(temp_source);
+
+	/* A repository without the list leaves none behind to mislead. */
+	assert(!unlink(images));
+	assert(!update(&fetched));
+	absent(list);
 	pt_free(fetched.e); pt_free(inst.e);
 }
 
@@ -392,6 +444,7 @@ int main(int argc, char **argv)
 	pkg_leave();
 	assert(!atomic_load(&pkg_owner));
 	entries(); io_failures(); installation(argv[1]);
-	puts("pkg: safe names, complete I/O, hash failures, saved DB, failed upgrades and orphan-helper leases passed");
+	puts("pkg: safe names, complete I/O, hash failures, saved DB, failed upgrades, "
+	     "ready-made programs and orphan-helper leases passed");
 	return 0;
 }

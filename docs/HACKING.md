@@ -382,8 +382,16 @@ path boundaries and DMA band alignment under ASan/UBSan.
 `bin/pkg.c` installs programs from the pico-os-packages repository: its
 `index.txt` (name, version, size, SHA-256, about) and each package's
 source, fetched with `wget` (or copied, when `~/.config/pkg/repo` names a
-folder), checked with PSA's SHA-256, and compiled by `picoc` into `~/bin`.
-The index, what is installed and the sources are in `~/.config/pkg`.
+folder) and checked with PSA's SHA-256. The repository's GitHub build
+compiles every package with this tree's `picoc` (on every push and every
+day) into `images/NAME`, listed in `images.txt` by the SHA-256 of the
+source each came from; a program compiled on the PC is byte for byte the
+board's own, given the same file name. `pkg` takes the one made from the
+source it has, checks its SHA-256, and runs `picoc -t` on it (the loader
+and verifier, without running it: a program from a newer compiler with
+an instruction or built-in this firmware lacks is refused). Anything
+missing or refused, and the source is compiled here instead. The index,
+the image list, what is installed and the sources are in `~/.config/pkg`.
 
 `drivers/net/modem.c` is a serial modem: an AT command reader and writer,
 SMS in text mode, and a PPP link over lwip's pppos for mobile data. While
