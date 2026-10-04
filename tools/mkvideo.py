@@ -58,7 +58,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 MAGIC = b"PTV2"
 SOUND, STEREO = 1, 2            # the header's flags
-RATE = 44100                    # about what the sound is made at; see sound_rate()
+RATE = 48000                    # the sound's rate when the source does not say; see sound_rate()
+MAX_RATE = 48000                # what the player takes
 MAX_FPS = 24
 DEFAULT_SIZE = "320x240"
 DEFAULT_SLICES = 2              # one per core: the chip decodes them at the same time
@@ -127,6 +128,15 @@ class Source:
     def hdr(self):
         return self.video.get("color_transfer") in ("smpte2084", "arib-std-b67")
 
+    def sound_rate(self, track):
+        """The track's own rate, as near as the player goes: resampling it
+        to some other rate only loses a little."""
+        try:
+            hz = int(self.audio[track]["sample_rate"])
+        except (TypeError, KeyError, ValueError, IndexError):
+            return RATE
+        return min(hz, MAX_RATE) if hz >= 8000 else RATE
+
     def track(self, want):
         """Which sound track, counted among the sound tracks: a number,
         or a language matched against their tags; English if none is
@@ -161,7 +171,7 @@ def pick_fps(src):
 
 
 def sound_rate(fps, target=RATE):
-    """A whole number of samples in every frame, as near RATE as that allows.
+    """A whole number of samples in every frame, as near the target as that allows.
 
     The player takes one frame's sound per frame. At 16000 Hz and 30 fps a
     frame would be 533.3 samples; rounding to 533 and playing at 16000 puts
@@ -431,7 +441,9 @@ def main():
                          "English if there is some, else the first")
     ap.add_argument("--mono", action="store_true",
                     help="mono sound: a sixth smaller, and the speaker is mono anyway")
-    ap.add_argument("--rate", type=int, default=RATE, help="sound samples a second")
+    ap.add_argument("--rate", type=int, default=None,
+                    help="sound samples a second; the source's own by default "
+                         "(48000 from YouTube), so it is not resampled")
     ap.add_argument("--crop", default="auto",
                     help="auto finds the source's own black bars and cuts them; "
                          "none keeps the picture whole; or W:H:X:Y")
@@ -466,7 +478,7 @@ def main():
         args.fps = pick_fps(src.fps())
     if not 1 <= args.fps <= 120:
         ap.error("--fps must be between 1 and 120")
-    rate = sound_rate(args.fps, args.rate)
+    rate = sound_rate(args.fps, args.rate or src.sound_rate(track))
     channels = 1 if args.mono else 2
     if src.hdr():
         print("note: an HDR source; its colours will look flat", file=sys.stderr)
