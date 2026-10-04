@@ -24,9 +24,14 @@
 #
 # PORT defaults to the first /dev/ttyUSB* or /dev/ttyACM* found.
 
+# ESP-IDF's export.sh finds its own directory under bash, not under the
+# dash that is /bin/sh on Debian and Ubuntu.
+SHELL    := bash
+
 BOARD    ?= freenove-fnk0104b
 BUILD    ?= build/$(BOARD)
 IDF_PATH ?= $(HOME)/esp/esp-idf
+export IDF_PATH
 PORT     ?= $(firstword $(wildcard /dev/ttyUSB*) $(wildcard /dev/ttyACM*))
 EXPORT   := . $(IDF_PATH)/export.sh >/dev/null
 IDF      := $(EXPORT) && idf.py -B $(BUILD) -D SDKCONFIG=$(BUILD)/sdkconfig \
