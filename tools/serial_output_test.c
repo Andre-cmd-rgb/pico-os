@@ -29,8 +29,8 @@ static void vSemaphoreDelete(pthread_mutex_t *m) { assert(m == &mutex); deleted+
 static int serial_install(void) { assert(out_mutex == &mutex); installed++; return install_error; }
 static void serial_uninstall(void) { uninstalled++; }
 static void serial_rx_task(void *arg) { (void)arg; }
-static int xTaskCreatePinnedToCore(void (*fn)(void *), const char *name,
-				  unsigned stack, void *arg, int prio, void **task, int core)
+static int ktask_create(void (*fn)(void *), const char *name,
+			unsigned stack, void *arg, int prio, void **task, int core)
 {
 	assert(fn == serial_rx_task && name && stack == 4096 && !arg && prio == 10 && task && !core);
 	if (!task_error)

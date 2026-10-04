@@ -332,14 +332,14 @@ static void netconsole_task(void *arg)
 	listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (listener < 0) {
 		klog("netconsole: no socket");
-		vTaskDelete(NULL);
+		ktask_exit();
 	}
 	setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 	if (bind(listener, (struct sockaddr *)&addr, sizeof(addr)) || listen(listener, BACKLOG)) {
 		klog("netconsole: cannot listen on port %d", PORT);
 		close(listener);
 		listener = -1;
-		vTaskDelete(NULL);
+		ktask_exit();
 	}
 	klog("netconsole: a shell is waiting on port %d", PORT);
 
@@ -385,7 +385,7 @@ int netconsole_init(void)
 {
 	if (!wifi_started())
 		return -ENODEV;
-	xTaskCreatePinnedToCore(netconsole_task, "knetcon", 4096, NULL, 4, NULL, 0);
+	ktask_create(netconsole_task, "knetcon", 4096, NULL, 4, NULL, 0);
 	return 0;
 }
 

@@ -62,12 +62,14 @@ build: need-board stale-config
 # The board file and fragments only seed a configuration that does not
 # exist yet, so changing them later is silent unless someone says so.
 stale-config:
-	@if [ -f $(BUILD)/sdkconfig ] && \
-	    [ boards/$(BOARD).defconfig -nt $(BUILD)/sdkconfig ]; then \
-		echo "note: boards/$(BOARD).defconfig is newer than $(BUILD)/sdkconfig;"; \
-		echo "      run 'make BOARD=$(BOARD) defconfig' to apply it"; \
-		echo "      (that discards anything menuconfig changed)"; \
-	fi
+	@for f in boards/$(BOARD).defconfig sdkconfig.defaults sdkconfig.defaults.*; do \
+		if [ -f $(BUILD)/sdkconfig ] && [ $$f -nt $(BUILD)/sdkconfig ]; then \
+			echo "note: $$f is newer than $(BUILD)/sdkconfig;"; \
+			echo "      run 'make BOARD=$(BOARD) defconfig' to apply it"; \
+			echo "      (that discards anything menuconfig changed)"; \
+			break; \
+		fi; \
+	done
 	@for f in $(FRAGMENTS); do \
 		if [ -f $(BUILD)/sdkconfig ] && \
 		    grep '^CONFIG_' boards/fragments/$$f.config | grep -qvxFf $(BUILD)/sdkconfig; then \

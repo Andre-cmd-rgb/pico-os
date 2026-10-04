@@ -290,8 +290,7 @@ int etc_init(void)
 		return taken;
 	}
 	ready = true;
-	xTaskCreatePinnedToCoreWithCaps(etc_task, "ketc", 4096, NULL, 1, NULL, 0,
-					MALLOC_CAP_SPIRAM);
+	ktask_create(etc_task, "ketc", 4096, NULL, 1, NULL, 0);
 	return 0;
 }
 

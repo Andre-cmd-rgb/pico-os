@@ -131,7 +131,7 @@ int led_init(void)
 	/* held low through light sleep: floating, the LED can latch noise */
 	gpio_sleep_sel_dis(CONFIG_PT_LED_GPIO);
 	show(true);
-	xTaskCreatePinnedToCore(led_task, "kled", 1536, NULL, 1, &task, 0);
+	ktask_create(led_task, "kled", 1536, NULL, 1, &task, 0);
 	return 0;
 }
 

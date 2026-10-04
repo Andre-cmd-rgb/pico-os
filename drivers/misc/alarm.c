@@ -26,6 +26,7 @@
 #include <string.h>
 #include <sys/time.h>
 
+#include "esp_attr.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -53,7 +54,7 @@
 
 enum answer { ANSWER_NONE, ANSWER_SNOOZE, ANSWER_STOP };
 
-static struct {
+EXT_RAM_BSS_ATTR static struct {
 	SemaphoreHandle_t lock;
 	TaskHandle_t	 task;
 	struct alarm	 a[ALARMS_MAX];
@@ -323,7 +324,7 @@ int alarm_enable(int i, bool on)
 
 /* ------------------------------------------------------------ ringing */
 
-static int16_t sine[64];
+EXT_RAM_BSS_ATTR static int16_t sine[64];
 
 /*
  * `ms` of a tone at `hz` into buf, faded in and out so it does not click;
@@ -579,7 +580,7 @@ int alarm_init(void)
 		al.checked = time(NULL) - CATCH_UP_S;
 		al.grace = CATCH_UP_S + ON_TIME_S;
 	}
-	if (xTaskCreatePinnedToCore(alarm_task, "kalarm", 4096, NULL, 3, &al.task, 0) != pdPASS)
+	if (ktask_create(alarm_task, "kalarm", 4096, NULL, 3, &al.task, 0) != pdPASS)
 		return -ENOMEM;
 	if (al.n)
 		klog("alarm: %d set", al.n);
