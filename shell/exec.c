@@ -615,9 +615,14 @@ static int expand_command(struct sh *sh, struct word *w, struct fields *args)
 	return -1;
 }
 
+/*
+ * A pipeline stage the shell has to run itself, in a process of its own:
+ * a function, or a builtin -- but not echo, which is a program as well,
+ * and a stage is a process either way.
+ */
 static bool needs_shell(struct sh *sh, const char *name)
 {
-	return builtin_find(name) || function_find(sh, name);
+	return function_find(sh, name) || (builtin_find(name) && strcmp(name, "echo"));
 }
 
 /* One pipeline stage started as a process: its pid, or 0 with *status set. */

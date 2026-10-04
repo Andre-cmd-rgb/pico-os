@@ -305,6 +305,18 @@ static int b_eval(struct sh *sh, int argc, char **argv)
 	return status;
 }
 
+/*
+ * echo is the program itself, run in the shell's own process: a script
+ * echoing in a loop started a process every time, for the same bytes.
+ */
+static int b_echo(struct sh *sh, int argc, char **argv)
+{
+	const struct pt_program *prog = program_find("echo");
+
+	(void)sh;
+	return prog ? prog->main(argc, argv) : 127;
+}
+
 static bool is_ifs(const char *ifs, char c)
 {
 	return c && strchr(ifs, c);
@@ -757,6 +769,7 @@ static const struct builtin builtins[] = {
 	{ "cd", b_cd, false },
 	{ "command", b_command, false },
 	{ "continue", b_loop, true },
+	{ "echo", b_echo, false },
 	{ "eval", b_eval, true },
 	{ "exit", b_exit, true },
 	{ "export", b_export, true },

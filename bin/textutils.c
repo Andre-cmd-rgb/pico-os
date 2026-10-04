@@ -22,7 +22,9 @@ PT_PROGRAM(echo, "print arguments\n"
 	   "  -e  interpret \\n \\t \\\\ \\0NNN \\xHH and friends; \\c stops")
 {
 	uint32_t flags = 0;
-	int i = 1;
+	size_t size = 2, len = 0;
+	char *out;
+	int i = 1, first;
 
 	/* Its own parsing, because echo prints whatever it is given: an
 	 * argument is an option only while every letter in it is one, so
@@ -38,25 +40,37 @@ PT_PROGRAM(echo, "print arguments\n"
 		for (c = argv[i] + 1; *c; c++)
 			flags |= 1u << (*c - 'a');
 	}
-	for (int first = i; i < argc; i++) {
+	/* One write for it all, as the shell runs it in its own process
+	 * too: the words and the spaces between, which escapes only shrink. */
+	for (int k = i; k < argc; k++)
+		size += strlen(argv[k]) + 1;
+	if (!(out = pt_malloc(size)))
+		return fail("echo", "output", -ENOMEM);
+	for (first = i; i < argc; i++) {
 		if (i > first)
-			pt_puts(" ");
+			out[len++] = ' ';
 		if (!FLAG(flags, 'e')) {
-			pt_puts(argv[i]);
+			size_t n = strlen(argv[i]);
+
+			memcpy(out + len, argv[i], n);
+			len += n;
 			continue;
 		}
 		for (const char *s = argv[i]; *s;) {
 			char c = *s++;
 
 			if (c == '\\' && *s == 'c')
-				return 0;		/* \c: nothing more at all */
+				goto out;		/* \c: nothing more at all */
 			if (c == '\\')
 				c = (char)escape_char_0(&s);
-			pt_write(PT_STDOUT, &c, 1);
+			out[len++] = c;
 		}
 	}
 	if (!FLAG(flags, 'n'))
-		pt_puts("\n");
+		out[len++] = '\n';
+out:
+	write_all(PT_STDOUT, out, len);
+	pt_free(out);
 	return 0;
 }
 
