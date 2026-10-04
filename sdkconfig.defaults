@@ -33,6 +33,10 @@ CONFIG_LWIP_MAX_SOCKETS=6
 
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_FREERTOS_HZ=1000
+# A process finds its struct proc in a thread-local pointer (pthreads have
+# the first), and a parent waits on a notification its children give.
+CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
+CONFIG_FREERTOS_TASK_NOTIFICATION_ARRAY_ENTRIES=2
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 # 64-bit, so a process's CPU time in `ps` does not wrap after 71 minutes

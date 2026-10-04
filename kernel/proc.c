@@ -39,6 +39,19 @@
 #define SIGMASK(sig)		(1u << (sig))
 #define STOPS			(SIGMASK(PT_SIGSTOP) | SIGMASK(PT_SIGTSTP))
 #define ENDS			(SIGMASK(PT_SIGINT) | SIGMASK(PT_SIGTERM) | SIGMASK(PT_SIGKILL))
+/*
+ * A process's task keeps its struct proc in a thread-local pointer, so
+ * that finding it on every system call is one look rather than a scan of
+ * the table; slot 0 is pthreads'. And a parent waits for news of its
+ * children on a notification of its own, which they give.
+ */
+#define PROC_TLS		1
+#define CHILD_NOTIFY		1
+
+#if CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS <= PROC_TLS || \
+    CONFIG_FREERTOS_TASK_NOTIFICATION_ARRAY_ENTRIES <= CHILD_NOTIFY
+#error "sdkconfig.defaults asks for two thread-local pointers and two notifications: make defconfig"
+#endif
 
 /* in PSRAM: half a kilobyte each, the working directory most of it */
 EXT_RAM_BSS_ATTR static struct proc procs[CONFIG_PT_MAX_PROCS];
@@ -65,9 +78,15 @@ void program_register(struct pt_program *prog)
 
 const struct pt_program *program_find(const char *name)
 {
-	for (struct pt_program *p = programs; p; p = p->next)
-		if (!strcmp(p->name, name))
+	/* sorted by name: past where it would be, it is not there */
+	for (struct pt_program *p = programs; p; p = p->next) {
+		int order = strcmp(p->name, name);
+
+		if (!order)
 			return p;
+		if (order > 0)
+			break;
+	}
 	return NULL;
 }
 
@@ -221,12 +240,10 @@ static char *env_default(size_t *len)
 
 struct proc *proc_current(void)
 {
-	TaskHandle_t self = xTaskGetCurrentTaskHandle();
+	struct proc *p = pvTaskGetThreadLocalStoragePointer(NULL, PROC_TLS);
 
-	for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++)
-		if (procs[i].state == PROC_RUNNING && procs[i].task == self)
-			return &procs[i];
-	return NULL;
+	/* a slot outlives its task, and may be another process's by now */
+	return p && p->state == PROC_RUNNING && p->task == xTaskGetCurrentTaskHandle() ? p : NULL;
 }
 
 int pt_getpid(void)
@@ -377,6 +394,8 @@ static void teardown(struct proc *p, int status)
 	p->kill_waiting = false;
 	xSemaphoreGive(p->exited);
 	p->state = parent ? PROC_ZOMBIE : PROC_FREE;
+	if (parent && parent->task)
+		xTaskNotifyGiveIndexed(parent->task, CHILD_NOTIFY);	/* in pt_wait(), perhaps */
 	UNLOCK();
 }
 
@@ -448,15 +467,16 @@ int pt_wait(int pid, int *status, int flags)
 			UNLOCK();
 			return got;
 		}
-		SemaphoreHandle_t exited = child->exited;
 		UNLOCK();
 
 		if (flags & PT_WNOHANG)
 			return 0;
-		if (pid > 0)
-			xSemaphoreTake(exited, pdMS_TO_TICKS(50));
-		else
-			vTaskDelay(pdMS_TO_TICKS(20));
+		/*
+		 * Until a child has news -- it ended, or stopped -- which it
+		 * tells by a notification, or a while has passed, to look for
+		 * signals: a second while the screen is dark, as other waits.
+		 */
+		ulTaskNotifyTakeIndexed(CHILD_NOTIFY, pdTRUE, pdMS_TO_TICKS(proc_poll_ms(50)));
 		proc_stop_point();		/* the one waiting may be stopped itself */
 		if (pt_interrupted())
 			return -EINTR;
@@ -471,6 +491,7 @@ static void trampoline(void *arg)
 	int status;
 
 	p->task = xTaskGetCurrentTaskHandle();
+	vTaskSetThreadLocalStoragePointer(NULL, PROC_TLS, p);
 	if (p->prog)
 		status = p->prog->main(p->argc, p->argv);
 	else
@@ -721,6 +742,9 @@ static void stop(struct proc *p)
 	xSemaphoreTake(p->cont, 0);
 	p->stopped = true;
 	p->stop_reported = false;
+	for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++)	/* news for a pt_wait(PT_WUNTRACED) */
+		if (procs[i].state == PROC_RUNNING && procs[i].pid == p->ppid && procs[i].task)
+			xTaskNotifyGiveIndexed(procs[i].task, CHILD_NOTIFY);
 	UNLOCK();
 	while (xSemaphoreTake(p->cont, pdMS_TO_TICKS(1000)) != pdTRUE &&
 	       !(atomic_load(&p->sigpending) & ENDS))
