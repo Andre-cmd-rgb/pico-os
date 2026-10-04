@@ -8,7 +8,8 @@
 # Each test runs twice: compiled in memory by `pico`, and compiled to a file
 # by `picoc` and run from it, which must behave the same. The second run leaves the
 # instructions unfused (PICO_NOQUICKEN), so fused and plain execution are
-# compared on every test too.
+# compared on every test too. Then `picoc -t` checks programs good and
+# damaged, and source.
 set -u
 dir=${1:-build/host}
 here=$(cd "$(dirname "$0")" && pwd)
@@ -80,6 +81,39 @@ for t in *.pico; do
 		sed 's/^/    /' "$tmp/diff" | head -25
 	fi
 done
+
+# picoc -t FILE: the loader's checks, with nothing run, and nothing said
+# when they pass. What it should say instead comes on stdin.
+check() {	# expected status, file
+	cat > "$tmp/want"
+	"$AC" -t "$2" > "$tmp/out" 2> "$tmp/err"
+	got=$?
+	if [ "$got" = "$1" ] && [ ! -s "$tmp/out" ] && cmp -s "$tmp/want" "$tmp/err"; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		printf 'FAIL picoc -t %s: status %s, expected %s\n' "$2" "$got" "$1"
+		cat "$tmp/out" "$tmp/err" | sed 's/^/    /' | head -25
+	fi
+}
+
+# A program, the same with a byte damaged and as a newer picoc's would be,
+# and source, which is compiled in memory first.
+"$AC" -o "$tmp/good" arith.pico
+version=$(od -An -tu1 -j3 -N1 "$tmp/good" | tr -d ' ')
+cp "$tmp/good" "$tmp/damaged"
+printf '\377' | dd of="$tmp/damaged" bs=1 seek=5 conv=notrunc 2> /dev/null
+cp "$tmp/good" "$tmp/newer"
+printf '\377' | dd of="$tmp/newer" bs=1 seek=3 conv=notrunc 2> /dev/null
+check 0 "$tmp/good" < /dev/null
+check 1 "$tmp/damaged" <<EOF
+$tmp/damaged: damaged executable (checksum mismatch)
+EOF
+check 1 "$tmp/newer" <<EOF
+$tmp/newer: executable format version 255, this system runs version $version (compile it again with picoc)
+EOF
+check 0 arith.pico < /dev/null
+check 1 bad_syntax.pico < bad_syntax.err
 
 printf '%d/%d tests passed\n' "$pass" "$((pass + fail))"
 [ "$fail" = 0 ]
