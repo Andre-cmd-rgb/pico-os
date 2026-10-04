@@ -52,7 +52,9 @@ static int blink_ms = 530;
 static bool locked, panel_held, switch_back, lcd_fail, row_fail;
 static int allocations, fail_at, resources, notified, switch_y = -1;
 static uint8_t drawn[PANEL_LINES][320 * 2];
+static uint8_t painted[PANEL_LINES][320];	/* pixels sent since last cleared */
 static int writes[8], drawn_x[8], drawn_w[8], bar_writes;
+static int fills, fill_y[8], fill_h[8];	/* off the status line's row */
 static size_t pixel_bytes;
 static uint8_t *pixels_given;
 static struct cell *row_given;
@@ -107,11 +109,12 @@ struct wifi_info { bool up; int8_t rssi; };
 struct proc { int pid; };
 static struct proc program = { 7 };
 static bool program_alive = true, program_stopped;
+static int program_tty;			/* the terminal it runs on */
 static bool alarm_ringing(struct alarm *which) { return false; }
 static bool proc_stopped(int pid) { return pid == program.pid && program_stopped; }
 static bool proc_alive(int pid) { return pid == program.pid && program_alive; }
 static struct proc *proc_current(void) { return &program; }
-static int tty_of_current(void) { return 0; }
+static int tty_of_current(void) { return program_tty; }
 static void power_activity(void) { }
 
 #include "vt_holders_under_test.h"
@@ -161,8 +164,10 @@ static void lcd_draw(int x, int y, int w, int h, const uint8_t *px)
 
 	assert(!locked && x >= 0 && w > 0 && x + w <= panel_width);
 	assert(y >= 0 && h > 0 && y + h <= panel_height);
-	for (int py = 0; py < h; py++)
+	for (int py = 0; py < h; py++) {
 		memcpy(drawn[y + py] + x * 2, px + py * w * 2, w * 2);
+		memset(painted[y + py] + x, 1, w);
+	}
 	if (y == bar_y) {
 		assert(h == CELL_H);
 		bar_writes++;
@@ -189,7 +194,13 @@ static void lcd_fill(int x, int y, int w, int h, uint16_t rgb565)
 		for (int px = x; px < x + w; px++) {
 			drawn[py][px * 2] = rgb565 >> 8;
 			drawn[py][px * 2 + 1] = rgb565;
+			painted[py][px] = 1;
 		}
+	if (y != bar_y) {
+		assert(!x && w == panel_width && fills < 8);
+		fill_y[fills] = y;
+		fill_h[fills++] = h;
+	}
 }
 #define time(t) wall
 #include "vt_status_under_test.h"
@@ -307,7 +318,8 @@ static void check_span(uint8_t *pixels, struct cell *row, int y, int lo, int hi)
 static void run(const struct step *steps, int n)
 {
 	memset(writes, 0, sizeof(writes));
-	bar_writes = delays = clears = 0;
+	memset(painted, 0, sizeof(painted));
+	bar_writes = fills = delays = clears = 0;
 	script = steps;
 	script_len = n;
 	script_at = 0;
@@ -326,6 +338,51 @@ static void three_rows(void) { vt_write("\x1b[1;1Ha\x1b[2;1Hb\x1b[3;1Hc", 21); }
 static void scroll_line(void) { vt_write("\x1b[4;1Hlast\n", 11); }
 static void more_lines(void) { vt_write("one\ntwo\n", 8); }
 static void blink_due(void) { now_us += 530000; }
+
+/*
+ * The pass about to come is the one looked at: what went before it is
+ * forgotten, and the panel shows what a game or a clip left on it.
+ */
+static void watch(void)
+{
+	memset(writes, 0, sizeof(writes));
+	memset(painted, 0, sizeof(painted));
+	bar_writes = fills = 0;
+	for (int y = 0; y < PANEL_LINES; y++)
+		for (int x = 0; x < 320 * 2; x++)
+			drawn[y][x] = x * 7 + y * 13 + 1;
+}
+
+static bool all_painted(void)
+{
+	for (int y = 0; y < panel_height; y++)
+		if (memchr(painted[y], 0, panel_width))
+			return false;
+	return true;
+}
+
+static void show_first(void) { assert(!vt_switch(0)); }
+static void show_second(void) { watch(); assert(!vt_switch(1)); }
+/* The same, the panel as the renderer used to leave it: cleared first. */
+static void show_second_cleared(void)
+{
+	watch();
+	lcd_fill(0, 0, panel_width, panel_height, palette[BG_DEFAULT][0] << 8 | palette[BG_DEFAULT][1]);
+	assert(!vt_switch(1));
+}
+static void redraw(void) { watch(); vt_redraw(); }
+static void hold(void) { vt_hold_screen(true); }
+static void redraw_held(void)
+{
+	unsigned gen = holder[1].gen;
+
+	watch();
+	vt_redraw();
+	assert(holder[1].gen == gen + 1 && !repaint_all);	/* its own to paint */
+}
+static void let_go(void) { watch(); vt_hold_screen(false); }
+static void bar_above(void) { watch(); vt_set_bar(true); }
+static void bar_below(void) { watch(); vt_set_bar(false); }
 
 static int sent_rows(void)
 {
@@ -377,7 +434,7 @@ int main(void)
 		assert_cell(0, y, 'B', COLOR(FG_DEFAULT, BG_DEFAULT));
 		assert_cell(2, y, 'B', COLOR(FG_DEFAULT, BG_DEFAULT));
 	}
-	/* Switching away and back still needs all rows after the panel clear. */
+	/* Switching away and back still needs all rows painted again. */
 	assert(!vt_switch(0));
 	switch_y = 1;
 	switch_back = true;
@@ -503,9 +560,78 @@ int main(void)
 
 	run(blink, 4);
 	assert(!delays && !clears && writes[3] >= 2 && writes[0] && writes[1] && writes[2]);
+
+	/*
+	 * Painted again -- another terminal, a program gone -- every row and
+	 * the status line go out edge to edge, over whatever the panel
+	 * showed, with no fill first: every pixel is sent in that one pass,
+	 * so the panel ends as it did when the whole of it was cleared first.
+	 * Each repaint comes after a pass, so the status line is not the
+	 * renderer's first.
+	 */
+	static uint8_t cleared_first[PANEL_LINES][320 * 2];
+	const struct step second[] = { { NULL, 1 }, { show_second, 1 } };
+	const struct step second_cleared[] = { { show_first, 1 }, { show_second_cleared, 1 } };
+
+	vt_write_on(1, "\x1b[31msecond\x1b[42m terminal\x1b[K\n\x1b[0m:", 34);
+	run(second, 2);
+	assert(all_painted() && !fills && bar_writes == 1 && sent_rows() == rows);
+	assert_cell(0, 0, 's' - FONT_FIRST, COLOR(1, BG_DEFAULT));
+	assert_cell(7, 0, 't' - FONT_FIRST, COLOR(1, 2));
+	assert_edge(0, 0, BG_DEFAULT);
+	assert_edge(panel_width - 1, 0, 2);
+	memcpy(cleared_first, drawn, sizeof(drawn));
+	run(second_cleared, 2);
+	assert(!memcmp(cleared_first, drawn, sizeof(drawn)));
+	/* vt_redraw() is the same pass, the status line in it. */
+	const struct step again[] = { { NULL, 1 }, { redraw, 1 } };
+
+	run(again, 2);
+	assert(all_painted() && !fills && bar_writes == 1 && sent_rows() == rows);
+	assert(!memcmp(cleared_first, drawn, sizeof(drawn)));
+	/* Never over a program that holds the terminal in front: it is asked
+	 * to paint its own again; let go, the terminal is painted. */
+	const struct step held[] = { { hold, 1 }, { redraw_held, 1 } };
+	const struct step gone[] = { { NULL, 1 }, { let_go, 1 } };
+
+	program_tty = 1;
+	run(held, 2);
+	assert(holder[1].held && !sent_rows() && !bar_writes && !fills);
+	assert(!memchr(painted, 1, sizeof(painted)));
+	run(gone, 2);
+	assert(!holder[1].held && all_painted() && !fills && bar_writes == 1);
+	assert(!memcmp(cleared_first, drawn, sizeof(drawn)));
+	/* Where the cells leave lines above and below, those alone are filled,
+	 * as place_bar() lays the bar out above the text or below it; and
+	 * wider spare columns at the sides are painted with the rows. */
+	const struct step above[] = { { NULL, 1 }, { bar_above, 1 } };
+	const struct step below[] = { { NULL, 1 }, { bar_below, 1 } };
+
+	panel_height = (rows + 1) * CELL_H + 7;
+	origin_y = 3;
+	run(above, 2);
+	assert(bar_y == 3 && text_y == 3 + CELL_H && all_painted() && bar_writes == 1);
+	assert(fills == 2 && !fill_y[0] && fill_h[0] == 3 && fill_y[1] == 53 && fill_h[1] == 4);
+	run(below, 2);
+	assert(text_y == 3 && bar_y == 3 + rows * CELL_H && all_painted() && bar_writes == 1);
+	assert(fills == 2 && !fill_y[0] && fill_h[0] == 3 && fill_y[1] == 53 && fill_h[1] == 4);
+	for (int x = 0; x < panel_width; x++)
+		assert(!memcmp(drawn[0] + x * 2, palette[BG_DEFAULT], 2) &&
+		       !memcmp(drawn[panel_height - 1] + x * 2, palette[BG_DEFAULT], 2));
+	screen_free_all();
+	assert(!resources);
+	cols = 52;
+	origin_x = 4;
+	assert(screen_alloc());
+	vt_write_on(1, "\x1b[44mwide edges\x1b[K", 18);
+	run(again, 2);
+	assert(all_painted() && fills == 2 && bar_writes == 1);
+	assert_edge(0, 0, 4);
+	assert_edge(panel_width - 1, 0, 4);
+	assert_edge(0, 1, BG_DEFAULT);
 	screen_free_all();
 	assert(!resources);
 	puts("VT renderer: grid faults, switched frames, RGB565 edge/partial spans, 320px allocation "
-	     "cleanup and frames without the burst wait passed");
+	     "cleanup, frames without the burst wait and repaints without a clear passed");
 	return 0;
 }

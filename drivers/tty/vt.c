@@ -842,9 +842,9 @@ static const struct cell *shown_row(const struct screen *sc, int y)
 	return &sc->hist[(size_t)line * cols];
 }
 
-/* Clearing the panel invalidates every row, including rows a previous
- * pass painted before a terminal switch. Consume the repaint together
- * with that terminal's dirty grid, never halfway through a switch. */
+/* A repaint is every row, including rows a previous pass painted
+ * before a terminal switch. Consume it together with that terminal's
+ * dirty grid, never halfway through a switch. */
 static bool prepare_frame(int which)
 {
 	bool repaint;
@@ -864,6 +864,28 @@ static bool prepare_frame(int which)
 	return repaint;
 }
 
+/*
+ * What the text and the status line leave of the panel, above and below
+ * them, in the background colour: nothing on this one, which the cells
+ * of either font divide exactly, landscape or portrait. Rows and bar are
+ * painted edge to edge, the spare columns too, and place_bar() puts the
+ * bar against the text, so a terminal painted again needs nothing
+ * cleared first: that was a whole screen, 31 ms on the bus.
+ */
+static void fill_margins(void)
+{
+	uint16_t bg = palette[BG_DEFAULT][0] << 8 | palette[BG_DEFAULT][1];
+	int top = text_y, bottom = text_y + rows * CELL_H;
+
+#if CONFIG_PT_STATUS_LINE
+	top = MIN(top, bar_y);
+	bottom = MAX(bottom, bar_y + CELL_H);
+#endif
+	if (top > 0)
+		lcd_fill(0, 0, lcd_width(), top, bg);
+	if (bottom < lcd_height())
+		lcd_fill(0, bottom, lcd_width(), lcd_height() - bottom, bg);
+}
 
 /* Finish a coherent row pass for the terminal it started on. Switching
  * stays quick; its notification and repaint are kept for the next pass. */
@@ -1023,9 +1045,9 @@ static void render_task(void *arg)
 		struct screen *sc = &screens[frame_vt];
 
 		if (prepare_frame(frame_vt)) {
-			/* a different terminal or new colours: clear once, then draw it */
-			lcd_fill(0, 0, lcd_width(), lcd_height(),
-				 palette[BG_DEFAULT][0] << 8 | palette[BG_DEFAULT][1]);
+			/* a different terminal or new colours: every row and the
+			 * status line again, right across, over what was there */
+			fill_margins();
 			cur_x = cur_y = -1;
 			next_status = 0;
 		}
@@ -1473,10 +1495,9 @@ void vt_redraw(void)
 	if (program_shows(active)) {
 		holder[active].gen++;
 	} else {
-		lcd_fill(0, 0, lcd_width(), lcd_height(),
-			 palette[BG_DEFAULT][0] << 8 | palette[BG_DEFAULT][1]);
 		xSemaphoreTake(lock, portMAX_DELAY);
 		mark_all();
+		repaint_all = true;	/* the renderer paints it all, status line too */
 		xSemaphoreGive(lock);
 	}
 	xSemaphoreGive(panel);
