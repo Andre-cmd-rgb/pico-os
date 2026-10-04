@@ -254,4 +254,5 @@ BLUETOOTH (in a build with it: FRAGMENTS=ble)
 THE PICO LANGUAGE
   pico FILE.pico    compile and run in one step
   picoc FILE.pico   compile to an executable
+  picoc -t PROG     would this system run it?
   See `man pico`.

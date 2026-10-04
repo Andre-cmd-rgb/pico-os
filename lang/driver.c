@@ -1,7 +1,6 @@
 /*
- * The commands: picoc compiles (or with -t checks a program without
- * running it), pico compiles and runs (or runs an executable), and the
- * loader runs an executable by name.
+ * The commands: picoc compiles, pico compiles and runs (or runs an
+ * executable), and the loader runs an executable by name.
  */
 #include <string.h>
 
@@ -75,11 +74,8 @@ static bool is_image(const uint8_t *data, size_t len)
 	return len >= 3 && !memcmp(data, PICO_MAGIC, 3);
 }
 
-/*
- * Takes ownership of data: the program loaded, with every check the loader
- * makes, and ready to run; or NULL after saying what was wrong.
- */
-static struct pico_vm *load_image(const char *name, uint8_t *data, size_t len)
+/* Takes ownership of data. */
+static int run_image(const char *name, uint8_t *data, size_t len, int argc, char **argv)
 {
 	struct pico_vm *vm = pico_vm_new();
 	char err[200];
@@ -87,25 +83,15 @@ static struct pico_vm *load_image(const char *name, uint8_t *data, size_t len)
 	if (!vm) {
 		port_free(data);
 		pico_eprintf("%s: out of memory\n", name);
-		return NULL;
+		return 1;
 	}
 	vm->prog.image = data;
 	vm->prog.image_len = len;
 	if (pico_load(vm, data, len, err, sizeof(err))) {
 		pico_eprintf("%s: %s\n", name, err);
 		pico_vm_free(vm, false);
-		return NULL;
-	}
-	return vm;
-}
-
-/* Takes ownership of data. */
-static int run_image(const char *name, uint8_t *data, size_t len, int argc, char **argv)
-{
-	struct pico_vm *vm = load_image(name, data, len);
-
-	if (!vm)
 		return 1;
+	}
 	const char *plain = port_getenv("PICO_NOQUICKEN");	/* for the tests */
 	if (!plain || !*plain)
 		pico_quicken(vm);
@@ -131,52 +117,6 @@ static int compile_file(const char *prog, const char *path, struct pico_image *i
 }
 
 /*
- * The program in a file: an executable as it is, or source compiled in
- * memory. 0 and the image in *data, the caller's to free; -1 after saying
- * what was wrong.
- */
-static int image_of(const char *prog, const char *path, uint8_t **data, size_t *len)
-{
-	struct pico_image img;
-	int err = read_file(path, data, len, PICO_MAX_IMAGE);
-
-	if (err) {
-		pico_eprintf("%s: %s: %s\n", prog, path, port_strerror(err));
-		return -1;
-	}
-	if (is_image(*data, *len))
-		return 0;
-	if (*len > PICO_MAX_SOURCE) {
-		port_free(*data);
-		pico_eprintf("%s: %s: source file too large\n", prog, path);
-		return -1;
-	}
-	err = pico_compile(path, (const char *)*data, *len, &img);
-	port_free(*data);
-	if (err)
-		return -1;
-	*data = img.data;
-	*len = img.len;
-	return 0;
-}
-
-/*
- * picoc -t: the program loaded as pico would load it to run it, and not
- * run. Nothing is said when it passes, and otherwise what pico would say.
- */
-static int check_file(const char *path)
-{
-	struct pico_vm *vm;
-	uint8_t *data;
-	size_t len;
-
-	if (image_of("picoc", path, &data, &len) || !(vm = load_image(path, data, len)))
-		return 1;
-	pico_vm_free(vm, false);
-	return 0;
-}
-
-/*
  * The length of a source file's extension: .pico, or .al from when the
  * language was called a; 0 if it has neither.
  */
@@ -194,10 +134,46 @@ static size_t source_ext(const char *path)
 	return 0;
 }
 
+/*
+ * Whether this system would run a program compiled elsewhere -- by picoc
+ * on a PC, as the packages are: loaded and verified as running it would
+ * (the version, the checksum, every instruction and built-in), not run.
+ */
+static int test_image(const char *path)
+{
+	struct pico_vm *vm;
+	uint8_t *data;
+	size_t len;
+	char err[200];
+	int status = read_file(path, &data, &len, PICO_MAX_IMAGE);
+
+	if (status) {
+		pico_eprintf("picoc: %s: %s\n", path, port_strerror(status));
+		return 1;
+	}
+	if (!is_image(data, len)) {
+		port_free(data);
+		pico_eprintf("picoc: %s: not a compiled program\n", path);
+		return 1;
+	}
+	if (!(vm = pico_vm_new())) {
+		port_free(data);
+		pico_eprintf("picoc: out of memory\n");
+		return 1;
+	}
+	vm->prog.image = data;		/* the VM's now, freed with it */
+	vm->prog.image_len = len;
+	status = pico_load(vm, data, len, err, sizeof(err)) != 0;
+	if (status)
+		pico_eprintf("picoc: %s: %s\n", path, err);
+	pico_vm_free(vm, false);
+	return status;
+}
+
 int pico_main_compile(int argc, char **argv)
 {
 	const char *out = NULL, *src = NULL;
-	bool disasm = false, check = false;
+	bool disasm = false, test = false;
 	char name[256];
 
 	for (int i = 1; i < argc; i++) {
@@ -206,7 +182,7 @@ int pico_main_compile(int argc, char **argv)
 		} else if (!strcmp(argv[i], "-d")) {
 			disasm = true;
 		} else if (!strcmp(argv[i], "-t")) {
-			check = true;
+			test = true;
 		} else if (argv[i][0] == '-' || src) {
 			src = NULL;
 			break;
@@ -214,13 +190,13 @@ int pico_main_compile(int argc, char **argv)
 			src = argv[i];
 		}
 	}
-	if (!src || (check && (out || disasm))) {
+	if (!src || (test && (out || disasm))) {
 		pico_eprintf("usage: picoc [-o program] [-d] file.pico\n"
 			     "       picoc -t program\n");
 		return 2;
 	}
-	if (check)
-		return check_file(src);
+	if (test)
+		return test_image(src);
 	size_t ext = source_ext(src);
 	if (!ext) {
 		pico_eprintf("picoc: %s: source files end in .pico\n", src);
@@ -283,9 +259,25 @@ int pico_main_run(int argc, char **argv)
 			   "       pico program [args...]      run a compiled program\n");
 		return 2;
 	}
-	if (image_of("pico", argv[1], &data, &len))
+	int err = read_file(argv[1], &data, &len, PICO_MAX_IMAGE);
+	if (err) {
+		pico_eprintf("pico: %s: %s\n", argv[1], port_strerror(err));
 		return 1;
-	return run_image(argv[1], data, len, argc - 1, argv + 1);
+	}
+	if (is_image(data, len))
+		return run_image(argv[1], data, len, argc - 1, argv + 1);
+
+	struct pico_image img;
+	if (len > PICO_MAX_SOURCE) {
+		port_free(data);
+		pico_eprintf("pico: %s: source file too large\n", argv[1]);
+		return 1;
+	}
+	err = pico_compile(argv[1], (const char *)data, len, &img);
+	port_free(data);
+	if (err)
+		return 1;
+	return run_image(argv[1], img.data, img.len, argc - 1, argv + 1);
 }
 
 bool pico_probe(const uint8_t *head, size_t n)

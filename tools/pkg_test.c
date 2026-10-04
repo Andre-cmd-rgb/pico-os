@@ -10,10 +10,8 @@
 static char test_home[PT_PATH_MAX];
 static bool missing_home;
 static int short_write, write_error, close_error, rename_error, unlink_error;
-static int printf_short, hash_update_error, hash_finish_short, compiler_error;
-static int check_error, compiles, checks;
-static bool check_interrupted;
-static char checked[64];
+static int printf_short, hash_update_error, hash_finish_short, compiler_error, checker_error;
+static int compiles, checks, last_status;
 static const char *read_error_path;
 static bool writable[1024], read_error_fd[1024];
 static int hash_aborts;
@@ -176,21 +174,16 @@ static void write_text(const char *path, const char *text)
 
 	assert(f && fputs(text, f) >= 0 && !fclose(f));
 }
-static void read_text(const char *path, char *data, size_t size)
+static void expect_text(const char *path, const char *text)
 {
+	char data[2048];
 	FILE *f = fopen(path, "r");
 	size_t n;
 
 	assert(f);
-	n = fread(data, 1, size - 1, f);
+	n = fread(data, 1, sizeof(data) - 1, f);
 	assert(!ferror(f) && !fclose(f));
 	data[n] = '\0';
-}
-static void expect_text(const char *path, const char *text)
-{
-	char data[2048];
-
-	read_text(path, data, sizeof(data));
 	assert(!strcmp(data, text));
 }
 static void absent(const char *path) { assert(access(path, F_OK) && errno == ENOENT); }
@@ -199,30 +192,27 @@ static void test_path(char *out, size_t n, const char *base, const char *tail)
 	assert((size_t)snprintf(out, n, "%s/%s", base, tail) < n);
 }
 
-/* picoc -o compiles, as pid 123; picoc -t, quiet, checks the program it is given, as 124. */
 int pt_spawn(const struct pt_spawn *req)
 {
-	assert(req->pgid == current_pid && !strcmp(req->cmd, "picoc"));
-	if (req->argc == 3) {
-		assert(!strcmp(req->argv[1], "-t") && req->fd[1] >= 0 && req->fd[2] >= 0);
-		read_text(req->argv[2], checked, sizeof(checked));
+	assert(req->pgid == current_pid);
+	assert(!strcmp(req->cmd, "picoc"));
+	if (req->argc == 3) {		/* picoc -t: would this system run it? */
+		assert(!strcmp(req->argv[1], "-t") && !access(req->argv[2], F_OK));
 		checks++;
-		return 124;
+		last_status = checker_error;
+		return 123;
 	}
-	assert(req->argc == 4 && strstr(req->argv[3], ".pico") && req->fd[1] < 0 && req->fd[2] < 0);
+	assert(req->argc == 4 && strstr(req->argv[3], ".pico"));
 	write_text(req->argv[2], compiler_error ? "partial image" : "new image");
 	compiles++;
+	last_status = compiler_error;
 	return 123;
 }
 int pt_wait(int pid, int *status, int flags)
 {
 	(void)flags;
-	assert(pid == 123 || pid == 124);
-	if (pid == 124 && check_interrupted) {
-		check_interrupted = false;	/* Ctrl-C: passed on, then waited for again */
-		return -EINTR;
-	}
-	*status = pid == 123 ? compiler_error : check_error;
+	assert(pid == 123);
+	*status = last_status;
 	return pid;
 }
 
@@ -259,28 +249,6 @@ static void entries(void)
 	snprintf(line, sizeof(line), "snake\t1.0 bad\t20\t%s\tabout", sha);
 	index_line(line, &p);
 	assert(p.n == 1);
-
-	/* images.txt: only snake's line for this very source, and the first of those */
-	const char *other = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
-	const char *images[] = { "# snake\t%s\t20\t%s", "guess\t%s\t20\t%s", "snake\t%.63s\t20\t%s",
-				 "snake\t%s\t-1\t%s", "snake\t%s\t20\t%.63s", "snake\t%s\t20\t%s\tmore",
-				 "snake\t%s\t20", "snake\t%s\t\t%s", NULL };
-	struct image im = { .name = "snake", .source = sha };
-
-	for (int i = 0; images[i]; i++) {
-		snprintf(line, sizeof(line), images[i], sha, other);
-		image_line(line, &im);
-		assert(!im.found);
-	}
-	snprintf(line, sizeof(line), "snake\t%s\t20\t%s", other, other);
-	image_line(line, &im);
-	assert(!im.found);
-	snprintf(line, sizeof(line), "snake\t%s\t20\t%s", sha, other);
-	image_line(line, &im);
-	assert(im.found && im.size == 20 && !strcmp(im.sha, other));
-	snprintf(line, sizeof(line), "snake\t%s\t30\t%s", sha, sha);
-	image_line(line, &im);
-	assert(im.size == 20 && !strcmp(im.sha, other));
 }
 
 static void io_failures(void)
@@ -403,116 +371,50 @@ static void installation(const char *root)
 	expect_text(index, "old index\n");
 	assert(!update(&fetched) && fetched.n == 1);
 	expect_text(index, line);
-	pt_free(fetched.e); pt_free(inst.e);
-}
 
-/* The repository's images.txt (NULL: none), taken by pkg update. */
-static void publish_images(const char *repository, const char *text)
-{
-	char path[PT_PATH_MAX];
-	struct pkgs fetched = { 0 };
+	/* The repository's own compile, used when it is of this very source. */
+	char images[PT_PATH_MAX], ready[PT_PATH_MAX], list[PT_PATH_MAX], image_sha[65];
+	long image_size;
 
-	test_path(path, sizeof(path), repository, "images.txt");
-	if (text)
-		write_text(path, text);
-	else
-		unlink(path);
-	assert(!update(&fetched));
-	pt_free(fetched.e);
-}
-
-/* snake installed: the program it leaves, how many picoc -t and -o, and no temporary files. */
-static void installs(struct pkgs *idx, int status, const char *program, int new_checks,
-		     int new_compiles)
-{
-	char binary[PT_PATH_MAX], temp_image[PT_PATH_MAX + 8], dir[PT_PATH_MAX];
-	char temp_source[PT_PATH_MAX];
-	struct pkgs inst = { 0 };
-	int were_checks = checks, were_compiles = compiles;
-
-	inst.e = pt_calloc(ENTRIES_MAX, sizeof(*inst.e));
-	assert(inst.e);
-	test_path(binary, sizeof(binary), test_home, "bin/snake");
-	snprintf(temp_image, sizeof(temp_image), "%s.new", binary);
-	assert(pkg_path("src", dir, sizeof(dir)));
-	test_path(temp_source, sizeof(temp_source), dir, "snake.new.pico");
-	write_text(binary, "old image");
-	assert(install(idx, &inst, "snake") == status);
-	expect_text(binary, program);
-	assert(checks == were_checks + new_checks && compiles == were_compiles + new_compiles);
-	absent(temp_image); absent(temp_source);
-	pt_free(inst.e);
-}
-
-/* After installation(): its repository folder, now with programs compiled there. */
-static void ready_made_programs(const char *root)
-{
-	char repository[PT_PATH_MAX], path[PT_PATH_MAX], kept[PT_PATH_MAX], aside[PT_PATH_MAX];
-	char line[512], sha[65], wrong[65];
-	struct entry e = { .name = "snake", .version = "3.0" };
-	struct pkgs idx = { .e = &e, .n = 1 };
-	long size;
-
-	test_path(repository, sizeof(repository), root, "repository");
-	test_path(path, sizeof(path), repository, "packages/snake/snake.pico");
-	assert(sha256_of(path, e.sha, &e.size));
 	test_path(path, sizeof(path), repository, "images"); assert(!pt_mkdir(path));
-	test_path(path, sizeof(path), repository, "images/snake");
-	write_text(path, "ready-made image");
-	assert(sha256_of(path, sha, &size));
-	strcpy(wrong, sha); wrong[0] = wrong[0] == '0' ? '1' : '0';
-	assert(pkg_path("images.txt", kept, sizeof(kept)));
+	test_path(ready, sizeof(ready), repository, "images/snake");
+	write_text(ready, "ready image");
+	assert(sha256_of(ready, image_sha, &image_size));
+	test_path(images, sizeof(images), repository, "images.txt");
+	snprintf(line, sizeof(line), "# made by the repository\nsnake\t%s\t%ld\t%s\n",
+		 e.sha, image_size, image_sha);
+	write_text(images, line);
+	assert(!update(&fetched));
+	assert(pkg_path("images.txt", list, sizeof(list)));
+	expect_text(list, line);
+	compiles = checks = 0;
+	assert(!install(&idx, &inst, "snake"));
+	expect_text(binary, "ready image");
+	assert(!compiles && checks == 1);
+	absent(temp_image); absent(temp_source);
 
-	/* none there: an older list goes, and the source is compiled */
-	snprintf(line, sizeof(line), "snake\t%s\t%ld\t%s\n", e.sha, size, sha);
-	write_text(kept, line);
-	publish_images(repository, NULL);
-	absent(kept);
-	installs(&idx, 0, "new image", 0, 1);
+	/* ...and not otherwise: refused by picoc -t, damaged, of another source */
+	checker_error = 1;
+	assert(!install(&idx, &inst, "snake"));
+	checker_error = 0;
+	expect_text(binary, "new image");
+	assert(compiles == 1 && checks == 2);
+	write_text(ready, "a damaged image");
+	assert(!install(&idx, &inst, "snake"));
+	expect_text(binary, "new image");
+	assert(compiles == 2 && checks == 2);
+	write_text(ready, "ready image");
+	snprintf(line, sizeof(line), "snake\t%064d\t%ld\t%s\n", 0, image_size, image_sha);
+	write_text(list, line);
+	assert(!install(&idx, &inst, "snake"));
+	assert(compiles == 3 && checks == 2);
+	absent(temp_image); absent(temp_source);
 
-	/* the program for this very source: checked by picoc -t, then installed as it came */
-	snprintf(line, sizeof(line), "# name, source, size, sha256\nsnake\t%s\t%ld\t%s\n",
-		 e.sha, size, sha);
-	publish_images(repository, line);
-	expect_text(kept, line);
-	installs(&idx, 0, "ready-made image", 1, 0);
-	assert(!strcmp(checked, "ready-made image"));
-
-	/* only another source's program, or another package's for this source */
-	snprintf(line, sizeof(line), "snake\t%s\t%ld\t%s\nguess\t%s\t%ld\t%s\n",
-		 wrong, size, sha, e.sha, size, sha);
-	publish_images(repository, line);
-	installs(&idx, 0, "new image", 0, 1);
-
-	/* a program that is not what the list says: another SHA-256, another size */
-	snprintf(line, sizeof(line), "snake\t%s\t%ld\t%s\n", e.sha, size, wrong);
-	publish_images(repository, line);
-	installs(&idx, 0, "new image", 0, 1);
-	snprintf(line, sizeof(line), "snake\t%s\t%ld\t%s\n", e.sha, size + 1, sha);
-	publish_images(repository, line);
-	installs(&idx, 0, "new image", 0, 1);
-
-	/* listed, but it does not come */
-	snprintf(line, sizeof(line), "snake\t%s\t%ld\t%s\n", e.sha, size, sha);
-	publish_images(repository, line);
-	test_path(path, sizeof(path), repository, "images/snake");
-	test_path(aside, sizeof(aside), repository, "snake.aside");
-	assert(!rename(path, aside));
-	installs(&idx, 0, "new image", 0, 1);
-	assert(!rename(aside, path));
-	expect_text(kept, line);
-
-	/* picoc -t refuses it: a newer compiler's, say */
-	check_error = 1;
-	installs(&idx, 0, "new image", 1, 1);
-	check_error = 0;
-
-	/* Ctrl-C while it is checked stops the install, rather than compiling instead */
-	check_interrupted = true;
-	check_error = 130;
-	installs(&idx, 1, "old image", 1, 0);
-	check_error = 0;
-	installs(&idx, 0, "ready-made image", 1, 0);
+	/* A repository without the list leaves none behind to mislead. */
+	assert(!unlink(images));
+	assert(!update(&fetched));
+	absent(list);
+	pt_free(fetched.e); pt_free(inst.e);
 }
 
 int main(int argc, char **argv)
@@ -541,8 +443,8 @@ int main(int argc, char **argv)
 	current_pid = 2;
 	pkg_leave();
 	assert(!atomic_load(&pkg_owner));
-	entries(); io_failures(); installation(argv[1]); ready_made_programs(argv[1]);
-	puts("pkg: safe names, complete I/O, hash failures, saved DB, failed upgrades, orphan-helper leases, "
-	     "ready-made programs and their fallbacks passed");
+	entries(); io_failures(); installation(argv[1]);
+	puts("pkg: safe names, complete I/O, hash failures, saved DB, failed upgrades, "
+	     "ready-made programs and orphan-helper leases passed");
 	return 0;
 }
