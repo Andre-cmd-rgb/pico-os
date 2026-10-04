@@ -257,7 +257,7 @@ static void backlight_sleep(void)
 static void backlight_init(void) { }
 static void backlight_sleep(void) { }
 void lcd_backlight_set(int percent) { brightness = lamp = percent; }
-void lcd_light(int percent) { }
+void lcd_light(int percent) { dimmer = percent; }
 
 #endif
 

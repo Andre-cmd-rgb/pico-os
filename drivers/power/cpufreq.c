@@ -228,7 +228,7 @@ static void account(void)
 	free(dump);
 }
 #else
-static void account(void) { }
+static inline void account(void) { }
 #endif
 
 /*
