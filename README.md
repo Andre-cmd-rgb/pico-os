@@ -261,6 +261,18 @@ make push FILE=hello.pico    # send a source file to the board
 picoc hello.pico && ./hello  # compile it there and run it
 ```
 
+### What is built in
+
+The firmware is the system: the kernel and the drivers, the shell and the
+standard commands, the editor, the network tools, `pkg` and the pico
+compiler -- everything needed to use, set up and repair the machine, as a
+Linux distribution's base is. The rest are applications: `ai`, `notes`,
+the diary (`alarm`, `todo`, `calendar`), `calc`, `view` and `video`,
+`nes`, `bench` and `picofetch`. Each is a switch in `make menuconfig`
+(pico-os > Applications), all on in the Freenove build, and a name left
+out is free for a package. New programs go to the packages, below, unless
+they need the hardware or the speed of C.
+
 ### Packages
 
 More programs come from the

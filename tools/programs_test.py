@@ -35,7 +35,7 @@ SOURCES = [os.path.join(HERE, "host_pt.c")] + [
     os.path.join(ROOT, p) for p in (
         "bin/diff.c", "bin/filters.c", "bin/find.c", "bin/sums.c", "bin/regex.c", "bin/sed.c", "bin/shellutils.c", "bin/sort.c",
         "bin/textutils.c", "bin/util.c", "kernel/match.c", "bin/notes.c", "bin/pick.c",
-        "bin/dates.c", "bin/todo.c", "bin/calendar.c", "bin/calc.c")]
+        "bin/dates.c", "bin/todo.c", "bin/calendar.c", "bin/cal.c", "bin/calc.c")]
 PROGRAMS = ("basename cal calc calendar cksum cmp cut diff dirname du echo expr find grep head notes "
             "printf realpath sed seq sort tail tee todo tr uniq wc xargs yes").split()
 VERBOSE = "-v" in sys.argv

@@ -564,6 +564,17 @@ as a function table, `pt_sys`, for loaded programs.
 
 ## Adding a command
 
+First, whether it belongs in the firmware at all. The system is what is
+needed to use, set up and repair the machine -- the shell, the standard
+commands, the editor, the network tools, `pkg`, `picoc` -- and what only
+C can do: drive the hardware, or be fast where pico cannot. Anything else
+is an application, and a new one goes to pico-os-packages, written in
+pico. The applications already in `bin/` are each an option under
+pico-os > Applications (`PT_APP_*` and `PT_NES`), and `bin/CMakeLists.txt`
+compiles their files only when it is on; a driver that only an
+application uses compiles to stubs with it, as `drivers/misc/alarm.c`
+does with the diary.
+
 Put it in `bin/`, or in a new file listed in `bin/CMakeLists.txt`:
 
 ```c
