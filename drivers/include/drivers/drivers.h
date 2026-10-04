@@ -183,6 +183,7 @@ void	audio_discard(void);		/* the caller's queued sound goes unplayed */
 void	audio_sleep(void);		/* before deep sleep: all silent, codec in standby */
 int	audio_set_latency(int ms);	/* how much of the caller's sound may be queued */
 void	audio_claim(bool mine);		/* the alarm takes the speaker, and gives it back */
+#define AUDIO_RATE_MAX	96000		/* the headphones' DAC; the speaker is resampled to 48000 */
 int	audio_set_rate(int hz);
 int	audio_rate(void);
 int	audio_buffer_us(void);		/* the caller's queue and the DMA, full, in us */
@@ -194,6 +195,7 @@ int	audio_set_mic_alc(bool on, int max_db);	/* let the codec ride the gain */
 bool	audio_mic_alc(void);
 void	audio_mic_alc_hold(bool hold);	/* counted: the codec's riding off meanwhile */
 ssize_t	audio_write(const void *pcm, size_t bytes, int channels);	/* 16-bit */
+ssize_t	audio_write24(const int32_t *pcm, size_t bytes, int channels);	/* 24 bits in 32 */
 ssize_t	audio_read(void *pcm, size_t bytes);				/* 16-bit mono */
 
 /* The headphone jack, where there is one: sound goes there or to the speaker. */

@@ -137,8 +137,10 @@ POWER
 
 SOUND
   play FILE   WAV, FLAC, MP3, or raw 16-bit mono;
-              plays on while a game or a clip on
-              another terminal makes its own sound
+              headphones get all 24 bits, at the
+              file's rate up to 96 kHz; plays on
+              while a game or a clip on another
+              terminal makes its own sound
   play -n F   decode without playing: speed and a
               checksum, for testing
   rec [FILE]  record from the microphone, into

@@ -117,6 +117,7 @@ hosttest:
 	@python3 tools/audio_init_test.py
 	@python3 tools/flac_test.py
 	@python3 tools/mp3_test.py
+	@python3 tools/wav_test.py
 	@python3 tools/pkg_test.py
 	@python3 tools/auth_test.py
 	@python3 tools/netconsole_test.py

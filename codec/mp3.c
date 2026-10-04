@@ -8,12 +8,19 @@
  * file is the part that belongs to us -- keeping the reader fed, finding
  * frames, and handing samples over like every other decoder here.
  *
+ * The samples are taken as floating point, which is what minimp3 works
+ * in, rather than rounded to 16 bits and clipped: 24 bits of them are
+ * kept, and a loud track's overshoot of full scale goes to the mixer's
+ * limiter instead of being cut flat.
+ *
  * Note for callers: minimp3 keeps a 17 KB scratch buffer on the stack, so
  * a program that plays MP3 needs a stack bigger than the default.
  */
+#include <math.h>
 #include <string.h>
 
 #include "codec.h"
+#define MINIMP3_FLOAT_OUTPUT		/* as decoders.c builds it */
 #include "minimp3.h"
 #include <unistd.h>
 
@@ -29,7 +36,7 @@ struct mp3 {
 	int		filled, pos;
 	bool		eof;
 	int		error;
-	int16_t		pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+	float		pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];	/* full scale is 1 */
 	int		have, taken;	/* frames decoded but not handed over */
 };
 
@@ -87,7 +94,7 @@ static bool next_frame(struct mp3 *m)
 	}
 }
 
-static ssize_t mp3_read(struct codec *c, int16_t *pcm, size_t frames)
+static ssize_t mp3_read(struct codec *c, int32_t *pcm, size_t frames)
 {
 	struct mp3 *m = (struct mp3 *)c;
 	size_t done = 0;
@@ -102,8 +109,12 @@ static ssize_t mp3_read(struct codec *c, int16_t *pcm, size_t frames)
 		n = m->have - m->taken;
 		if ((size_t)n > frames - done)
 			n = frames - done;
-		memcpy(pcm + done * c->channels, m->pcm + m->taken * c->channels,
-		       (size_t)n * c->channels * sizeof(*pcm));
+		for (int i = 0; i < n * c->channels; i++) {
+			float v = m->pcm[m->taken * c->channels + i] * (CODEC_FULL + 1);
+
+			pcm[done * c->channels + i] = v >= CODEC_OVER ? CODEC_OVER :
+						      v <= -CODEC_OVER ? -CODEC_OVER : (int32_t)lrintf(v);
+		}
 		m->taken += n;
 		done += n;
 	}

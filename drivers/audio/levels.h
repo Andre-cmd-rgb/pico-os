@@ -16,6 +16,16 @@ static inline int speaker_volume_reg(int percent)
 }
 
 /*
+ * Samples are mixed as 24 bits in an int32: MIX_FULL is full scale, and
+ * what goes over it -- streams added up, or a decoder's overshoot, which
+ * a loud MP3 has plenty of -- is kept, up to MIX_OVER, for the limiter
+ * below to bring down whole rather than clip. Four streams at MIX_OVER
+ * still fit.
+ */
+#define MIX_FULL	8388607
+#define MIX_OVER	(1 << 28)
+
+/*
  * Look ahead over the block already mixed. Turn the whole block down
  * before it clips, keeping its waveform, then recover over about 125 ms.
  * gain is Q15 (32768 is unity); an ordinary single stream passes unchanged.
@@ -32,8 +42,8 @@ static inline int32_t mix_gain(const int32_t *samples, size_t frames, int channe
 		if (v > peak)
 			peak = v;
 	}
-	if (peak > 32767)
-		target = (int32_t)((32767LL * 32768) / peak);
+	if (peak > MIX_FULL)
+		target = (int32_t)(((int64_t)MIX_FULL * 32768) / peak);
 	if (target < gain)
 		return target;
 	if (target > gain) {
@@ -62,12 +72,20 @@ static inline int32_t jack_gain_for(int percent)
 /*
  * A mixed sample, with the limiter's gain and the headphones' volume, as
  * the DAC's 32 bits. Both gains are applied at once and nothing is
- * rounded off: turned down 40 dB, a 16-bit sample keeps all its bits
- * where a 16-bit output would keep nine.
+ * rounded off: turned down 40 dB, a 24-bit sample keeps all its bits
+ * where a 16-bit output would keep nine of a CD's.
  */
 static inline int32_t jack_sample(int32_t mixed, int32_t gain, int32_t volume)
 {
-	int64_t v = ((int64_t)mixed * gain * volume) >> 14;
+	int64_t v = ((int64_t)mixed * gain * volume) >> 22;
 
 	return v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : (int32_t)v;
+}
+
+/* A mixed sample, with the limiter's gain, as the codec's 16 bits: rounded, not cut. */
+static inline int16_t speaker_sample(int32_t mixed, int32_t gain)
+{
+	int64_t v = (((int64_t)mixed * gain >> 15) + 128) >> 8;
+
+	return v > INT16_MAX ? INT16_MAX : v < INT16_MIN ? INT16_MIN : (int16_t)v;
 }

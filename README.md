@@ -203,7 +203,7 @@ as util-linux's does.
 | calculator | `calc` (`calc 2^10/3`, or a prompt with `ans`, names, `deg`) |
 | power | `cpufreq power suspend poweroff led battery` |
 | shell | `cd exit export unset set local read eval source type command alias unalias trap jobs fg bg history sh` |
-| sound | `play rec beep volume` |
+| sound | `play rec beep volume`: FLAC, MP3 and WAV; headphones get 24 bits at up to 96 kHz |
 | network | `wifi ntp ping wget curl passwd modem sms` |
 | hardware | `bench lcdtest backlight rotate mkfs screenshot chvt` |
 | development builds | `keytest i2cdetect lcdprobe lcdreg`, `lcdtest clock tear verify` (menuconfig, System: **Development build**) |

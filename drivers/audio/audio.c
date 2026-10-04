@@ -7,6 +7,9 @@
  * samples are doubled on the way out and every second sample is taken
  * on the way in. Programs that have stereo (music, clips) keep it: the
  * mix is stereo, folded to one for the speaker, whole for headphones.
+ * Music comes in at 24 bits (audio_write24) and stays at 24 through the
+ * mixer, to the headphones' 32-bit DAC; the speaker's codec takes 16,
+ * rounded.
  *
  * Several programs can play at once -- music on one terminal and a game
  * on another -- so nothing writes to the codec directly. Each writer has
@@ -14,7 +17,9 @@
  * on the kernel's core takes a block from every stream, brings each to
  * the rate on the wire (the highest any of them wants) by straight-line
  * interpolation, adds them up and hands the block to the I2S driver,
- * whose DMA paces it. A writer waits while its ring is full, so a program
+ * whose DMA paces it. The speaker's codec goes up to 48 kHz and the
+ * headphones' DAC to AUDIO_RATE_MAX, so a 96 kHz file is played as it
+ * is on headphones. A writer waits while its ring is full, so a program
  * that times itself by its sound (the NES, a clip) still runs at exactly
  * the rate it plays.
  *
@@ -68,18 +73,19 @@
 #define STANDBY_MS	5000		/* and before the codec sleeps */
 #define ONE		65536		/* the resampler's fixed point */
 #define JACK_VOLUME	40		/* headphones, until they are given one */
+#define SPEAKER_MAX_HZ	48000		/* es8311.c sets the codec up single-speed */
 
 struct stream {
 	TaskHandle_t	  task;		/* the writer */
 	int		  pid;		/* its process, 0 for a kernel task */
 	int		  rate;
 	int		  latency_ms;
-	int16_t		 *ring;		/* left and right, side by side */
+	int32_t		 *ring;		/* left and right, side by side, 24 bits */
 	size_t		  size;		/* frames the ring holds */
 	size_t		  head, tail;	/* written and read, counting up for ever */
 	SemaphoreHandle_t space;	/* given as the mixer makes room */
 	uint32_t	  phase;	/* between frames a and b, in 1/65536ths */
-	int16_t		  a[2], b[2];
+	int32_t		  a[2], b[2];
 	bool		  primed;	/* a and b hold samples */
 	bool		  closing;	/* play what is left, then go */
 	bool		  used;
@@ -443,7 +449,7 @@ static void stream_free(struct stream *s)
 static int stream_size(struct stream *s, int hz, int latency_ms)
 {
 	size_t size = (size_t)hz * latency_ms / 1000;
-	int16_t *ring;
+	int32_t *ring;
 
 	if (size < BLOCK * 2)
 		size = BLOCK * 2;
@@ -500,7 +506,7 @@ static bool pull(struct stream *s, uint32_t step, int out[2])
 {
 	while (!s->primed || s->phase >= ONE) {
 		size_t tail = __atomic_load_n(&s->tail, __ATOMIC_RELAXED);
-		const int16_t *f;
+		const int32_t *f;
 
 		if (tail == __atomic_load_n(&s->head, __ATOMIC_ACQUIRE))
 			return false;
@@ -515,7 +521,7 @@ static bool pull(struct stream *s, uint32_t step, int out[2])
 		s->primed = true;
 	}
 	for (int c = 0; c < 2; c++)
-		out[c] = s->a[c] + (int)(((int64_t)(s->b[c] - s->a[c]) * s->phase) >> 16);
+		out[c] = s->a[c] + (int32_t)((((int64_t)s->b[c] - s->a[c]) * s->phase) >> 16);
 	s->phase += step;
 	return true;
 }
@@ -616,7 +622,9 @@ static void mixer_task(void *arg)
 		} else
 #endif
 		{
-			if (clock_at(hz ? hz : rate)) {
+			if (!hz)
+				hz = rate;
+			if (clock_at(hz < SPEAKER_MAX_HZ ? hz : SPEAKER_MAX_HZ)) {
 				xSemaphoreGive(lock);
 				vTaskDelay(pdMS_TO_TICKS(100));
 				continue;
@@ -659,13 +667,10 @@ static void mixer_task(void *arg)
 #endif
 		/* The speaker is one: the two sides folded, in place. */
 		for (int k = 0; k < BLOCK; k++)
-			acc[k] = (acc[2 * k] + acc[2 * k + 1]) / 2;
+			acc[k] = (int32_t)(((int64_t)acc[2 * k] + acc[2 * k + 1]) / 2);
 		gain = mix_gain(acc, BLOCK, 1, rate, gain);
-		for (int k = 0; k < BLOCK; k++) {
-			int v = (int)(((int64_t)acc[k] * gain) / 32768);
-
-			wire[2 * k] = wire[2 * k + 1] = (int16_t)v;
-		}
+		for (int k = 0; k < BLOCK; k++)
+			wire[2 * k] = wire[2 * k + 1] = speaker_sample(acc[k], gain);
 		if (sound && !amp_on)
 			amp(true);
 		/* the DMA takes it when it has room: this is what paces everything */
@@ -868,7 +873,7 @@ int audio_set_rate(int hz)
 
 	if (!audio_present())
 		return -ENODEV;
-	if (hz < 8000 || hz > 48000)
+	if (hz < 8000 || hz > AUDIO_RATE_MAX)
 		return -EINVAL;
 	xSemaphoreTake(lock, portMAX_DELAY);
 	if ((s = mine()))
@@ -1019,14 +1024,17 @@ bool audio_mic_alc(void)
 }
 
 /*
- * Play 16-bit samples: `channels` says whether the buffer is stereo; a
- * mono one is played on both sides. They go into the caller's ring,
- * waiting while it is full. Returns the bytes taken.
+ * Samples into the caller's ring, waiting while it is full: 16-bit ones
+ * (`wide` false) are taken to 24, and 24-bit ones kept to MIX_OVER, so
+ * that four streams added up cannot overflow. `channels` says whether
+ * the buffer is stereo; a mono one is played on both sides. Returns the
+ * frames taken.
  */
-ssize_t audio_write(const void *pcm, size_t bytes, int channels)
+static ssize_t put(const void *pcm, size_t frames, int channels, bool wide)
 {
-	const int16_t *in = pcm;
-	size_t frames, done = 0;
+	const int16_t *narrow = pcm;
+	const int32_t *in = pcm;
+	size_t done = 0;
 	bool proc = proc_current() != NULL;
 	struct stream *s;
 
@@ -1034,7 +1042,6 @@ ssize_t audio_write(const void *pcm, size_t bytes, int channels)
 		return -ENODEV;
 	if (channels != 1 && channels != 2)
 		return -EINVAL;
-	frames = bytes / 2 / channels;
 	xSemaphoreTake(lock, portMAX_DELAY);
 	s = mine();
 	xSemaphoreGive(lock);
@@ -1053,15 +1060,37 @@ ssize_t audio_write(const void *pcm, size_t bytes, int channels)
 			continue;
 		}
 		for (size_t k = 0; k < n; k++, done++) {
-			int16_t *f = &s->ring[(head + k) % s->size * 2];
+			int32_t *f = &s->ring[(head + k) % s->size * 2];
 
-			f[0] = in[done * channels];
-			f[1] = in[done * channels + channels - 1];
+			for (int c = 0; c < 2; c++) {
+				size_t at = done * channels + (c ? channels - 1 : 0);
+				int32_t v = wide ? in[at] : narrow[at] * 256;
+
+				f[c] = v > MIX_OVER ? MIX_OVER : v < -MIX_OVER ? -MIX_OVER : v;
+			}
 		}
 		__atomic_store_n(&s->head, head + n, __ATOMIC_RELEASE);
 		xTaskNotifyGive(mixer);
 	}
-	return (ssize_t)(done * 2 * channels);
+	return (ssize_t)done;
+}
+
+/* 16-bit samples, as /dev/audio, games and clips have them. Returns the bytes taken. */
+ssize_t audio_write(const void *pcm, size_t bytes, int channels)
+{
+	ssize_t n = channels == 1 || channels == 2 ? put(pcm, bytes / 2 / channels, channels, false)
+						   : -EINVAL;
+
+	return n < 0 ? n : n * 2 * channels;
+}
+
+/* 24-bit samples in int32s (full scale MIX_FULL), as music decodes. Returns the bytes taken. */
+ssize_t audio_write24(const int32_t *pcm, size_t bytes, int channels)
+{
+	ssize_t n = channels == 1 || channels == 2 ? put(pcm, bytes / 4 / channels, channels, true)
+						   : -EINVAL;
+
+	return n < 0 ? n : n * 4 * channels;
 }
 
 /*
@@ -1194,6 +1223,7 @@ int audio_set_mic_alc(bool on, int max_db) { return -ENODEV; }
 void audio_mic_alc_hold(bool hold) { }
 bool audio_mic_alc(void) { return false; }
 ssize_t audio_write(const void *pcm, size_t bytes, int channels) { return -ENODEV; }
+ssize_t audio_write24(const int32_t *pcm, size_t bytes, int channels) { return -ENODEV; }
 ssize_t audio_read(void *pcm, size_t bytes) { return -ENODEV; }
 bool audio_has_jack(void) { return false; }
 bool audio_jack_switch(void) { return false; }

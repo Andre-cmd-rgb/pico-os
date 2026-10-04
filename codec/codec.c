@@ -17,11 +17,18 @@ struct raw {
 	struct codec base;
 };
 
-static ssize_t raw_read(struct codec *c, int16_t *pcm, size_t frames)
+/* Read into the far half of the buffer, then widened from the front. */
+static ssize_t raw_read(struct codec *c, int32_t *pcm, size_t frames)
 {
-	ssize_t n = pt_read(c->fd, pcm, frames * sizeof(*pcm));
+	int16_t *in = (int16_t *)pcm + frames;
+	ssize_t n = pt_read(c->fd, in, frames * sizeof(*in));
 
-	return n < 0 ? n : n / (ssize_t)sizeof(*pcm);
+	if (n < 0)
+		return n;
+	n /= (ssize_t)sizeof(*in);
+	for (ssize_t i = 0; i < n; i++)
+		pcm[i] = in[i] * 256;
+	return n;
 }
 
 static void raw_close(struct codec *c)
@@ -41,7 +48,7 @@ int codec_open_raw(int fd, int rate, struct codec **out)
 
 	if (!r)
 		return -ENOMEM;
-	*r = (struct raw){ { .ops = &raw_ops, .fd = fd, .rate = rate, .channels = 1 } };
+	*r = (struct raw){ { .ops = &raw_ops, .fd = fd, .rate = rate, .channels = 1, .bits = 16 } };
 	*out = &r->base;
 	return 0;
 }
@@ -70,7 +77,7 @@ int codec_open(int fd, struct codec **out)
 	return -ENOTSUP;
 }
 
-ssize_t codec_read(struct codec *c, int16_t *pcm, size_t frames)
+ssize_t codec_read(struct codec *c, int32_t *pcm, size_t frames)
 {
 	return c->ops->read(c, pcm, frames);
 }

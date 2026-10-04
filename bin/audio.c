@@ -7,6 +7,7 @@
  *	play tune.mp3          rec -t 5 note.wav
  *	play -n album.flac     cat tune.raw > /dev/audio
  */
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -53,20 +54,70 @@ static int no_codec(const char *prog)
 #define PLAY_STACK_KB	24
 #define PASS_FRAMES	1024
 #define MUSIC_LATENCY_MS 1000
+#define RATE_MAX	(2 * AUDIO_RATE_MAX)	/* over AUDIO_RATE_MAX, a file is halved */
 
 /*
- * Everything that plays goes through here as 16-bit frames, stereo as it
- * came: the mixer folds it for the speaker and keeps both sides for
- * headphones.
+ * 176.4 and 192 kHz files play at half that: two frames into one, through
+ * a half-band low-pass (47 taps, Kaiser beta 10) flat to 0.0001 dB below
+ * 20 kHz, with whatever would fold back below 20 kHz 105 dB down. Every
+ * other tap of a half-band filter is nought and the rest are symmetric
+ * about the middle, so a frame costs 13 multiplications a side.
+ */
+#define HALF_TAPS	47
+#define HALF_MID	23
+
+static const float half_mid = 0.499998347f;
+static const float half_odd[12] = {
+	3.154663788e-01f, -9.784546391e-02f, 5.074820199e-02f, -2.901235634e-02f,
+	1.662952581e-02f, -9.154037385e-03f, 4.696079299e-03f, -2.178689259e-03f,
+	8.781318778e-04f, -2.871515223e-04f, 6.512216305e-05f, -4.915094928e-06f,
+};
+
+struct half {
+	float	x[2][2 * HALF_TAPS];	/* a side's last frames, twice over to read in one run */
+	int	pos;
+	bool	odd;
+};
+
+/* `frames` in, half as many out, in place. */
+static size_t half_run(struct half *h, int32_t *pcm, size_t frames, int channels)
+{
+	size_t out = 0;
+
+	for (size_t i = 0; i < frames; i++) {
+		for (int c = 0; c < channels; c++)
+			h->x[c][h->pos] = h->x[c][h->pos + HALF_TAPS] = pcm[i * channels + c];
+		h->pos = (h->pos + 1) % HALF_TAPS;
+		if ((h->odd = !h->odd))
+			continue;
+		for (int c = 0; c < channels; c++) {
+			const float *w = &h->x[c][h->pos];	/* the oldest first */
+			float y = half_mid * w[HALF_MID];
+
+			for (int k = 0; k < 12; k++)
+				y += half_odd[k] * (w[HALF_MID - 1 - 2 * k] + w[HALF_MID + 1 + 2 * k]);
+			pcm[out * channels + c] = y >= CODEC_OVER ? CODEC_OVER :
+						  y <= -CODEC_OVER ? -CODEC_OVER : (int32_t)lrintf(y);
+		}
+		out++;
+	}
+	return out;
+}
+
+/*
+ * Everything that plays goes through here as 24-bit frames, stereo as it
+ * came: the mixer folds it for the speaker and keeps both sides, and all
+ * the bits, for headphones.
  *
- * The checksum (of the frames mixed down to one, as it always was) and
- * the timing are what `play -n` reports: it decodes
+ * The checksum (of the frames mixed down to one and cut to 16 bits, as it
+ * always was) and the timing are what `play -n` reports: it decodes
  * without touching the codec, which is how a file -- and the speed of the
  * decoder -- can be checked on a board with no speaker attached.
  */
 struct sink {
 	bool	 dry;
-	int	 rate, channels;
+	int	 rate, channels;	/* the file's */
+	struct half *half;		/* when it is played at half its rate */
 	uint64_t frames;
 	uint32_t crc;
 	int64_t	 started;
@@ -84,43 +135,50 @@ static void sink_close(struct sink *s)
 {
 	if (!s->dry)
 		audio_stop();
+	pt_free(s->half);
 	pt_free(s->mono);
 }
 
 static int sink_format(struct sink *s, const char *name, int rate, int channels)
 {
+	bool halve = rate > AUDIO_RATE_MAX;
+
 	if (rate == s->rate && channels == s->channels)
 		return 0;
-	if (rate < 8000 || rate > 48000) {
-		pt_dprintf(PT_STDERR, "play: %s: %d Hz is outside 8000-48000\n", name, rate);
+	if (rate < 8000 || rate > RATE_MAX) {
+		pt_dprintf(PT_STDERR, "play: %s: %d Hz is outside 8000-%d\n", name, rate, RATE_MAX);
 		return -EINVAL;
 	}
 	s->rate = rate;
 	s->channels = channels;
+	pt_free(s->half);
+	s->half = NULL;
 	if (s->dry)
-		return 0;
+		return 0;		/* the decoder's own output is what is checked */
+	if (halve && !(s->half = pt_calloc(1, sizeof(*s->half))))
+		return -ENOMEM;
 	/* a second queued: a busy card or a screenshot never runs it dry */
-	return audio_set_rate(rate) ? -EIO : audio_set_latency(MUSIC_LATENCY_MS);
+	return audio_set_rate(halve ? rate / 2 : rate) ? -EIO : audio_set_latency(MUSIC_LATENCY_MS);
 }
 
-static int sink_play(struct sink *s, const int16_t *pcm, size_t frames, int channels)
+static int sink_play(struct sink *s, int32_t *pcm, size_t frames, int channels)
 {
+	if (s->half)
+		frames = half_run(s->half, pcm, frames, channels);
 	while (frames) {
 		size_t n = frames > PASS_FRAMES ? PASS_FRAMES : frames;
-		const int16_t *mono = pcm;
 		ssize_t wrote;
 
-		if (s->dry && channels == 2) {
+		if (s->dry) {
 			for (size_t i = 0; i < n; i++)
-				s->mono[i] = (pcm[2 * i] + pcm[2 * i + 1]) / 2;
-			mono = s->mono;
+				s->mono[i] = channels == 2 ? (pcm[2 * i] + pcm[2 * i + 1]) / 2 / 256
+							   : pcm[i] / 256;
+			s->crc = crc32_of(s->crc, s->mono, n * sizeof(*s->mono));
 		}
-		if (s->dry)
-			s->crc = crc32_of(s->crc, mono, n * sizeof(*mono));
 		s->frames += n;
 		if (s->dry && s->frames / PASS_FRAMES % 8 == 0)
 			pt_sleep_ms(1);		/* the idle task's turn */
-		if (!s->dry && (wrote = audio_write(pcm, n * channels * sizeof(*pcm), channels)) < 0)
+		if (!s->dry && (wrote = audio_write24(pcm, n * channels * sizeof(*pcm), channels)) < 0)
 			return wrote;
 		pcm += n * channels;
 		frames -= n;
@@ -130,20 +188,23 @@ static int sink_play(struct sink *s, const int16_t *pcm, size_t frames, int chan
 	return 0;
 }
 
-static void sink_report(const struct sink *s, const char *name, const char *format)
+static void sink_report(const struct sink *s, const char *name, const struct codec *c)
 {
 	int64_t us = pt_uptime_us() - s->started;
 	double seconds = s->rate ? (double)s->frames / s->rate : 0;
+	char bits[12] = "";
 
-	pt_printf("%s: %s, %d Hz %s, %.2f s decoded in %.2f s (%.1fx), crc %08lx\n",
-		  name, format, s->rate, s->channels == 2 ? "stereo" : "mono",
+	if (c->bits)
+		snprintf(bits, sizeof(bits), " %d-bit", c->bits);
+	pt_printf("%s: %s, %d Hz%s %s, %.2f s decoded in %.2f s (%.1fx), crc %08lx\n",
+		  name, codec_name(c), s->rate, bits, s->channels == 2 ? "stereo" : "mono",
 		  seconds, us / 1e6, us ? seconds * 1e6 / us : 0, (unsigned long)s->crc);
 }
 
 static int play_file(const char *name, int fd, struct sink *s)
 {
 	struct codec *c;
-	int16_t *pcm;
+	int32_t *pcm;
 	int ret = codec_open(fd, &c);
 
 	if (ret == -ENOTSUP)		/* nothing claimed it: samples and nothing else */
@@ -152,7 +213,7 @@ static int play_file(const char *name, int fd, struct sink *s)
 		return fail("play", name, ret);
 	if ((ret = sink_format(s, name, c->rate, c->channels))) {
 		codec_close(c);
-		return 1;
+		return ret == -ENOMEM ? fail("play", name, ret) : 1;
 	}
 	pcm = pt_malloc(PASS_FRAMES * c->channels * sizeof(*pcm));
 	if (!pcm) {
@@ -173,7 +234,7 @@ static int play_file(const char *name, int fd, struct sink *s)
 	}
 	pt_free(pcm);
 	if (s->dry)
-		sink_report(s, name, codec_name(c));
+		sink_report(s, name, c);
 	codec_close(c);
 	return ret;
 }
@@ -189,9 +250,14 @@ PT_COMPLETE(play, ": -n <file:.wav.flac.mp3.raw>\n*: <file:.wav.flac.mp3.raw>\n"
 
 PT_PROGRAM_ANYCORE(play, PLAY_STACK_KB, "play a sound file\n"
 	   "usage: play [-n] file...\n"
-	   "WAV, FLAC, MP3, or raw 16-bit mono at the codec's rate.\n"
-	   "  -n  decode without playing, and report the speed and a checksum\n"
-	   "Stereo is mixed down: the speaker is mono. Ctrl-C stops.")
+	   "WAV (8 to 32-bit, or float), FLAC, MP3, or raw 16-bit\n"
+	   "mono at the codec's rate.\n"
+	   "  -n  decode without playing; report the speed and\n"
+	   "      a checksum\n"
+	   "Headphones get every bit, 24 of a FLAC or an MP3, at\n"
+	   "the file's rate up to 96 kHz (176.4 and 192 kHz play\n"
+	   "at half). The speaker is mono, at 48 kHz at most.\n"
+	   "Ctrl-C stops.")
 {
 	uint32_t flags;
 	int i = parse_flags("play", argc, argv, "n", &flags);

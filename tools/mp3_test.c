@@ -27,10 +27,11 @@ int main(int argc, char **argv)
 {
 	struct codec *c = NULL;
 	uint8_t head[16];
-	int16_t *pcm;
+	int32_t *pcm;
 	int fd, channels, rate, chunk;
 	ssize_t got;
 	bool partial = false;
+	int32_t low_bits = 0;
 	size_t decoded = 0;
 
 	assert(argc == 6);
@@ -47,10 +48,15 @@ int main(int argc, char **argv)
 	assert(pcm);
 	while ((got = c->ops->read(c, pcm, chunk)) > 0) {
 		assert(got <= chunk && c->channels == channels && c->rate == rate);
+		/* 24 bits, not 16 shifted up: the low byte is used */
+		for (ssize_t i = 0; i < got * channels; i++) {
+			assert(pcm[i] >= -CODEC_OVER && pcm[i] <= CODEC_OVER);
+			low_bits |= pcm[i] & 0xff;
+		}
 		decoded += got;
 		partial |= got < chunk;
 	}
-	assert(decoded > 0 && c->channels == channels && c->rate == rate);
+	assert(decoded > 0 && c->channels == channels && c->rate == rate && low_bits && !c->bits);
 	if (!strcmp(argv[5], "ok")) {
 		assert(!got);
 	} else {

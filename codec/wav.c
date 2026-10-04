@@ -1,8 +1,11 @@
 /*
  * WAV: a header and then the samples, nothing else. The header is a chain
  * of chunks; the two that matter say what the samples are ("fmt ") and
- * where they start ("data").
+ * where they start ("data"). Whole numbers of 8, 16, 24 or 32 bits, or
+ * 32-bit floating point, as studio exports come; the extensible header
+ * says the same in a longer way.
  */
+#include <math.h>
 #include <string.h>
 
 #include "codec.h"
@@ -10,9 +13,15 @@
 
 #include "pt/sys.h"
 
+#define FORMAT_PCM	1
+#define FORMAT_FLOAT	3
+#define FORMAT_EXTENSIBLE 0xfffe	/* the real one in its sub-format's first two bytes */
+
 struct wav {
 	struct codec	base;
 	int		bytes_per_frame;
+	int		width;		/* bytes a sample */
+	bool		is_float;
 	uint32_t	left;		/* bytes of samples still to come */
 };
 
@@ -46,21 +55,54 @@ void wav_header(uint8_t *out, int rate, int channels, uint32_t bytes)
 	out[34] = 16;				/* bits per sample */
 }
 
-static ssize_t wav_read(struct codec *c, int16_t *pcm, size_t frames)
+/* One sample as 24 bits, from its little-endian bytes. */
+static int32_t widen(const struct wav *w, const uint8_t *p)
+{
+	switch (w->width) {
+	case 1:
+		return (p[0] - 128) * 65536;		/* 8-bit is unsigned */
+	case 2:
+		return (int16_t)le16(p) * 256;
+	case 3:
+		return (int32_t)((uint32_t)p[0] << 8 | p[1] << 16 | (uint32_t)p[2] << 24) >> 8;
+	default:
+		if (w->is_float) {
+			uint32_t bits = le32(p);
+			float f;
+
+			memcpy(&f, &bits, sizeof(f));
+			f *= CODEC_FULL + 1;
+			if (f != f)
+				return 0;		/* NaN: silence, not whatever it converts to */
+			return f >= CODEC_OVER ? CODEC_OVER : f <= -CODEC_OVER ? -CODEC_OVER :
+			       (int32_t)lrintf(f);
+		}
+		return (int32_t)le32(p) >> 8;
+	}
+}
+
+/* Read into the far end of the buffer, then widened from the front. */
+static ssize_t wav_read(struct codec *c, int32_t *pcm, size_t frames)
 {
 	struct wav *w = (struct wav *)c;
-	size_t want = frames * w->bytes_per_frame;
+	size_t want = frames * w->bytes_per_frame, samples;
+	uint8_t *raw;
 	ssize_t n;
 
 	if (w->left != UINT32_MAX && want > w->left)
 		want = w->left;
 	if (!want)
 		return 0;
-	n = pt_read(c->fd, pcm, want);
+	/* at the very end, so a sample is read before its widened self lands on it */
+	raw = (uint8_t *)pcm + frames * c->channels * sizeof(*pcm) - want;
+	n = pt_read(c->fd, raw, want);
 	if (n < 0)
 		return n;
 	if (w->left != UINT32_MAX)
 		w->left -= n;
+	samples = n / w->bytes_per_frame * c->channels;
+	for (size_t i = 0; i < samples; i++)
+		pcm[i] = widen(w, raw + i * w->width);
 	return n / w->bytes_per_frame;
 }
 
@@ -78,7 +120,8 @@ static const struct codec_ops wav_ops = {
 int wav_open(int fd, const uint8_t *head, size_t n, struct codec **out)
 {
 	struct wav *w;
-	uint8_t chunk[8], fmt[16];
+	uint8_t chunk[8], fmt[26];
+	int format, bits;
 
 	if (n < 12 || memcmp(head, "RIFF", 4) || memcmp(head + 8, "WAVE", 4))
 		return -ENOTSUP;
@@ -93,17 +136,29 @@ int wav_open(int fd, const uint8_t *head, size_t n, struct codec **out)
 		uint32_t len = le32(chunk + 4);
 
 		if (!memcmp(chunk, "fmt ", 4)) {
-			if (len < sizeof(fmt) ||
-			    pt_read(fd, fmt, sizeof(fmt)) != (ssize_t)sizeof(fmt))
+			uint32_t got = len < sizeof(fmt) ? len : sizeof(fmt);
+
+			if (len < 16 || pt_read(fd, fmt, got) != (ssize_t)got)
 				goto bad;
-			if (le16(fmt) != 1 || le16(fmt + 14) != 16)
-				goto bad;	/* only plain 16-bit PCM */
+			format = le16(fmt);
+			if (format == FORMAT_EXTENSIBLE) {
+				if (got < 26)
+					goto bad;
+				format = le16(fmt + 24);
+			}
+			bits = le16(fmt + 14);
 			w->base.channels = le16(fmt + 2);
 			w->base.rate = le32(fmt + 4);
+			w->base.bits = bits;
+			w->width = (bits + 7) / 8;
+			w->is_float = format == FORMAT_FLOAT;
+			if (!(format == FORMAT_PCM && bits >= 8 && bits <= 32) &&
+			    !(w->is_float && bits == 32))
+				goto bad;	/* compressed, or 64-bit float */
 			if (w->base.channels < 1 || w->base.channels > 2)
 				goto bad;
-			w->bytes_per_frame = w->base.channels * 2;
-			pt_lseek(fd, len - sizeof(fmt), SEEK_CUR);
+			w->bytes_per_frame = w->base.channels * w->width;
+			pt_lseek(fd, len - got + (len & 1), SEEK_CUR);
 		} else if (!memcmp(chunk, "data", 4)) {
 			if (!w->bytes_per_frame)
 				goto bad;	/* samples before their description */

@@ -2,9 +2,14 @@
  * Sound file decoders.
  *
  * One interface for every format, the way a filesystem driver plugs into
- * the VFS: open a file descriptor, ask what it is, then read 16-bit frames
- * until the end. The decoders are in codec/<format>.c and nothing outside
- * this directory knows how any of them work.
+ * the VFS: open a file descriptor, ask what it is, then read frames until
+ * the end. The decoders are in codec/<format>.c and nothing outside this
+ * directory knows how any of them work.
+ *
+ * Samples come out as 24 bits in an int32, CODEC_FULL being full scale,
+ * whatever the file had: a 16-bit one shifted up, a 24-bit FLAC as it is,
+ * MP3 straight from the decoder's floating point. What an MP3 overshoots
+ * full scale by is kept, not clipped, for the mixer to bring down.
  *
  *	struct codec *c;
  *	if (!codec_open(fd, &c)) {
@@ -21,10 +26,13 @@
 
 struct codec;
 
+#define CODEC_FULL	8388607		/* = the mixer's MIX_FULL */
+#define CODEC_OVER	(1 << 28)	/* how far over it a sample may go */
+
 struct codec_ops {
 	const char *name;
-	/* Reads interleaved 16-bit frames: how many, 0 at the end, -errno. */
-	ssize_t	(*read)(struct codec *c, int16_t *pcm, size_t frames);
+	/* Reads interleaved frames: how many, 0 at the end, -errno. */
+	ssize_t	(*read)(struct codec *c, int32_t *pcm, size_t frames);
 	void	(*close)(struct codec *c);
 };
 
@@ -33,6 +41,7 @@ struct codec {
 	int			 fd;
 	int			 rate;		/* Hz */
 	int			 channels;	/* 1 or 2 */
+	int			 bits;		/* in the file; 0 when it is not PCM (MP3) */
 	uint64_t		 frames;	/* 0 when the file does not say */
 };
 
@@ -46,7 +55,7 @@ int	codec_open(int fd, struct codec **out);
 /* Raw 16-bit mono at `rate`, for a file no decoder claims. */
 int	codec_open_raw(int fd, int rate, struct codec **out);
 
-ssize_t	codec_read(struct codec *c, int16_t *pcm, size_t frames);
+ssize_t	codec_read(struct codec *c, int32_t *pcm, size_t frames);
 void	codec_close(struct codec *c);
 const char *codec_name(const struct codec *c);
 
