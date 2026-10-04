@@ -147,11 +147,19 @@ another terminal may have changed meanwhile).
 `codec/` decodes them, with one interface for every format the way a
 filesystem driver plugs into the VFS: `codec_open()` offers the first
 bytes of the file to each decoder until one claims them, and the caller
-reads 16-bit frames. WAV and FLAC are written here; FLAC in particular is
-a full decoder (bit reader with both check sums, fixed and LPC
-predictors, Rice residuals, the three stereo decorrelations, any bit
-depth) and its output is checked against ffmpeg bit for bit. MP3 is
-minimp3 in `third_party/`, wrapped by `codec/mp3.c`; it keeps a 17 KB
+reads frames of 24-bit samples in int32s (`CODEC_FULL` is full scale,
+with room above it). WAV (8 to 32-bit, and float) and FLAC are written
+here; FLAC in particular is a full decoder (bit reader with both check
+sums, fixed and LPC predictors, Rice residuals, the three stereo
+decorrelations, any bit depth) and `tools/flac_test.py` checks it
+against ffmpeg's decoder bit for bit, on ffmpeg's encoder's files from
+CD to 192 kHz/24-bit. Its hot loop, the Rice codes, keeps the bit
+reader in locals: a call per sample that deep in the stack spills the
+register window, and cost more than the decoding. A 44.1 kHz/16-bit
+file decodes at 11x real time, 96/24 at 3x, 192/24 at 1.5x. MP3 is
+minimp3 in `third_party/`, wrapped by `codec/mp3.c`, with its samples
+taken as floating point: 24 bits of them, and a loud track's overshoot
+of full scale left to the mixer's limiter rather than clipped. It keeps a 17 KB
 scratch buffer on the stack, which is why `play` asks for a 24 KB one
 (it was seen to use 18). `play` is the one program allowed on either
 core (`PT_PROGRAM_ANYCORE`): decoding is a sixth of a core, and on the
@@ -162,17 +170,21 @@ second to 57.
 
 `drivers/audio/audio.c` is a mixer. Every task that writes gets a stream,
 a ring of its frames (left and right; a mono writer's are doubled) in
-PSRAM at its own rate; a kernel task on core 0 takes a block from each,
+PSRAM at its own rate, as 24-bit samples: `audio_write24()` takes them
+so, `audio_write()` 16-bit ones shifted up. A kernel task on core 0 takes a block from each,
 brings it to the rate on the wire (the highest any stream with samples
 wants) by linear interpolation, adds them up, limits the block's peak
 before it can clip, then hands it to I2S. Its DMA paces everything. The
 limiter reduces gain immediately and releases it over about 125 ms; a
 single stream below full scale passes unchanged. For the speaker the two
-sides are folded into one and sent as 16 bits; the speaker's 100% is the
+sides are folded into one and sent as 16 bits, rounded, at 48 kHz at
+most (the codec is set up single-speed); the speaker's 100% is the
 codec's full 0 dB. For the headphone DAC they stay apart and go out as
-32 bits, the limiter's gain and the jack's own volume (0.6 dB a percent,
+32 bits at the stream's own rate up to `AUDIO_RATE_MAX` (96 kHz), the
+limiter's gain and the jack's own volume (0.6 dB a percent,
 `levels.h`) multiplied in at once, so turning it down rounds nothing
-away. The two outputs keep a volume each; `audio_set_volume()` sets the
+away. `play` halves 176.4 and 192 kHz files itself, through a 47-tap
+half-band filter (`half_run()`). The two outputs keep a volume each; `audio_set_volume()` sets the
 one in use. A writer blocks while its ring is full, so a program timed
 by its sound still runs at its rate.
 `audio_set_latency()` sizes the ring: a second for `play` (a card busy

@@ -28,7 +28,7 @@ static void check_file(char **argv)
 {
 	struct codec *c = NULL;
 	uint8_t head[16];
-	int16_t samples[16];
+	int32_t samples[16];
 	int fd, status, expected, frames;
 	ssize_t got;
 
@@ -69,10 +69,34 @@ static void *concurrent_reader(void *arg)
 	return NULL;
 }
 
+/* A whole file decoded, its samples written to `out` as int32s. */
+static int dump(const char *in, const char *out)
+{
+	struct codec *c = NULL;
+	uint8_t head[16];
+	int32_t pcm[4096 * 2];
+	int fd = open(in, O_RDONLY);
+	FILE *f = fopen(out, "wb");
+	ssize_t got;
+
+	assert(fd >= 0 && f);
+	got = read(fd, head, sizeof(head));
+	assert(got > 0 && !flac_open(fd, head, got, &c));
+	printf("%d %d %d\n", c->rate, c->channels, c->bits);
+	while ((got = c->ops->read(c, pcm, 4096)) > 0)
+		assert(fwrite(pcm, sizeof(*pcm) * c->channels, got, f) == (size_t)got);
+	assert(!got);
+	c->ops->close(c);
+	close(fd);
+	return fclose(f);
+}
+
 int main(int argc, char **argv)
 {
 	pthread_t readers[8];
 
+	if (argc == 4 && !strcmp(argv[1], "dump"))
+		return dump(argv[2], argv[3]);
 	assert(argc == 5);
 	assert(!pthread_barrier_init(&start, NULL, 8));
 	for (int i = 0; i < 8; i++)

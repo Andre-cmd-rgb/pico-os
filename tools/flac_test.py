@@ -74,15 +74,20 @@ def predictor(order, block, lpc=False, bps=16, value=10):
 def main():
     stream = b"fLaC" + metadata(0, info(), True)
     cases = [
-        ("constant", stream + frame(16, constant(-1234)), -1234, 16, "ok"),
-        ("fixed", stream + frame(16, predictor(1, 16)), 10, 16, "ok"),
-        ("lpc", stream + frame(16, predictor(2, 16, True)), 10, 16, "ok"),
+        # samples come out as 24 bits: a 16-bit file's shifted up by 8
+        ("constant", stream + frame(16, constant(-1234)), -1234 * 256, 16, "ok"),
+        ("fixed", stream + frame(16, predictor(1, 16)), 10 * 256, 16, "ok"),
+        ("lpc", stream + frame(16, predictor(2, 16, True)), 10 * 256, 16, "ok"),
         ("8-bit-negative", b"fLaC" + metadata(0, info(bps=8), True)
-         + frame(16, constant(-128, 8)), -32768, 16, "ok"),
+         + frame(16, constant(-128, 8)), -8388608, 16, "ok"),
+        ("24-bit-as-it-is", b"fLaC" + metadata(0, info(bps=24), True)
+         + frame(16, constant(-1234567, 24)), -1234567, 16, "ok"),
+        ("24-bit-fixed", b"fLaC" + metadata(0, info(bps=24), True)
+         + frame(16, predictor(2, 16, bps=24, value=8388607)), 8388607, 16, "ok"),
         ("32-bit-fixed", b"fLaC" + metadata(0, info(bps=32), True)
-         + frame(16, predictor(2, 16, bps=32, value=2147483647)), 32767, 16, "ok"),
+         + frame(16, predictor(2, 16, bps=32, value=2147483647)), 8388607, 16, "ok"),
         ("large-frame-count", b"fLaC" + metadata(0, info(frames=0x80000000), True)
-         + frame(16, constant(1)), 1, 16, "ok"),
+         + frame(16, constant(1)), 256, 16, "ok"),
         ("missing-streaminfo", b"fLaC" + metadata(1, b"", True), 0, 0, "open-error"),
         ("streaminfo-not-first", b"fLaC" + metadata(1, b"", False)
          + metadata(0, info(), True), 0, 0, "open-error"),
@@ -112,7 +117,41 @@ def main():
             subprocess.run([exe, str(path), str(value), str(frames), result],
                            check=True, timeout=10)
             print("PASS", name)
-    print(f"flac: {len(cases)} fixtures passed with eight concurrent readers (ASan/UBSan)")
+        encoded = against_ffmpeg(exe, Path(tmp))
+    print(f"flac: {len(cases)} fixtures passed with eight concurrent readers (ASan/UBSan); "
+          f"{encoded} files from ffmpeg's encoder decoded to the same 24 bits")
+
+
+def against_ffmpeg(exe, tmp):
+    """Real encoder output -- the fixed predictors (level 0), LPC up to
+    order 12, every stereo mode, 16 and 24 bits, CD to 192 kHz rates --
+    checked sample for sample against ffmpeg's own decoder. Music-like:
+    two tones, noise, and a quiet tail where only the low bits move."""
+    count = 0
+    for rate, bits, level in ((44100, 16, 0), (44100, 16, 5), (44100, 16, 12), (48000, 24, 0),
+                              (48000, 24, 12), (96000, 24, 5), (192000, 24, 12)):
+        src = tmp / f"{rate}-{bits}-{level}.flac"
+        sound = ("aevalsrc=0.6*sin(2*PI*440*t)+0.2*sin(2*PI*3001*t)+0.05*(random(0)-0.5)"
+                 "|0.5*sin(2*PI*660*t)*lt(t\\,1)+0.00002*sin(2*PI*1000*t)"
+                 f":s={rate}:d=1.5")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", sound,
+                        "-sample_fmt", "s16" if bits == 16 else "s32",
+                        "-bits_per_raw_sample", str(bits), "-compression_level", str(level),
+                        str(src)], check=True)
+        reference = subprocess.run(["ffmpeg", "-v", "error", "-i", str(src), "-f", "s32le",
+                                    "-acodec", "pcm_s32le", "-"],
+                                   check=True, capture_output=True).stdout
+        ours = tmp / "ours.raw"
+        head = subprocess.run([exe, "dump", str(src), str(ours)], check=True,
+                              capture_output=True, text=True, timeout=60).stdout.split()
+        assert head == [str(rate), "2", str(bits)], head
+        want = [v >> 8 for v in memoryview(reference).cast("i")]
+        got = list(memoryview(ours.read_bytes()).cast("i"))
+        assert len(got) == len(want) and got == want, f"{rate} Hz {bits}-bit level {level} differs"
+        assert any(v & 0xff for v in got) == (bits == 24)
+        print(f"PASS ffmpeg {rate} Hz {bits}-bit level {level}, {len(got) // 2} frames")
+        count += 1
+    return count
 
 
 if __name__ == "__main__":

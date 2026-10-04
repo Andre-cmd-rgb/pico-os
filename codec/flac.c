@@ -24,7 +24,7 @@
 
 #include "pt/sys.h"
 
-#define BUF_BYTES	2048
+#define BUF_BYTES	16384		/* a few frames: one card read a tenth of a second */
 #define MAX_CHANNELS	8
 #define MAX_ORDER	32
 
@@ -204,16 +204,150 @@ static const int rate_code[] = {
 };
 static const int bps_code[] = { 0, 8, 12, 0, 16, 20, 24, 32 };
 
-/* The fixed predictors: the sample, and the first four differences. */
-static int64_t predict_fixed(const int32_t *s, int order)
+/*
+ * The fixed predictors -- the sample, and its first four differences --
+ * run forward over the residual in s. In 32 bits, wrapping: the sum is
+ * right modulo 2^32, so a sample that fits in 32 bits comes out right
+ * however large the terms on the way. A damaged frame comes out as
+ * nonsense instead of being stopped here, and its CRC-16 throws it away.
+ */
+static void restore_fixed(int32_t *s, int block, int order)
 {
+	uint32_t *u = (uint32_t *)s;
+
 	switch (order) {
-	case 0:	 return 0;
-	case 1:	 return s[-1];
-	case 2:	 return 2LL * s[-1] - s[-2];
-	case 3:	 return 3LL * s[-1] - 3LL * s[-2] + s[-3];
-	default: return 4LL * s[-1] - 6LL * s[-2] + 4LL * s[-3] - s[-4];
+	case 1:
+		for (int i = 1; i < block; i++)
+			u[i] += u[i - 1];
+		break;
+	case 2:
+		for (int i = 2; i < block; i++)
+			u[i] += 2 * u[i - 1] - u[i - 2];
+		break;
+	case 3:
+		for (int i = 3; i < block; i++)
+			u[i] += 3 * (u[i - 1] - u[i - 2]) + u[i - 3];
+		break;
+	case 4:
+		for (int i = 4; i < block; i++)
+			u[i] += 4 * (u[i - 1] + u[i - 3]) - 6 * u[i - 2] - u[i - 4];
+		break;
 	}
+}
+
+/*
+ * The encoder's predictor: a weighted sum of the samples before, shifted
+ * down. The shift means 32 bits only do when the sum cannot leave them,
+ * which the weights say: a CD's samples nearly always, 24-bit ones never,
+ * and those take the 64-bit sum, a few times slower here.
+ */
+static bool restore_lpc(int32_t *s, int block, int order, const int32_t *coeff, int shift,
+			int bps)
+{
+	uint64_t weight = 0;
+
+	for (int k = 0; k < order; k++)
+		weight += coeff[k] < 0 ? -(int64_t)coeff[k] : coeff[k];
+	if ((weight << (bps - 1)) <= INT32_MAX) {
+		uint32_t *u = (uint32_t *)s;
+
+		for (int i = order; i < block; i++) {
+			uint32_t sum = 0;
+
+			for (int k = 0; k < order; k++)
+				sum += (uint32_t)coeff[k] * u[i - 1 - k];
+			u[i] += (uint32_t)((int32_t)sum >> shift);
+		}
+		return true;
+	}
+	for (int i = order; i < block; i++) {
+		int64_t sum = 0;
+
+		for (int k = 0; k < order; k++)
+			sum += (int64_t)coeff[k] * s[i - 1 - k];
+		sum = s[i] + (sum >> shift);
+		if (sum < INT32_MIN || sum > INT32_MAX)
+			return false;
+		s[i] = sum;
+	}
+	return true;
+}
+
+/*
+ * A partition's Rice codes: the decoder's hot loop, nearly all of its time.
+ * The reader's state is kept in locals, so that it stays in registers, and
+ * bytes are taken straight from the buffer: get() and get_unary() cost a
+ * call each, and a call this deep in the stack spills the processor's
+ * register window, which came to 370 cycles a sample. Only the CRC-16 is
+ * kept up here; the CRC-8 covers the frame's header, which is behind us.
+ */
+static bool read_rice(struct bits *b, int32_t *out, int n, unsigned param)
+{
+	const uint8_t *buf = b->buf;
+	uint64_t acc = b->acc;
+	uint16_t crc = b->crc16;
+	int have = b->have, pos = b->pos, len = b->len;
+	bool ok = true;
+
+#define TAKE_BYTE()							\
+	do {								\
+		int byte_;						\
+									\
+		if (pos < len) {					\
+			byte_ = buf[pos++];				\
+			crc = (crc << 8) ^ crc16_table[(crc >> 8) ^ byte_]; \
+		} else {	/* the buffer refilled, the slow way */	\
+			b->pos = pos;					\
+			b->crc16 = crc;					\
+			byte_ = next_byte(b);				\
+			pos = b->pos;					\
+			len = b->len;					\
+			crc = b->crc16;					\
+			if (byte_ < 0) {				\
+				ok = false;				\
+				goto out;				\
+			}						\
+		}							\
+		acc = acc << 8 | (unsigned)byte_;			\
+		have += 8;						\
+	} while (0)
+
+	for (int i = 0; i < n; i++) {
+		uint32_t q = 0, v;
+
+		for (;;) {			/* zeros, then a one */
+			if (have) {
+				uint32_t peek = have >= 32 ? (uint32_t)(acc >> (have - 32))
+							   : (uint32_t)acc << (32 - have);
+
+				if (peek) {
+					int lead = __builtin_clz(peek);
+
+					q += lead;
+					have -= lead + 1;
+					break;
+				}
+				q += have >= 32 ? 32 : have;
+				have -= have >= 32 ? 32 : have;
+			}
+			TAKE_BYTE();
+		}
+		while (have < (int)param)
+			TAKE_BYTE();
+		v = q << param;
+		if (param) {
+			have -= param;
+			v |= (uint32_t)(acc >> have) & ((1u << param) - 1);
+		}
+		out[i] = (int32_t)(v >> 1) ^ -(int32_t)(v & 1);		/* zig-zag */
+	}
+#undef TAKE_BYTE
+out:
+	b->acc = acc;
+	b->have = have;
+	b->pos = pos;
+	b->crc16 = crc;
+	return ok;
 }
 
 /*
@@ -247,15 +381,9 @@ static bool read_residual(struct flac *f, int32_t *out, int block, int order)
 				*out++ = raw ? get_signed(&f->b, raw) : 0;
 			continue;
 		}
-		for (int i = 0; i < n; i++) {
-			int high = get_unary(&f->b);
-			uint32_t v;
-
-			if (high < 0)
-				return false;
-			v = ((uint32_t)high << param) | get(&f->b, param);
-			*out++ = (int32_t)(v >> 1) ^ -(int32_t)(v & 1);	/* zig-zag */
-		}
+		if (!read_rice(&f->b, out, n, param))
+			return false;
+		out += n;
 	}
 	return !f->b.eof;
 }
@@ -294,13 +422,7 @@ static bool read_subframe(struct flac *f, int32_t *s, int block, int bps)
 			s[i] = get_signed(&f->b, bps);
 		if (!read_residual(f, s + order, block, order))
 			return false;
-		for (int i = order; i < block; i++) {
-			int64_t value = s[i] + predict_fixed(s + i, order);
-
-			if (value < INT32_MIN || value > INT32_MAX)
-				return false;
-			s[i] = value;
-		}
+		restore_fixed(s, block, order);
 	} else if (type >= 32) {		/* the encoder's own predictor */
 		int32_t coeff[MAX_ORDER];
 		int precision, shift;
@@ -318,18 +440,9 @@ static bool read_subframe(struct flac *f, int32_t *s, int block, int bps)
 			return false;
 		for (int i = 0; i < order; i++)
 			coeff[i] = get_signed(&f->b, precision);
-		if (!read_residual(f, s + order, block, order))
+		if (!read_residual(f, s + order, block, order) ||
+		    !restore_lpc(s, block, order, coeff, shift, bps))
 			return false;
-		for (int i = order; i < block; i++) {
-			int64_t sum = 0;
-
-			for (int k = 0; k < order; k++)
-				sum += (int64_t)coeff[k] * s[i - 1 - k];
-			sum = s[i] + (sum >> shift);
-			if (sum < INT32_MIN || sum > INT32_MAX)
-				return false;
-			s[i] = sum;
-		}
 	} else {
 		return false;			/* reserved */
 	}
@@ -451,9 +564,9 @@ static bool decode_frame(struct flac *f)
 		break;
 	}
 
-	/* Everything above works in the file's own bit depth; we hand out 16. */
-	if (bps != 16) {
-		int shift = bps - 16;
+	/* Everything above works in the file's own bit depth; we hand out 24. */
+	if (bps != 24) {
+		int shift = bps - 24;
 
 		for (int c = 0; c < channels; c++)
 			for (int i = 0; i < block; i++)
@@ -465,7 +578,7 @@ static bool decode_frame(struct flac *f)
 	return true;
 }
 
-static ssize_t flac_read(struct codec *c, int16_t *pcm, size_t frames)
+static ssize_t flac_read(struct codec *c, int32_t *pcm, size_t frames)
 {
 	struct flac *f = (struct flac *)c;
 	size_t done = 0;
@@ -579,6 +692,7 @@ int flac_open(int fd, const uint8_t *head, size_t n, struct codec **out)
 		goto bad;
 	f->channels = channels;
 	f->base.channels = channels > 2 ? 2 : channels;	/* a mono speaker, at most a pair */
+	f->base.bits = f->bps;
 
 	for (int i = 0; i < channels; i++) {
 		f->ch[i] = pt_malloc((size_t)f->max_block * sizeof(*f->ch[i]));
