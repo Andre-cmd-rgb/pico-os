@@ -64,6 +64,8 @@ It builds with ESP-IDF v6.1, which the Makefile looks for in
 ```sh
 git clone --recursive --branch v6.1 https://github.com/espressif/esp-idf.git ~/esp/esp-idf
 ~/esp/esp-idf/install.sh esp32s3,esp32p4
+git clone https://github.com/Andre-cmd-rgb/pico-os.git
+cd pico-os
 ```
 
 The first build downloads the managed components that
@@ -366,7 +368,7 @@ python3 tools/mkvideo.py old.mp4 --denoise 2 --start 1:00 --length 30
 A 45-minute episode converts in two or three minutes and comes out at
 about 1.5 GB, which the serial port would take hours over: `make video`
 leaves a big clip in `clips/` to be copied into `video/` on the card.
-Downloading from the web is in the separate pico-os-tools (`ytgrab.py`).
+Downloading from the web is left to tools made for it, such as yt-dlp.
 
 ## Speed and power
 

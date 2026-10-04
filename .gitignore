@@ -10,7 +10,7 @@ sdkconfig.old
 # Downloaded by the component manager (dependencies.lock pins the versions)
 managed_components/
 
-# Local clips made by the pico-os-tools companion utilities
+# Local clips made by `make video`
 clips/
 
 # Local downloads and converted clips from the video tools; keep the scripts.
