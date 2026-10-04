@@ -1,0 +1,104 @@
+# Every push and pull request: the PC tests, the device suites in QEMU,
+# and the firmware for every board, kept for a few weeks as a download
+# from the run's page. A tag (v1.0, say) also makes a release with each
+# board's image, ready to flash.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  hosttest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # what the JPEG and MP3 tests make their pictures and sound with
+      - name: Test tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libjpeg-turbo-progs
+
+      - name: Host tests
+        run: make hosttest
+
+  firmware:
+    runs-on: ubuntu-24.04
+    container: espressif/idf:v6.1
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [freenove-fnk0104b, devkit-uno-shield, waveshare-esp32-p4-wifi6]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make BOARD=${{ matrix.board }}
+
+      # One file from 0x0 to the end of the program: the bootloader, the
+      # partition table and pico-os. The files on / come after it and stay.
+      - name: One image to flash
+        run: |
+          . $IDF_PATH/export.sh > /dev/null
+          cd build/${{ matrix.board }}
+          chip=$(sed -n 's/^CONFIG_IDF_TARGET="\(.*\)"/\1/p' sdkconfig)
+          esptool --chip $chip merge-bin -o pico-os-${{ matrix.board }}.bin @flash_args
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pico-os-${{ matrix.board }}
+          path: build/${{ matrix.board }}/pico-os-${{ matrix.board }}.bin
+
+  qemu:
+    runs-on: ubuntu-24.04
+    container: espressif/idf:v6.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: QEMU
+        run: python3 $IDF_PATH/tools/idf_tools.py --non-interactive install qemu-xtensa
+
+      - name: Build the QEMU image
+        run: |
+          make BOARD=qemu
+          . $IDF_PATH/export.sh > /dev/null
+          cd build/qemu
+          esptool --chip esp32s3 merge-bin --pad-to-size 16MB -o flash.bin @flash_args
+
+      - name: Shell, scripts and the language, on the emulated chip
+        run: |
+          . $IDF_PATH/export.sh > /dev/null
+          export QEMU=$(ls $IDF_TOOLS_PATH/tools/qemu-xtensa/*/qemu/bin/qemu-system-xtensa 2>/dev/null | tail -1)
+          python3 tools/shell_test.py build/qemu/flash.bin
+          python3 tools/script_test.py build/qemu/flash.bin
+          python3 lang/tests/device_test.py build/qemu/flash.bin
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [hosttest, firmware, qemu]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: images
+          merge-multiple: true
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" images/*.bin --repo "$GITHUB_REPOSITORY" \
+            --title "pico-os $GITHUB_REF_NAME" --notes "Flash the one for your board:
+
+          \`\`\`
+          esptool write-flash 0x0 pico-os-BOARD.bin
+          \`\`\`
+
+          The files on / are kept."

@@ -1,5 +1,7 @@
 # pico-os
 
+[![build](https://github.com/Andre-cmd-rgb/pico-os/actions/workflows/build.yml/badge.svg)](https://github.com/Andre-cmd-rgb/pico-os/actions/workflows/build.yml)
+
 The operating system of the PocketType pocket computer.
 
 A small Unix-like system for the ESP32-S3 (and, built but not yet run, the
@@ -58,7 +60,17 @@ Wiring, power and first-boot checks: **[docs/WIRING.md](docs/WIRING.md)**.
 
 ## Build and flash
 
-It builds with ESP-IDF v6.1, which the Makefile looks for in
+Every release has a ready image for each board, under
+[Releases](https://github.com/Andre-cmd-rgb/pico-os/releases), and every
+push to `main` leaves the same on its
+[Actions](https://github.com/Andre-cmd-rgb/pico-os/actions) run. One
+command flashes it, and the files on `/` stay:
+
+```sh
+esptool write-flash 0x0 pico-os-freenove-fnk0104b.bin
+```
+
+To build it yourself you need ESP-IDF v6.1, which the Makefile looks for in
 `~/esp/esp-idf` (or wherever `IDF_PATH` says) and wraps `idf.py` round:
 
 ```sh
