@@ -5,9 +5,8 @@
  * and hopeless for a platformer. A pad can, so this is what games should
  * be played with.
  *
- * The radio is not started until it is asked for (`pad on`), because the
- * Bluetooth stack costs tens of kilobytes of the internal RAM everything
- * else competes for.
+ * The radio is net/ble.c's, started when a pad is asked for (`pad on`);
+ * this is the HID host on it, and what a pad's reports mean.
  *
  * Pads do not agree on what their reports look like, so the mapping from
  * bytes to buttons lives in /etc/gamepad rather than in this file:
@@ -32,17 +31,16 @@
 
 #if CONFIG_PT_BLE_PAD
 
+#if !CONFIG_BT_NIMBLE_HID_SERVICE
+#error "Gamepads need NimBLE's HID service, CONFIG_BT_NIMBLE_HID_SERVICE (boards/fragments/ble.config sets it)"
+#endif
+
 #include "esp_hidh.h"
 #include "esp_hid_common.h"
-#include "host/ble_hs.h"
-#include "host/util/util.h"
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
 
-#define HID_SERVICE_UUID	0x1812
-#define SCAN_MAX		8
 #define MAP_FILE		"/etc/gamepad"
 #define REPORT_MAX		16
+#define CLOSE_WAIT_MS		3000
 
 /* The buttons a game asks about, in the order pad_buttons() reports them. */
 static const char *const button_names[] = {
@@ -57,16 +55,13 @@ struct rule {
 };
 
 static struct rule	 rules[PAD_BUTTON_COUNT];
-static struct pad_found	 found[SCAN_MAX];
-static int		 nfound;
 static uint8_t		 report[REPORT_MAX];
 static int		 report_len;
 static uint16_t		 buttons;
-static bool		 started, connected, scanning;
-static bool		 scan_everything, found_is_hid;
-static bool		 watching;
+static bool		 hidh_up;
+static volatile bool	 connected;
+static esp_hidh_dev_t	*dev;
 static char		 pad_name[32];
-static SemaphoreHandle_t scan_done;
 
 /* ------------------------------------------------------------ mapping */
 
@@ -152,7 +147,7 @@ static void apply_report(const uint8_t *data, int len)
 	buttons = state;
 }
 
-/* ------------------------------------------------------------ the radio */
+/* ------------------------------------------------------------ the HID host */
 
 static void hidh_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -164,6 +159,7 @@ static void hidh_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 		if (connected) {
 			const char *name = esp_hidh_dev_name_get(p->open.dev);
 
+			dev = p->open.dev;
 			strlcpy(pad_name, name ? name : "gamepad", sizeof(pad_name));
 			klog("pad: %s connected", pad_name);
 			load_map();
@@ -174,82 +170,13 @@ static void hidh_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 		break;
 	case ESP_HIDH_CLOSE_EVENT:
 		connected = false;
+		dev = NULL;
 		buttons = 0;
 		klog("pad: %s disconnected", pad_name);
 		break;
 	default:
 		break;
 	}
-}
-
-static int gap_event(struct ble_gap_event *event, void *arg)
-{
-	struct ble_hs_adv_fields fields;
-
-	if (event->type == BLE_GAP_EVENT_DISC_COMPLETE) {
-		scanning = false;
-		xSemaphoreGive(scan_done);
-		return 0;
-	}
-	if (event->type != BLE_GAP_EVENT_DISC)
-		return 0;
-	if (ble_hs_adv_parse_fields(&fields, event->disc.data, event->disc.length_data))
-		return 0;
-
-	/* Only things that say they are a keyboard, mouse or pad -- unless
-	 * we were asked for everything, which is how you tell a radio that
-	 * hears nothing from a room with nothing in it. */
-	bool is_hid = fields.appearance_is_present && (fields.appearance >> 6) == 0x0f;
-
-	for (int i = 0; !is_hid && i < fields.num_uuids16; i++)
-		is_hid = ble_uuid_u16(&fields.uuids16[i].u) == HID_SERVICE_UUID;
-	if (!is_hid && !scan_everything)
-		return 0;
-	found_is_hid = is_hid;
-
-	for (int i = 0; i < nfound; i++)
-		if (!memcmp(found[i].addr, event->disc.addr.val, 6))
-			return 0;		/* already seen */
-	if (nfound == SCAN_MAX)
-		return 0;
-
-	memcpy(found[nfound].addr, event->disc.addr.val, 6);
-	found[nfound].addr_type = event->disc.addr.type;
-	found[nfound].rssi = event->disc.rssi;
-	found[nfound].is_hid = found_is_hid;
-	if (fields.name_len)
-		snprintf(found[nfound].name, sizeof(found[nfound].name), "%.*s",
-			 fields.name_len, (const char *)fields.name);
-	else
-		strlcpy(found[nfound].name, "(no name)", sizeof(found[nfound].name));
-	nfound++;
-	return 0;
-}
-
-static void on_sync(void)
-{
-	ble_hs_util_ensure_addr(0);
-	started = true;
-}
-
-static void host_task(void *arg)
-{
-	nimble_port_run();
-	nimble_port_freertos_deinit();
-}
-
-/* Brings the controller and host up; non-zero when there is no room. */
-static int radio_up(void)
-{
-	if (nimble_port_init() != ESP_OK)
-		return -ENOMEM;
-	ble_hs_cfg.sync_cb = on_sync;
-	ble_hs_cfg.sm_bonding = 1;
-	ble_hs_cfg.sm_sc = 1;
-	ble_hs_cfg.sm_our_key_dist = 3;
-	ble_hs_cfg.sm_their_key_dist = 3;
-	nimble_port_freertos_init(host_task);
-	return 0;
 }
 
 int pad_start(void)
@@ -259,88 +186,65 @@ int pad_start(void)
 		.event_stack_size = 4096,
 		.callback_arg = NULL,
 	};
+	int ret;
 
-	if (started)
-		return 0;
-	/*
-	 * Both radios want internal RAM, and with NimBLE's own
-	 * allocations in PSRAM they usually both fit. When they do not,
-	 * the one that has to go is the one not being used -- somebody
-	 * asking for a gamepad wants to play -- and `wifi on` brings it
-	 * back afterwards.
-	 */
-	if (radio_up() && wifi_started()) {
-		klog("pad: not enough memory beside Wi-Fi; turning it off");
-		wifi_radio(false);
-		vTaskDelay(pdMS_TO_TICKS(300));
-		if (radio_up()) {
-			klog("pad: the Bluetooth radio would not start");
-			return -ENOMEM;
-		}
-	}
-	scan_done = scan_done ? scan_done : xSemaphoreCreateBinary();
-	if (!scan_done)
-		return -ENOMEM;
+	ble_hold();
+	if ((ret = ble_start()) || hidh_up)
+		goto out;
 	if (esp_hidh_init(&cfg) != ESP_OK) {
 		klog("pad: the HID host would not start");
-		return -EIO;
+		ret = -EIO;
+		goto out;
 	}
-	for (int i = 0; i < 50 && !started; i++)
-		vTaskDelay(pdMS_TO_TICKS(100));
-	if (!started)
-		return -ETIMEDOUT;
+	hidh_up = true;
 	load_map();
-	klog("pad: Bluetooth up, looking for a gamepad");
+	klog("pad: looking for a gamepad");
+out:
+	ble_release();
+	return ret;
+}
+
+/* Called by ble_stop(), the radio held: a pad still connected is let go. */
+int pad_stop(void)
+{
+	if (!hidh_up)
+		return 0;
+	if (connected && dev) {
+		esp_hidh_dev_close(dev);
+		for (int i = 0; i < CLOSE_WAIT_MS / 100 && connected; i++)
+			vTaskDelay(pdMS_TO_TICKS(100));
+	}
+	if (esp_hidh_deinit() != ESP_OK)
+		return -EBUSY;
+	hidh_up = false;
 	return 0;
 }
 
 bool pad_started(void)
 {
-	return started;
-}
-
-int pad_scan(struct pad_found *out, int max, int seconds)
-{
-	return pad_scan_all(out, max, seconds, false);
-}
-
-int pad_scan_all(struct pad_found *out, int max, int seconds, bool everything)
-{
-	struct ble_gap_disc_params params = { .filter_duplicates = 1, .passive = 0 };
-	uint8_t own_type;
-	int n;
-
-	if (!started)
-		return -ENODEV;
-	if (scanning)
-		return -EBUSY;
-	nfound = 0;
-	scanning = true;
-	scan_everything = everything;
-	if (ble_hs_id_infer_auto(0, &own_type) ||
-	    ble_gap_disc(own_type, seconds * 1000, &params, gap_event, NULL)) {
-		scanning = false;
-		return -EIO;
-	}
-	xSemaphoreTake(scan_done, pdMS_TO_TICKS(seconds * 1000 + 2000));
-	n = nfound < max ? nfound : max;
-	memcpy(out, found, n * sizeof(*out));
-	return n;
+	return hidh_up;
 }
 
 int pad_connect(int index)
 {
-	struct pad_found *p;
+	const struct ble_found *p;
+	int ret = 0;
 
-	if (!started)
-		return -ENODEV;
-	if (index < 1 || index > nfound)
-		return -ENOENT;
-	p = &found[index - 1];
+	ble_hold();
+	if (!hidh_up || !ble_started()) {
+		ret = -ENODEV;
+		goto out;
+	}
+	if (!(p = ble_found_get(index))) {
+		ret = -ENOENT;
+		goto out;
+	}
 	klog("pad: connecting to %s", p->name);
-	if (!esp_hidh_dev_open(p->addr, ESP_HID_TRANSPORT_BLE, p->addr_type))
-		return -EIO;
-	return 0;
+	if (!esp_hidh_dev_open((uint8_t *)p->addr, ESP_HID_TRANSPORT_BLE, p->addr_type))
+		ret = -EIO;
+out:
+	ble_release();
+	return ret;
 }
 
 bool pad_connected(void)
@@ -366,22 +270,15 @@ int pad_last_report(uint8_t *out, int max)
 	return n;
 }
 
-void pad_watch(bool on)
-{
-	watching = on;
-}
-
 #else
 
 int  pad_start(void) { return -ENODEV; }
+int  pad_stop(void) { return 0; }
 bool pad_started(void) { return false; }
-int  pad_scan(struct pad_found *out, int max, int seconds) { return -ENODEV; }
-int  pad_scan_all(struct pad_found *out, int max, int seconds, bool all) { return -ENODEV; }
 int  pad_connect(int index) { return -ENODEV; }
 bool pad_connected(void) { return false; }
 uint16_t pad_buttons(void) { return 0; }
 const char *pad_device_name(void) { return ""; }
 int  pad_last_report(uint8_t *out, int max) { return 0; }
-void pad_watch(bool on) { }
 
 #endif

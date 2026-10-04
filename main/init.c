@@ -264,6 +264,7 @@ void app_main(void)
 	idle_init();			/* and /etc/power */
 	netconsole_init();
 	modem_init();
+	ble_init();			/* the radio itself waits to be asked for */
 	klog("init: %d programs, starting shell", count_programs());
 
 	/* From here on kernel messages go to dmesg and the serial port only,

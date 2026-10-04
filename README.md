@@ -208,9 +208,10 @@ as util-linux's does.
 | hardware | `bench lcdtest backlight rotate mkfs screenshot chvt` |
 | development builds | `keytest i2cdetect lcdprobe lcdreg`, `lcdtest clock tear verify` (menuconfig, System: **Development build**) |
 | pictures | `view video` |
-| games | `nes pad` |
+| games | `nes` |
 | assistant | `ai` |
 | packages | `pkg` |
+| bluetooth | `ble pad`, in a build with it (below) |
 
 The shell is a POSIX sh: pipes (`|`), redirection (`<`, `>`, `>>`, `2>`,
 `2>&1`) and here-documents (`<<EOF`), lists (`;`, `&&`, `||`), background
@@ -528,9 +529,11 @@ Be aware of these before relying on it:
   counts as held for 150 ms. Fine for menus, poor for platformers. A
   Bluetooth pad is the fix, and the driver is written (`pad scan`, `pad
   connect`, the buttons mapped in `/etc/gamepad`), but it has not met a real
-  pad yet. Everything else on the Freenove board has been run on the real
-  thing: display, speaker, microphone, SD card, battery sensing, Wi-Fi
-  (`make hwtest`, 86 checks).
+  pad yet, so Bluetooth is left out of the Freenove build: `make
+  BOARD=freenove-fnk0104b FRAGMENTS=ble defconfig` puts it in (`ble on`,
+  `ble scan`, `ble off`; the radio starts only when asked). Everything else
+  on the Freenove board has been run on the real thing: display, speaker,
+  microphone, SD card, battery sensing, Wi-Fi (`make hwtest`, 86 checks).
 - **The CardKB is only as good as its wiring.** It shares SDA 16 / SCL 15
   with the codec on the chip's weak internal pull-ups; a long or loose
   Grove cable drops reads. The driver rides out short runs of them.

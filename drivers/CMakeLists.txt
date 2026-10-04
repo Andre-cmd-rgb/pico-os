@@ -11,6 +11,7 @@ idf_component_register(
 		misc/i2c.c
 		misc/usbhost.c
 		misc/xfer.c
+		net/ble.c
 		net/modem.c
 		net/netconsole.c
 		net/wifi.c

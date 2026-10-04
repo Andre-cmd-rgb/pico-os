@@ -12,7 +12,6 @@ set(srcs
 	find.c
 	http.c
 	man.c
-	nes.c
 	net.c
 	passwd.c
 	pick.c
@@ -50,11 +49,17 @@ endif()
 if(CONFIG_PT_APP_PICTURES)
 	list(APPEND srcs canvas.c jpeg.c video.c view.c)
 endif()
+if(CONFIG_PT_NES)
+	list(APPEND srcs nes.c)
+endif()
 if(CONFIG_PT_APP_BENCH)
 	list(APPEND srcs bench.c)
 endif()
 if(CONFIG_PT_APP_FETCH)
 	list(APPEND srcs fetch.c)
+endif()
+if(CONFIG_PT_BLE)
+	list(APPEND srcs ble.c)
 endif()
 
 idf_component_register(

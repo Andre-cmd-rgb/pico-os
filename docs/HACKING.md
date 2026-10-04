@@ -50,7 +50,11 @@ make BOARD=devkit-uno-shield build   # another, in its own build/<board>/
 
 `SDKCONFIG_DEFAULTS` is `sdkconfig.defaults` plus the board file, so
 `menuconfig` edits stay in that board's `sdkconfig` and never leak into
-another board. The board file names the chip (`CONFIG_IDF_TARGET`), and
+another board. `FRAGMENTS` adds files from `boards/fragments/` after the
+board file, as the kernel's config fragments do: `make
+BOARD=freenove-fnk0104b FRAGMENTS=ble defconfig` is the Freenove board
+with Bluetooth, which no board file turns on (CI builds it, so it keeps
+building). The board file names the chip (`CONFIG_IDF_TARGET`), and
 ESP-IDF adds that chip's own defaults after the common ones:
 `sdkconfig.defaults.esp32s3` (octal PSRAM, the S3's caches, the ULP core,
 XIP from PSRAM) or `sdkconfig.defaults.esp32p4`. Each chip keeps its own
@@ -384,6 +388,17 @@ path boundaries and DMA band alignment under ASan/UBSan.
 source, fetched with `wget` (or copied, when `~/.config/pkg/repo` names a
 folder), checked with PSA's SHA-256, and compiled by `picoc` into `~/bin`.
 The index, what is installed and the sources are in `~/.config/pkg`.
+
+`drivers/net/ble.c` is Bluetooth LE, built only with `PT_BLE`
+(`boards/fragments/ble.config`): the controller and NimBLE's host are
+started when something asks (`ble on`, or `pad on`) and stopped again by
+`ble off`, which gives their internal RAM back; when they will not fit
+beside Wi-Fi, Wi-Fi is turned off for them. `ble_scan()` lists what is
+around, everything or only input devices, and keeps the list for a
+connect by number. Whatever uses the radio holds it (`ble_hold()`, a
+recursive lock) for as long as it works on it, so a `ble off` on another
+terminal waits for it. The gamepad, `drivers/input/blepad.c`, is the HID
+host on top; `ble_stop()` lets a connected pad go first.
 
 `drivers/net/modem.c` is a serial modem: an AT command reader and writer,
 SMS in text mode, and a PPP link over lwip's pppos for mobile data. While
