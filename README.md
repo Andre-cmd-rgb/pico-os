@@ -288,10 +288,15 @@ pkg upgrade               # the ones with a new version
 pkg remove snake
 ```
 
-A package is its pico source: `pkg` fetches it, checks it against the
-SHA-256 in the repository's index, and compiles it here with `picoc` into
-`~/bin`, so it always matches the language this board speaks. A name that
-is one of the board's own commands is refused (it could never be run).
+A package is its pico source: `pkg` fetches it and checks it against the
+SHA-256 in the repository's index. The repository compiles every package
+too, so `pkg` then takes the program made from that very source, checks it
+(its SHA-256, and `picoc -t`: the loader's checks, without running it) and
+puts it in `~/bin`, with nothing to compile on the board. When there is
+none that fits -- a board on an older pico-os, say -- it compiles the source
+here with `picoc` instead, so it always matches the language this board
+speaks. A name that is one of the board's own commands is refused (it could
+never be run).
 `~/.config/pkg/repo` can name another repository, an address or a folder
 on the board, which is how a package is tried before it is published.
 

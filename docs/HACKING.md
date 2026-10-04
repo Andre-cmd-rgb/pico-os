@@ -386,8 +386,14 @@ path boundaries and DMA band alignment under ASan/UBSan.
 `bin/pkg.c` installs programs from the pico-os-packages repository: its
 `index.txt` (name, version, size, SHA-256, about) and each package's
 source, fetched with `wget` (or copied, when `~/.config/pkg/repo` names a
-folder), checked with PSA's SHA-256, and compiled by `picoc` into `~/bin`.
-The index, what is installed and the sources are in `~/.config/pkg`.
+folder) and checked with PSA's SHA-256. The repository's build compiles
+every package too, and its `images.txt` (name, the source's SHA-256, size,
+SHA-256) says which source each program in `images/` was made from: the
+one for the very source fetched is checked by its SHA-256 and by
+`picoc -t`, and goes into `~/bin` as it is. When there is none, or it fails
+a check (one from a newer compiler, say), the source is compiled by
+`picoc` into `~/bin` instead. The index, `images.txt`, what is installed
+and the sources are in `~/.config/pkg`.
 
 `drivers/net/ble.c` is Bluetooth LE, built only with `PT_BLE`
 (`boards/fragments/ble.config`): the controller and NimBLE's host are
