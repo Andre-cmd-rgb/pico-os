@@ -98,7 +98,9 @@ static bool add_model(struct ai_catalog *c)
 		json_text(v, ve, completion, sizeof(completion));
 	in = strtod(prompt, NULL) * 1000000;
 	out = strtod(completion, NULL) * 1000000;
-	if (!in && !out)
+	if (in < 0 || out < 0)	/* a router: the price of whatever it picks */
+		snprintf(m->label, sizeof(m->label), "varies  %s", m->id);
+	else if (!in && !out)
 		snprintf(m->label, sizeof(m->label), "free  %s", m->id);
 	else
 		snprintf(m->label, sizeof(m->label), "$%.3g/%.3g  %s", in, out, m->id);

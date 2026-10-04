@@ -28,9 +28,9 @@ def main():
         b.run(f"echo '{json.dumps(metadata)}' > {scratch}/.config/ai-sessions/demo.chat")
         b.run(f"echo '{json.dumps(messages)}' >> {scratch}/.config/ai-sessions/demo.chat")
 
-        def keys(data, expected, menu=False, timeout=8):
+        def keys(data, expected, menu=False, timeout=8, until=None):
             b.send(data)
-            raw = b.read_until(rb"\x1b\[23;1H" if menu else rb"\x1b\[\?25h", timeout)
+            raw = b.read_until(until or (rb"\x1b\[23;1H" if menu else rb"\x1b\[\?25h"), timeout)
             frame = raw.rsplit(b"\x1b[?25l", 1)[-1]
             for text in expected:
                 assert text in frame, (data, text, frame[-3000:])
@@ -45,7 +45,9 @@ def main():
         keys(b"\x15draft\x1b[A\x1b[B", [b"> \x1b[0mdraft"])
         keys(b"\x1b[D\x7fX", [b"draXt"])
         keys(b"\x03", [b"\x1b[23;1H"])
-        keys(b"/model\r", [b"Model /", b"choices; type to filter"], menu=True, timeout=35)
+        # the whole catalogue comes from openrouter.ai first: seconds over a phone
+        keys(b"/model\r", [b"Model /", b"choices; type to filter"], menu=True, timeout=60,
+             until=rb"Esc returns")
         keys(b"qwen", [b"> qwen"], menu=True)
         keys(b"\x1b", [b" AI study "])
         keys(b"/model test/local\r", [b"study: test/local", b"local"])

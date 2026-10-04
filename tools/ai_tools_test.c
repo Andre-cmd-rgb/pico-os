@@ -137,7 +137,8 @@ static void models(void)
 		"\"reasoning\":{\"supported_efforts\":[\"high\",\"low\"],\"mandatory\":true}},"
 		"{\"id\":\"google/gemma-4:free\",\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\"}},"
 		"{\"id\":\"audio/voice\",\"architecture\":{\"output_modalities\":[\"audio\"]}},"
-		"{\"id\":\"other/reasoner\",\"reasoning\":{\"supported_efforts\":null}}]}";
+		"{\"id\":\"other/reasoner\",\"reasoning\":{\"supported_efforts\":null}},"
+		"{\"id\":\"openrouter/auto\",\"pricing\":{\"prompt\":\"-1\",\"completion\":\"-1\"}}]}";
 	int found[8];
 
 	for (size_t chunk = 1; chunk < 31; chunk++) {
@@ -148,8 +149,10 @@ static void models(void)
 
 			assert(ai_catalog_feed(&c, json + i, n < chunk ? n : chunk));
 		}
-		assert(c.count == 3 && c.depth == 0);
+		assert(c.count == 4 && c.depth == 0);
 		assert(strstr(c.models[0].label, "$0.3/1"));
+		assert(!strncmp(c.models[1].label, "free  ", 6));
+		assert(!strncmp(c.models[3].label, "varies  ", 8));
 		assert(c.models[0].efforts == ((1U << 0) | (1U << 3) | (1U << 5)));
 		assert(c.models[1].efforts == 1 && c.models[2].efforts == 255);
 		assert(ai_model_match(&c, "deepseek-4.1-flash", found, 8) == 1 && found[0] == 0);
