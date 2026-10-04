@@ -8,7 +8,7 @@ A small Unix-like system for the ESP32-S3 (and, built but not yet run, the
 ESP32-P4): a kernel with processes, pipes,
 signals, `/dev` and `/proc`, a POSIX shell, over a hundred commands (grep, sed,
 find, sort and the rest behave like GNU's) and a full-screen editor,
-drawn in PIXELTAPE's amber CRT colors on an ILI9341 screen.
+drawn in amber CRT colors on an ILI9341 screen.
 
 ```
 [0.00] pico-os 1.0-beta3 (esp-idf v6.1) #1 SMP Oct  3 2026 11:07:50
