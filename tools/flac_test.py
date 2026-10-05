@@ -163,19 +163,30 @@ def main():
           f"{encoded} files from ffmpeg's encoder decoded to the same 24 bits")
 
 
+# Music-like: two tones, noise, and a quiet tail where only the low bits move.
+TONES = ("aevalsrc=0.6*sin(2*PI*440*t)+0.2*sin(2*PI*3001*t)+0.05*(random(0)-0.5)"
+         "|0.5*sin(2*PI*660*t)*lt(t\\,1)+0.00002*sin(2*PI*1000*t)")
+# Two noises shared by both sides in three mixes, for which the encoder
+# codes the pair as left and difference, difference and right, then
+# average and difference: random(0) gives each side the same sequence.
+PAIRS = ("aevalsrc=0.3*(random(0)-0.5)+(0.1*between(t\\,0.5\\,1)+0.15*gt(t\\,1))*(random(0)-0.5)"
+         "|0.3*(random(0)-0.5)+(0.1*lt(t\\,0.5)-0.15*gt(t\\,1))*(random(0)-0.5)")
+
+
 def against_ffmpeg(exes, tmp):
     """Real encoder output -- the fixed predictors (level 0), LPC up to
     order 12, every stereo mode, 16 and 24 bits, CD to 192 kHz rates --
-    checked sample for sample against ffmpeg's own decoder. Music-like:
-    two tones, noise, and a quiet tail where only the low bits move."""
+    checked sample for sample against ffmpeg's own decoder."""
     count = 0
-    for rate, bits, level in ((44100, 16, 0), (44100, 16, 5), (44100, 16, 12), (48000, 24, 0),
-                              (48000, 24, 12), (96000, 24, 5), (192000, 24, 12)):
-        src = tmp / f"{rate}-{bits}-{level}.flac"
-        sound = ("aevalsrc=0.6*sin(2*PI*440*t)+0.2*sin(2*PI*3001*t)+0.05*(random(0)-0.5)"
-                 "|0.5*sin(2*PI*660*t)*lt(t\\,1)+0.00002*sin(2*PI*1000*t)"
-                 f":s={rate}:d=1.5")
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", sound,
+    for rate, bits, level, sound in ((44100, 16, 0, TONES), (44100, 16, 5, TONES),
+                                     (44100, 16, 12, TONES), (48000, 24, 0, TONES),
+                                     (48000, 24, 12, TONES), (96000, 24, 5, TONES),
+                                     (192000, 24, 12, TONES), (44100, 16, 5, PAIRS),
+                                     (96000, 24, 5, PAIRS)):
+        name = "pairs" if sound == PAIRS else "tones"
+        src = tmp / f"{rate}-{bits}-{level}-{name}.flac"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                        f"{sound}:s={rate}:d=1.5",
                         "-sample_fmt", "s16" if bits == 16 else "s32",
                         "-bits_per_raw_sample", str(bits), "-compression_level", str(level),
                         str(src)], check=True)
@@ -190,9 +201,9 @@ def against_ffmpeg(exes, tmp):
             assert head == [str(rate), "2", str(bits)], head
             got = list(memoryview(ours.read_bytes()).cast("i"))
             assert len(got) == len(want) and got == want, \
-                f"{rate} Hz {bits}-bit level {level} differs ({Path(exe).name})"
+                f"{rate} Hz {bits}-bit level {level} {name} differs ({Path(exe).name})"
             assert any(v & 0xff for v in got) == (bits == 24)
-        print(f"PASS ffmpeg {rate} Hz {bits}-bit level {level}, {len(got) // 2} frames")
+        print(f"PASS ffmpeg {rate} Hz {bits}-bit level {level} {name}, {len(got) // 2} frames")
         count += 1
     return count
 

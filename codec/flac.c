@@ -260,6 +260,8 @@ struct flac {
 	int		 channels;	/* in the file; the caller sees at most 2 */
 	int		 block;		/* samples in the block just decoded */
 	int		 taken;		/* how many of them the caller has */
+	int		 mode;		/* how its channels are coded */
+	int		 depth;		/* and its bits per sample */
 	uint64_t	 first;		/* the stream's sample that block starts at */
 	off_t		 audio, end;	/* where the frames start, and the file ends */
 	bool		 broken;
@@ -687,40 +689,80 @@ static bool decode_frame(struct flac *f)
 	if (get(b, 16) != want16)
 		return false;			/* frame check sum */
 
-	switch (channel_mode) {
-	case 8:					/* left and the difference */
-		for (int i = 0; i < block; i++)
-			f->ch[1][i] = f->ch[0][i] - f->ch[1][i];
-		break;
-	case 9:					/* the difference and right */
-		for (int i = 0; i < block; i++)
-			f->ch[0][i] += f->ch[1][i];
-		break;
-	case 10:				/* the average and the difference */
-		for (int i = 0; i < block; i++) {
-			int32_t side = f->ch[1][i];
-			int64_t mid = 2LL * f->ch[0][i] + (side & 1);
-
-			f->ch[0][i] = (mid + side) >> 1;
-			f->ch[1][i] = (mid - side) >> 1;
-		}
-		break;
-	}
-
-	/* Everything above works in the file's own bit depth; we hand out 24. */
-	if (bps != 24) {
-		int shift = bps - 24;
-
-		for (int c = 0; c < channels; c++)
-			for (int i = 0; i < block; i++)
-				f->ch[c][i] = shift > 0 ? f->ch[c][i] >> shift
-							: f->ch[c][i] * (1 << -shift);
-	}
 	f->block = block;
 	f->taken = 0;
+	f->mode = channel_mode;
+	f->depth = bps;
 	/* every block but the last is the stream's one size when it is fixed */
 	f->first = varying ? number : number * (uint64_t)f->max_block;
 	return true;
+}
+
+/* A sample from the file's own bit depth to the 24 bits we hand out. */
+static inline int32_t to_24(uint32_t v, int depth)
+{
+	return depth <= 24 ? (int32_t)(v << (24 - depth)) : (int32_t)v >> (depth - 24);
+}
+
+/*
+ * A stereo pair as it was before the encoder took it apart, in 24 bits
+ * and interleaved: one pass, made once for each way of coding the pair
+ * and for the commonest depths. In 32 bits, wrapping, and exact all the
+ * same: from the average and the difference, right is the average less
+ * half the difference rounded down, and left is right plus the
+ * difference, which is what (average * 2 + odd +- difference) / 2 comes
+ * to in every one of its 32 bits, with no 64-bit sum on the way.
+ */
+static inline __attribute__((always_inline)) void pairs_as(int32_t *pcm, const int32_t *a,
+							    const int32_t *b, int n, int mode,
+							    int depth)
+{
+	for (int i = 0; i < n; i++) {
+		uint32_t l = a[i], r = b[i];
+
+		if (mode == 8) {			/* left and the difference */
+			r = l - r;
+		} else if (mode == 9) {			/* the difference and right */
+			l += r;
+		} else if (mode == 10) {		/* the average and the difference */
+			r = l - (uint32_t)(b[i] >> 1);
+			l = r + (uint32_t)b[i];
+		}
+		pcm[2 * i] = to_24(l, depth);
+		pcm[2 * i + 1] = to_24(r, depth);
+	}
+}
+
+static inline __attribute__((always_inline)) void pairs(int32_t *pcm, const int32_t *a,
+							 const int32_t *b, int n, int mode,
+							 int depth)
+{
+	if (depth == 16)
+		pairs_as(pcm, a, b, n, mode, 16);
+	else if (depth == 24)
+		pairs_as(pcm, a, b, n, mode, 24);
+	else
+		pairs_as(pcm, a, b, n, mode, depth);
+}
+
+/* The next n samples of the block, as the caller gets them. */
+static void hand_out(struct flac *f, int32_t *pcm, int n)
+{
+	const int32_t *a = f->ch[0] + f->taken, *b;
+	int depth = f->depth;
+
+	if (f->base.channels == 1) {
+		for (int i = 0; i < n; i++)
+			pcm[i] = to_24(a[i], depth);
+		return;
+	}
+	b = f->ch[1] + f->taken;
+	switch (f->mode) {
+	case 8: pairs(pcm, a, b, n, 8, depth); break;
+	case 9: pairs(pcm, a, b, n, 9, depth); break;
+	case 10: pairs(pcm, a, b, n, 10, depth); break;
+	default: pairs(pcm, a, b, n, 0, depth); break;		/* each as it is */
+	}
 }
 
 static ssize_t flac_read(struct codec *c, int32_t *pcm, size_t frames)
@@ -746,19 +788,7 @@ static ssize_t flac_read(struct codec *c, int32_t *pcm, size_t frames)
 		n = f->block - f->taken;
 		if ((size_t)n > frames - done)
 			n = frames - done;
-		if (c->channels == 2) {
-			const int32_t *l = f->ch[0] + f->taken, *r = f->ch[1] + f->taken;
-
-			for (int i = 0; i < n; i++) {
-				pcm[2 * (done + i)] = l[i];
-				pcm[2 * (done + i) + 1] = r[i];
-			}
-		} else {
-			const int32_t *s = f->ch[0] + f->taken;
-
-			for (int i = 0; i < n; i++)
-				pcm[done + i] = s[i];
-		}
+		hand_out(f, pcm + done * c->channels, n);
 		f->taken += n;
 		done += n;
 	}
