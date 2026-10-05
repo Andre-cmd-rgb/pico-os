@@ -23,6 +23,10 @@ static bool unread;
 static bool was_connected;
 static atomic_int writers, writes, disconnected_for, delays;
 static int reject_write, last_wait;
+static bool tx_full;	/* what was written is still there: nobody took it */
+#define ESP_OK 0
+#define ESP_ERR_TIMEOUT 0x107
+static esp_err_t usb_serial_jtag_wait_tx_done(int wait) { assert(!wait); return tx_full ? ESP_ERR_TIMEOUT : ESP_OK; }
 static int create_error, install_error, task_error, installed, deleted, published, uninstalled, notified;
 static pthread_mutex_t *xSemaphoreCreateMutex(void) { return create_error ? NULL : &mutex; }
 static void vSemaphoreDelete(pthread_mutex_t *m) { assert(m == &mutex); deleted++; }
@@ -121,10 +125,17 @@ int main(void)
 	serial_out("reconnected", 11);
 	assert(atomic_load(&writes) == 4 && atomic_load(&delays) == 2);
 	reject_write = 1;
+	tx_full = true;
 	serial_out("unread", 6);
 	assert(unread && last_wait == USJ_WAIT);
+	/* a write that fits while the rest is still there: no reader, no waiting */
+	serial_out("burst", 5);
+	assert(unread && !last_wait);
+	serial_out("burst", 5);
+	assert(unread && !last_wait);
+	tx_full = false;			/* the PC took it all */
 	serial_out("reading again", 13);
-	assert(!unread && !last_wait);
+	assert(!unread && last_wait == USJ_WAIT);
 	assert(!pthread_mutex_destroy(&mutex));
 	puts("serial output: init faults, writer ownership, transient SOF loss, disconnect and unread recovery passed");
 	return 0;

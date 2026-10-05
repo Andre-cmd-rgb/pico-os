@@ -42,8 +42,12 @@ static void out_lock(bool take)
  * The PC reads this port only while a terminal has it open. While one does,
  * output waits for room, so a long `cat` or a file transfer loses nothing.
  * Once a write has waited in vain the port counts as unread and output is
- * dropped without waiting, until the PC takes something again: a closed
- * terminal must never stall the system. Writes go in pieces because the
+ * dropped without waiting, until the PC has taken all there was: a closed
+ * terminal must never stall the system. Not merely until a write slips
+ * through: Linux takes a port's output in bursts while a program holds it
+ * open without reading (or a modem manager probes it), and waiting again
+ * at each burst stalled the screen half a second a frame -- a full-screen
+ * app's list, scrolled with the board on a PC. Writes go in pieces because the
  * driver takes a write whole or not at all, and never more than its buffer.
  */
 #define USJ_PIECE	512
@@ -74,11 +78,12 @@ static void serial_out(const char *s, size_t n)
 	while (n) {
 		size_t k = n < USJ_PIECE ? n : USJ_PIECE;
 
+		if (unread && usb_serial_jtag_wait_tx_done(0) == ESP_OK)
+			unread = false;		/* emptied: someone reads it */
 		if (!usb_serial_jtag_write_bytes(s, k, unread ? 0 : USJ_WAIT)) {
 			unread = true;
 			break;
 		}
-		unread = false;
 		s += k;
 		n -= k;
 	}
