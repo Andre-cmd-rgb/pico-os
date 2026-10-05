@@ -87,3 +87,7 @@ CONFIG_FREERTOS_USE_TIMERS=n
 # internal. Its task touches no flash and never sleeps.
 CONFIG_ESP_EVENT_LOOP_IN_EXT_RAM=y
 CONFIG_ESP_EVENT_POST_FROM_IRAM_ISR=n
+
+# NVS (the radio's calibration) keeps its page cache and key hashes in
+# PSRAM: it is read once at boot and written rarely.
+CONFIG_NVS_ALLOCATE_CACHE_IN_SPIRAM=y
