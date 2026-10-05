@@ -451,6 +451,29 @@ size_t jpeg_dc_size(const struct jpeg *j)
  */
 static HOT void fill(struct jpeg *j)
 {
+	/*
+	 * The usual case first, with the bit buffer kept in registers: no
+	 * marker yet and the bytes there to read -- four, the most it can
+	 * take -- so that only a 0xff needs the careful way below.
+	 */
+	if (!j->marker && j->end - j->p >= 4) {
+		const uint8_t *p = j->p;
+		uint32_t bits = j->bits;
+		int nbits = j->nbits;
+
+		do {
+			uint32_t c = *p;
+
+			if (c == 0xff)
+				break;
+			p++;
+			bits |= c << (24 - nbits);
+			nbits += 8;
+		} while (nbits <= 24);
+		j->p = p;
+		j->bits = bits;
+		j->nbits = nbits;
+	}
 	while (j->nbits <= 24) {
 		int c = 0;
 
