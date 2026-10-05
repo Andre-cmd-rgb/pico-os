@@ -512,6 +512,7 @@ struct pico_vm {
 	struct pico_str	*empty;
 	struct pico_file	*std[3];
 	uint32_t	 rng;
+	uint32_t	 bargs[B_COUNT];	/* the object types a built-in takes (vm.c) */
 	bool		 raw;
 	bool		 halted;	/* exit() called */
 	bool		 failed;	/* runtime error reported */

@@ -17,6 +17,33 @@
 
 #define POLL_EVERY	1024	/* backward jumps and calls between Ctrl-C checks */
 
+/*
+ * CALLB checks that a damaged executable does not hand a built-in a number
+ * or the wrong object where its signature wants a str, a File or an array.
+ * The signatures are read once, here: vm->bargs has a nibble for each
+ * argument from the lowest, the object type it must have plus one, or 0
+ * for anything. Eight is plenty: no built-in that checks takes more than
+ * three arguments.
+ */
+static void builtin_args(struct pico_vm *vm)
+{
+	for (int b = 0; b < B_COUNT; b++) {
+		uint32_t want = 0;
+		int i = 0;
+
+		for (const char *sig = pico_builtins[b].sig; *sig && *sig != ':'; sig++) {
+			int type = *sig == 's' ? OT_STR : *sig == 'F' ? OT_FILE : *sig == 'S' ? OT_ARRAY : -1;
+
+			if (*sig == '?')
+				continue;
+			if (type >= 0 && i < 8)
+				want |= (uint32_t)(type + 1) << (4 * i);
+			i++;
+		}
+		vm->bargs[b] = want;
+	}
+}
+
 struct pico_vm *pico_vm_new(void)
 {
 	struct pico_vm *vm = port_alloc(sizeof(*vm));
@@ -24,6 +51,7 @@ struct pico_vm *pico_vm_new(void)
 	if (!vm)
 		return NULL;
 	memset(vm, 0, sizeof(*vm));
+	builtin_args(vm);
 	vm->rng = (uint32_t)port_uptime_us() * 2654435761u | 1;
 	vm->line_buffered = port_isatty(1);
 	vm->empty = pico_str_new(vm, "", 0);
@@ -714,17 +742,12 @@ dispatch:
 	}
 	CASE(CALLB) {
 		union pico_val *args = sp - ip[2];
-		const char *sig = pico_builtins[ip[1]].sig;
+		uint32_t want = vm->bargs[ip[1]];
 		vm->ip = ip;
 		vm->fn = fn;
-		for (int i = 0; *sig && *sig != ':' && i < ip[2]; sig++) {
-			if (*sig == '?')
-				continue;
-			int want = *sig == 's' ? OT_STR : *sig == 'F' ? OT_FILE : *sig == 'S' ? OT_ARRAY : -1;
-			if (want >= 0 && args[i].o && args[i].o->type != want)
+		for (int i = 0; want && i < ip[2]; i++, want >>= 4)
+			if ((want & 15) && args[i].o && args[i].o->type != (want & 15) - 1)
 				THROW("damaged executable (wrong argument type)");
-			i++;
-		}
 		int r = pico_builtin_fns[ip[1]](vm, args, ip[2]);
 		if (r < 0)
 			goto fail;
