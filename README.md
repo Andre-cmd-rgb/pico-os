@@ -70,6 +70,17 @@ command flashes it, and the files on `/` stay:
 esptool write-flash 0x0 pico-os-freenove-fnk0104b.bin
 ```
 
+**Coming from 1.0-beta4 or earlier**, the first flash is the exception:
+the system's partition grew from 3 to 6 MB, which moved `/`, so the board
+starts with an empty one. The settings come back by themselves from the
+card's `~/.etc`; anything else you keep on `/` goes to the card first and
+back after:
+
+```sh
+mkdir /mnt/sd/before && cp -r /var /mnt/sd/before/    # before flashing
+cp -r /mnt/sd/before/var / && reboot                  # after
+```
+
 To build it yourself you need ESP-IDF v6.1, which the Makefile looks for in
 `~/esp/esp-idf` (or wherever `IDF_PATH` says) and wraps `idf.py` round:
 
@@ -228,7 +239,7 @@ one back, and `%1` names one for `kill` and `wait`. Scripts run with
 
 | Path | What it is |
 |---|---|
-| `/` | 13 MB LittleFS on the internal flash; safe if the power dies mid-write |
+| `/` | 10 MB LittleFS on the internal flash; safe if the power dies mid-write |
 | `/home/NAME` | your home directory: the SD card again, under the name `setup` asked for |
 | `/tmp` | 2 MB RAM disk: fast, and empty after every boot |
 | `/mnt/sd` | the microSD card (FAT32, readable on a PC); `umount /mnt/sd` before removing it |

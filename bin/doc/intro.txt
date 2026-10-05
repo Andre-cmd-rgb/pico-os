@@ -59,7 +59,7 @@ FOUR TERMINALS
 
 WHERE THINGS ARE
 
-  Two filesystems, with one job each. The 13 MB of
+  Two filesystems, with one job each. The 10 MB of
   internal flash holds the system, so the machine
   boots and every command works with an empty card
   slot. The SD card holds everything you make: it IS
@@ -78,7 +78,7 @@ WHERE THINGS ARE
   ~/video      converted clips
   ~/.config    what programs remember (hidden)
 
-  /            13 MB of the flash: the system
+  /            10 MB of the flash: the system
   /home/NAME   the SD card, FAT32, readable on a PC
   /tmp         2 MB of RAM, empty after every boot,
                and it only takes the memory it uses
