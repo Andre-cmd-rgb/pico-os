@@ -336,7 +336,7 @@ dispatch:
 		if (!OK(s, OT_STR) || !OK(t, OT_STR))
 			THROW(s && t ? "not a string (damaged executable)" : "null string");
 		if (s->h.refs == 1) {
-			r = pico_str_append(vm, s, t);
+			r = pico_str_append(vm, s, t, true);
 		} else {
 			r = pico_str_concat(vm, s, t);
 			if (r)
@@ -445,15 +445,43 @@ dispatch:
 	FLOAT_CMP(GTF, a > b)
 	FLOAT_CMP(GEF, a >= b)
 
+	/*
+	 * When nobody can see the left string change, b is appended to it
+	 * where it is, as CATL does, instead of copying both: when the stack
+	 * holds its only reference (the result of a concatenation or a call),
+	 * or when the one other is the variable the next instruction
+	 * overwrites with the result, as in s = s + x, which would otherwise
+	 * copy all of s each time round a loop. That variable's reference
+	 * passes to the result and the store finds it empty, so no one ever
+	 * holds a string whose length changed under it.
+	 */
 	CASE(CONCAT) {
 		struct pico_str *a = STR(sp[-2]), *b = STR(sp[-1]), *r;
+		union pico_val *var = NULL;
 		if (!OK(a, OT_STR) || !OK(b, OT_STR))
 			THROW(a && b ? "not a string (damaged executable)" : "null string");
-		if (!(r = pico_str_concat(vm, a, b)))
-			THROW("out of memory");
+		if (a->h.refs == 2 && a != b) {
+			if (ip[1] == OP_STORER)
+				var = &bp[ip[2]];
+			else if (ip[1] == OP_GSTORER)
+				var = &globals[pico_u16(ip + 2)];
+			if (var && var->o != &a->h)
+				var = NULL;
+		}
+		if ((a->h.refs == 1 || var) && a != b) {
+			if (!(r = pico_str_append(vm, a, b, var != NULL)))
+				THROW("out of memory");
+			if (var) {
+				var->o = NULL;
+				r->h.refs--;
+			}
+		} else {
+			if (!(r = pico_str_concat(vm, a, b)))
+				THROW("out of memory");
+			DECREF(&a->h);
+		}
 		sp[-2].o = &r->h;
 		sp--;
-		DECREF(&a->h);
 		DECREF(&b->h);
 		NEXT(1);
 	}

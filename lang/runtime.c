@@ -173,15 +173,19 @@ struct pico_str *pico_str_concat(struct pico_vm *vm, struct pico_str *a, struct 
 	return s;
 }
 
-/* Append b to a, which nobody else references. May move a. */
-struct pico_str *pico_str_append(struct pico_vm *vm, struct pico_str *a, struct pico_str *b)
+/*
+ * Append b to a, which nobody else references. May move a. When a must
+ * grow, room doubles it, for a string built a piece at a time; without
+ * room it gets just what it needs, as a new string would.
+ */
+struct pico_str *pico_str_append(struct pico_vm *vm, struct pico_str *a, struct pico_str *b, bool room)
 {
 	size_t need = (size_t)a->len + b->len;
 
 	if (need > 0x7ffffff0u)
 		return NULL;
 	if (need > a->cap) {
-		size_t cap = a->cap * 2 > need ? a->cap * 2 : need;
+		size_t cap = room && a->cap * 2 > need ? a->cap * 2 : need;
 		if (cap > 0x7ffffff0u)
 			cap = need;
 		struct pico_str *s = pico_grow(vm, a, str_size(a->cap), str_size(cap));

@@ -1,0 +1,97 @@
+// Concatenation appends in place when nobody else can see the string; every
+// other holder of the same string must keep seeing it as it was.
+struct Box { str s; }
+
+str g = "glob";
+str h = "";
+
+str bang(str p) { p = p + "!"; return p; }
+str twice(str p) { return p + p; }
+str piece(int i) { return "<" + str(i) + ">"; }
+
+int main() {
+    // another variable
+    str a = "x";
+    str b = a;
+    a = a + "y";
+    println(a, " ", b);
+
+    // a long one, past the pools, and its copy
+    str long = "";
+    for (int i = 0; i < 300; i++) { long = long + "z"; }
+    str keep = long;
+    long = long + "end";
+    println(len(long), " ", len(keep), " ", ends_with(long, "end"), " ", ends_with(keep, "end"));
+
+    // array elements, struct fields and globals that hold it
+    str[] arr = [a];
+    Box box = Box{s: a};
+    h = a;
+    a = a + "w";
+    println(a, " ", arr[0], " ", box.s, " ", h);
+    arr[0] = arr[0] + "1";
+    box.s = box.s + "2";
+    println(a, " ", arr[0], " ", box.s, " ", h);
+
+    // pushed, then grown
+    str[] seen = [];
+    str s = "";
+    for (int i = 0; i < 5; i++) {
+        s = s + str(i);
+        push(seen, s);
+    }
+    println(seen);
+
+    // a global, with a local holding it too
+    str hold = g;
+    for (int i = 0; i < 3; i++) { g = g + "+"; }
+    println(g, " ", hold);
+    for (int i = 0; i < 200; i++) { g = g + "."; }
+    println(len(g), " ", hold);
+
+    // itself
+    str t = "ab";
+    t = t + t;
+    t = t + t;
+    println(t);
+
+    // the variable read again before the store
+    str u = "u";
+    u = u + "-" + u;
+    u = u + u + u;
+    println(u);
+
+    // a parameter: the caller's string stays
+    str v = "call";
+    println(bang(v), " ", v, " ", twice(v), " ", v);
+
+    // temporaries in a chain
+    str k = "key" + str(7) + "=" + str(8) + piece(9) + piece(10);
+    println(k);
+    str w = "";
+    for (int i = 0; i < 12; i++) { w = w + str(i) + ","; }
+    println(w);
+
+    // the constant and the empty string stay as they were
+    str c = "const";
+    c = c + "ant";
+    str e = "";
+    e = e + "e";
+    Box empty = Box{};
+    empty.s = empty.s + "f";
+    println(c, " const ", e, " [", Box{}.s, "] ", empty.s, " [", "", "]");
+
+    // the items of a loop
+    str[] items = ["p", "q"];
+    for (str it in items) {
+        it = it + "!";
+        print(it, " ");
+    }
+    println(items);
+
+    // a choice between two values
+    str m = "m";
+    for (int i = 0; i < 4; i++) { m = i % 2 == 0 ? m + "0" : "n" + m; }
+    println(m);
+    return 0;
+}

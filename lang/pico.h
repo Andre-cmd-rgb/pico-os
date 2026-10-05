@@ -554,7 +554,7 @@ void	 pico_obj_free(struct pico_vm *vm, struct pico_obj *o);
 struct pico_str *pico_str_new(struct pico_vm *vm, const char *s, size_t len);
 struct pico_str *pico_str_alloc(struct pico_vm *vm, size_t len);
 struct pico_str *pico_str_concat(struct pico_vm *vm, struct pico_str *a, struct pico_str *b);
-struct pico_str *pico_str_append(struct pico_vm *vm, struct pico_str *a, struct pico_str *b);
+struct pico_str *pico_str_append(struct pico_vm *vm, struct pico_str *a, struct pico_str *b, bool room);
 int	 pico_str_cmp(const struct pico_str *a, const struct pico_str *b);
 struct pico_str *pico_tostr(struct pico_vm *vm, union pico_val v, int kind);
 int	 pico_fmt_int(char *out, int32_t v);	/* decimal, no NUL; at most 11 bytes */
