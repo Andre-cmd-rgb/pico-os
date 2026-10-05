@@ -20,12 +20,19 @@
 
 static const uint8_t class_size[PICO_POOL_CLASSES] = { 16, 24, 32, 48, 64, 96, 128, 192 };
 
+/*
+ * The class of every size up to POOL_MAX by the 8-byte units it takes (the
+ * sizes above are all multiples of 8), so that an allocation or a free
+ * finds its class in one look rather than a search.
+ */
+static const uint8_t class_of[POOL_MAX / 8 + 1] = {
+	0, 0, 0, 1, 2, 3, 3, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7,
+};
+
+/* The pool class for n bytes, or -1 for the system allocator. */
 static int size_class(size_t n)
 {
-	for (int i = 0; i < PICO_POOL_CLASSES; i++)
-		if (n <= class_size[i])
-			return i;
-	return -1;
+	return n <= POOL_MAX ? class_of[(n + 7) / 8] : -1;
 }
 
 struct chunk {
@@ -40,7 +47,7 @@ void *pico_alloc(struct pico_vm *vm, size_t n)
 #ifdef PICO_NO_POOL
 	p = port_alloc(n);
 #else
-	int cls = n <= POOL_MAX ? size_class(n) : -1;
+	int cls = size_class(n);
 
 	if (cls < 0) {
 		p = port_alloc(n);
@@ -78,7 +85,7 @@ void pico_free(struct pico_vm *vm, void *p, size_t n)
 #ifdef PICO_NO_POOL
 	port_free(p);
 #else
-	int cls = n <= POOL_MAX ? size_class(n) : -1;
+	int cls = size_class(n);
 
 	if (cls < 0) {
 		port_free(p);
@@ -132,7 +139,7 @@ struct pico_str *pico_str_alloc(struct pico_vm *vm, size_t len)
 	if (len > 0x7ffffff0u)
 		return NULL;
 	size_t cap = len;
-	int cls = str_size(len) <= POOL_MAX ? size_class(str_size(len)) : -1;
+	int cls = size_class(str_size(len));
 
 	/* keep the slack of the size class as room to append */
 	if (cls >= 0)
