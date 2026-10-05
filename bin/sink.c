@@ -60,7 +60,7 @@ static size_t half_run(struct half *h, int32_t *pcm, size_t frames, int channels
 			for (int k = 0; k < 12; k++)
 				y += half_odd[k] * (w[HALF_MID - 1 - 2 * k] + w[HALF_MID + 1 + 2 * k]);
 			pcm[out * channels + c] = y >= CODEC_OVER ? CODEC_OVER :
-						  y <= -CODEC_OVER ? -CODEC_OVER : (int32_t)lrintf(y);
+						  y <= -CODEC_OVER ? -CODEC_OVER : codec_round(y);
 		}
 		out++;
 	}

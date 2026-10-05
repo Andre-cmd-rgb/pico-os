@@ -77,7 +77,7 @@ static int32_t widen(const struct wav *w, const uint8_t *p)
 			if (f != f)
 				return 0;		/* NaN: silence, not whatever it converts to */
 			return f >= CODEC_OVER ? CODEC_OVER : f <= -CODEC_OVER ? -CODEC_OVER :
-			       (int32_t)lrintf(f);
+			       codec_round(f);
 		}
 		return (int32_t)le32(p) >> 8;
 	}

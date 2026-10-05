@@ -105,7 +105,9 @@ static ssize_t mp3_read(struct codec *c, int32_t *pcm, size_t frames)
 	size_t done = 0;
 
 	while (done < frames) {
-		int n;
+		const float *from;
+		int32_t *to;
+		int n, samples;
 
 		if (m->taken == m->have) {
 			if (!next_frame(m))
@@ -114,11 +116,15 @@ static ssize_t mp3_read(struct codec *c, int32_t *pcm, size_t frames)
 		n = m->have - m->taken;
 		if ((size_t)n > frames - done)
 			n = frames - done;
-		for (int i = 0; i < n * c->channels; i++) {
-			float v = m->pcm[m->taken * c->channels + i] * (CODEC_FULL + 1);
+		/* in locals: a store through pcm could otherwise be m's fields */
+		samples = n * c->channels;
+		from = m->pcm + m->taken * c->channels;
+		to = pcm + done * c->channels;
+		for (int i = 0; i < samples; i++) {
+			float v = from[i] * (CODEC_FULL + 1);
 
-			pcm[done * c->channels + i] = v >= CODEC_OVER ? CODEC_OVER :
-						      v <= -CODEC_OVER ? -CODEC_OVER : (int32_t)lrintf(v);
+			to[i] = v >= CODEC_OVER ? CODEC_OVER :
+				v <= -CODEC_OVER ? -CODEC_OVER : codec_round(v);
 		}
 		m->taken += n;
 		done += n;

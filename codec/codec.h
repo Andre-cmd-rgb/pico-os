@@ -20,6 +20,7 @@
  */
 #pragma once
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
@@ -28,6 +29,23 @@ struct codec;
 
 #define CODEC_FULL	8388607		/* = the mixer's MIX_FULL */
 #define CODEC_OVER	(1 << 28)	/* how far over it a sample may go */
+
+/*
+ * A float to the nearest whole number, halves to even, as lrintf() rounds
+ * it -- but inline: picolibc's lrintf is a call and some thirty
+ * instructions, and every sample of an MP3 goes through here. Adding and
+ * taking away 2^23 leaves no fraction, and the FPU rounds the sum the way
+ * lrintf would. For |v| below 2^31.
+ */
+static inline int32_t codec_round(float v)
+{
+	if (fabsf(v) < 8388608.0f) {
+		float m = v < 0 ? -8388608.0f : 8388608.0f;
+
+		v = (v + m) - m;
+	}
+	return (int32_t)v;
+}
 
 struct codec_ops {
 	const char *name;

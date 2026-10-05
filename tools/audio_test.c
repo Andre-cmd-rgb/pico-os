@@ -5,10 +5,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "../codec/codec.h"
 #include "../drivers/audio/levels.h"
 
-#define CODEC_OVER MIX_OVER
-#include "half_under_test.h"	/* play's 2:1 filter, cut out of bin/audio.c */
+#include "half_under_test.h"	/* play's 2:1 filter, cut out of bin/sink.c */
 
 /* A sine's level through half_run(), in dB, after the filter has filled. */
 static double through_half(double hz)
