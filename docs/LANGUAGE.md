@@ -429,6 +429,12 @@ sure where a file came from.
 Format version 2 added the CRC. A program compiled by an older `picoc` is
 refused with "compile it again with picoc".
 
+`picoc -t program` makes all those checks on a compiled program without
+running it: it prints nothing and exits 0 if the program passes, and
+otherwise prints what the loader would and exits 1; source is refused, as
+not a compiled program. The pico-os-packages build runs it on every program
+it publishes, and `pkg` on every one it installs.
+
 `picoc -d file.pico` prints the instructions, which is the quickest way to see
 what the compiler did with a piece of code.
 

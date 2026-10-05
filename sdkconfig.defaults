@@ -17,6 +17,12 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # other way.
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+# Static data in PSRAM where a variable asks for it (EXT_RAM_BSS_ATTR: the
+# process table, the transfer, modem and alarm buffers), and lwIP's and
+# the Wi-Fi driver's, which ESP-IDF moves by itself: about 30 KB of
+# internal RAM. It needs the PSRAM there: QEMU is given 8 MB
+# (tools/board.py), so it boots the same way.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 
 # lwIP buffers: the network here carries a shell and the odd NTP packet,
 # not bulk transfers, and every kilobyte is internal RAM. Measured: this
@@ -27,6 +33,10 @@ CONFIG_LWIP_MAX_SOCKETS=6
 
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_FREERTOS_HZ=1000
+# A process finds its struct proc in a thread-local pointer (pthreads have
+# the first), and a parent waits on a notification its children give.
+CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=2
+CONFIG_FREERTOS_TASK_NOTIFICATION_ARRAY_ENTRIES=2
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 # 64-bit, so a process's CPU time in `ps` does not wrap after 71 minutes

@@ -83,17 +83,35 @@ static struct vfs_file *vfs_of(struct pt_file *f)
 }
 
 /*
- * The buffer appears on the first operation small enough to benefit, and it
- * has to be internal RAM: a flash write turns the cache off, so writing from
- * PSRAM makes the flash driver copy the data through a small staging buffer
- * in pieces, which measured three times slower than no buffer at all.
+ * The buffer appears on the first operation small enough to benefit, in
+ * internal RAM while there is plenty of it: the card's DMA reads it with
+ * no bounce, and FAT on the flash writes from it straight to the flash --
+ * from PSRAM the flash driver copies the data through a small staging
+ * buffer in pieces, which measured three times slower than no buffer at
+ * all. When internal RAM runs short it comes from PSRAM instead, which is
+ * far better than none for LittleFS (which copies through its own cache
+ * anyway), the card and /tmp -- though not for FAT on the flash, which is
+ * then left unbuffered, as before.
  */
+#define INTERNAL_SPARE	(48 * 1024)
+
+static bool fat_on_flash(const struct pt_mount *m)
+{
+	return m && m->type && m->source && !strcmp(m->type, "vfat") &&
+	       !strncmp(m->source, "flash:", 6);
+}
+
 static bool want_buffer(struct vfs_file *v)
 {
+	bool fat_flash = fat_on_flash(v->mount);
+
 	if (v->buf || !CONFIG_PT_FILE_BUF_KB)
 		return v->buf != NULL;
 	v->cap = (size_t)CONFIG_PT_FILE_BUF_KB * 1024;
-	v->buf = heap_caps_malloc(v->cap, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	if (fat_flash || heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > v->cap + INTERNAL_SPARE)
+		v->buf = heap_caps_malloc(v->cap, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	if (!v->buf && !fat_flash)
+		v->buf = heap_caps_malloc(v->cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	if (!v->buf)
 		v->cap = 0;
 	return v->buf != NULL;
@@ -185,6 +203,62 @@ out:
 	return ret;
 }
 
+/*
+ * PT_FILE_READLINE, for `read` in a script's loop: what it wants a byte at
+ * a time is all in the buffer, and what follows the line stays there for
+ * the next reader.
+ */
+static int vfs_ioctl(struct pt_file *f, int req, void *arg)
+{
+	struct vfs_file *v = vfs_of(f);
+	struct pt_readline *rl = arg;
+	size_t got = 0;
+	int ret = 0;
+
+	if (req != PT_FILE_READLINE)
+		return -ENOTTY;
+	LOCK(v);
+	if (v->dirty && (ret = write_out(v)) < 0)
+		goto out;
+	while (got < rl->size) {
+		uint8_t *at, *nl;
+		size_t take;
+
+		if (v->pos == v->len) {
+			ssize_t n;
+
+			if (!want_buffer(v)) {
+				ret = got ? (int)got : -ENOTTY;	/* no buffer: a byte at a time */
+				goto out;
+			}
+			n = read(v->fd, v->buf, v->cap);
+			if (n < 0) {
+				ret = got ? (int)got : -errno;
+				goto out;
+			}
+			if (!n)
+				break;			/* the end of the file */
+			v->len = n;
+			v->pos = 0;
+		}
+		at = v->buf + v->pos;
+		take = v->len - v->pos;
+		if (take > rl->size - got)
+			take = rl->size - got;
+		if ((nl = memchr(at, '\n', take)))
+			take = nl - at + 1;
+		memcpy((char *)rl->buf + got, at, take);
+		v->pos += take;
+		got += take;
+		if (nl)
+			break;
+	}
+	ret = got;
+out:
+	UNLOCK(v);
+	return ret;
+}
+
 static off_t vfs_lseek(struct pt_file *f, off_t off, int whence)
 {
 	struct vfs_file *v = vfs_of(f);
@@ -238,6 +312,7 @@ static const struct pt_file_ops vfs_ops = {
 	.read = vfs_read,
 	.write = vfs_write,
 	.lseek = vfs_lseek,
+	.ioctl = vfs_ioctl,
 	.flush = vfs_flush,
 	.release = vfs_release,
 };
@@ -326,6 +401,24 @@ static ssize_t mem_read(struct pt_file *f, void *buf, size_t n)
 	return n;
 }
 
+static int mem_ioctl(struct pt_file *f, int req, void *arg)
+{
+	struct mem_file *m = f->priv;
+	struct pt_readline *rl = arg;
+	size_t n = m->len - m->pos;
+	const char *nl;
+
+	if (req != PT_FILE_READLINE)
+		return -ENOTTY;
+	if (n > rl->size)
+		n = rl->size;
+	if ((nl = memchr(m->data + m->pos, '\n', n)))
+		n = nl - (m->data + m->pos) + 1;
+	memcpy(rl->buf, m->data + m->pos, n);
+	m->pos += n;
+	return n;
+}
+
 static off_t mem_lseek(struct pt_file *f, off_t off, int whence)
 {
 	struct mem_file *m = f->priv;
@@ -348,6 +441,7 @@ static void mem_release(struct pt_file *f)
 static const struct pt_file_ops mem_ops = {
 	.read = mem_read,
 	.lseek = mem_lseek,
+	.ioctl = mem_ioctl,
 	.release = mem_release,
 };
 

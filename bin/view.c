@@ -12,9 +12,6 @@
 #include "canvas.h"
 #include "util.h"
 
-#if CONFIG_PT_LCD
-
-
 static bool is_jpeg(int fd)
 {
 	uint8_t magic[2] = { 0 };
@@ -116,13 +113,3 @@ PT_PROGRAM_STACK(view, 8, "look at a picture\n"
 	vt_redraw();
 	return ret ? fail("view", files[at], ret) : 0;
 }
-
-#else
-
-PT_PROGRAM(view, "look at a picture (no screen on this board)")
-{
-	pt_dprintf(PT_STDERR, "view: this board has no screen\n");
-	return 1;
-}
-
-#endif

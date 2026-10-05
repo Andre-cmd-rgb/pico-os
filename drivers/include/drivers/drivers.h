@@ -356,6 +356,30 @@ void	battery_save(void);		/* before the power goes */
 void	battery_note(const char *what);	/* a line in the power log, /etc/power.log */
 const char *battery_state_name(enum battery_state state);
 
+/*
+ * net/ble.c: Bluetooth LE. The radio is started when asked for and stopped
+ * to give its internal RAM back. Whatever uses it holds it (ble_hold) for
+ * as long as it is working on it.
+ */
+struct ble_found {
+	uint8_t	 addr[6];
+	uint8_t	 addr_type;
+	int8_t	 rssi;
+	uint16_t appearance;	/* 0 when not advertised */
+	bool	 is_hid;	/* says it is a keyboard, mouse or pad */
+	char	 name[32];
+};
+
+int	ble_init(void);
+int	ble_start(void);		/* brings the radio up: costs internal RAM */
+int	ble_stop(void);			/* and gives it back */
+bool	ble_started(void);
+void	ble_hold(void);			/* the radio is not stopped until released */
+void	ble_release(void);
+/* what is around, everything or only input devices; the number found */
+int	ble_scan(struct ble_found *out, int max, int seconds, bool hid_only);
+const struct ble_found *ble_found_get(int index);	/* from the last scan, 1-based; held */
+
 /* input/blepad.c: a Bluetooth gamepad, for games */
 enum pad_button {
 	PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT,
@@ -363,18 +387,9 @@ enum pad_button {
 	PAD_BUTTON_COUNT,
 };
 
-struct pad_found {
-	uint8_t	addr[6];
-	uint8_t	addr_type;
-	int8_t	rssi;
-	bool	is_hid;		/* says it is a keyboard, mouse or pad */
-	char	name[32];
-};
-
-int	pad_start(void);		/* brings the radio up: costs RAM */
+int	pad_start(void);		/* the radio, and the HID host on it */
+int	pad_stop(void);			/* for ble_stop(): the pad let go */
 bool	pad_started(void);
-int	pad_scan(struct pad_found *out, int max, int seconds);
-int	pad_scan_all(struct pad_found *out, int max, int seconds, bool everything);
 int	pad_connect(int index);		/* from the last scan, 1-based */
 bool	pad_connected(void);
 uint16_t pad_buttons(void);		/* one bit per enum pad_button */

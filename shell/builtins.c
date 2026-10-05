@@ -305,9 +305,51 @@ static int b_eval(struct sh *sh, int argc, char **argv)
 	return status;
 }
 
+/*
+ * echo is the program itself, run in the shell's own process: a script
+ * echoing in a loop started a process every time, for the same bytes.
+ */
+static int b_echo(struct sh *sh, int argc, char **argv)
+{
+	const struct pt_program *prog = program_find("echo");
+
+	(void)sh;
+	return prog ? prog->main(argc, argv) : 127;
+}
+
 static bool is_ifs(const char *ifs, char c)
 {
 	return c && strchr(ifs, c);
+}
+
+/*
+ * Where `read` takes its line from: a file gives a line in one call
+ * (PT_FILE_READLINE) rather than a call a byte; a pipe or a terminal is
+ * read a byte at a time, since what follows the line is the next reader's.
+ */
+struct line_in {
+	char	buf[128];
+	int	len, pos;
+	bool	bytes;
+};
+
+static ssize_t next_byte(struct line_in *in, char *c)
+{
+	if (in->pos == in->len) {
+		struct pt_readline rl = { in->buf, sizeof(in->buf) };
+		int n = in->bytes ? -ENOTTY : pt_ioctl(PT_STDIN, PT_FILE_READLINE, &rl);
+
+		if (n < 0 && n != -EINTR) {
+			in->bytes = true;
+			return pt_read(PT_STDIN, c, 1);
+		}
+		if (n <= 0)
+			return n;
+		in->len = n;
+		in->pos = 0;
+	}
+	*c = in->buf[in->pos++];
+	return 1;
 }
 
 /* read [-r] [-p prompt] [name...]: one line from stdin, split among the names */
@@ -315,6 +357,7 @@ static int b_read(struct sh *sh, int argc, char **argv)
 {
 	const char *ifs = pt_getenv("IFS"), *prompt = NULL;
 	struct strbuf line = { 0 };
+	struct line_in in = { .len = 0 };
 	bool raw = false, eof = false;
 	int i = 1;
 	char c;
@@ -343,9 +386,9 @@ static int b_read(struct sh *sh, int argc, char **argv)
 	if (!ifs)
 		ifs = " \t\n";
 
-	/* a byte at a time: whatever follows the line stays for the next reader */
+	/* whatever follows the line stays for the next reader */
 	for (;;) {
-		ssize_t n = pt_read(PT_STDIN, &c, 1);
+		ssize_t n = next_byte(&in, &c);
 
 		if (n == -EINTR) {
 			sh_caught(sh);
@@ -359,7 +402,7 @@ static int b_read(struct sh *sh, int argc, char **argv)
 		if (c == '\n')
 			break;
 		if (c == '\\' && !raw) {
-			if (pt_read(PT_STDIN, &c, 1) <= 0) {
+			if (next_byte(&in, &c) <= 0) {
 				eof = true;
 				break;
 			}
@@ -726,6 +769,7 @@ static const struct builtin builtins[] = {
 	{ "cd", b_cd, false },
 	{ "command", b_command, false },
 	{ "continue", b_loop, true },
+	{ "echo", b_echo, false },
 	{ "eval", b_eval, true },
 	{ "exit", b_exit, true },
 	{ "export", b_export, true },

@@ -1,59 +1,72 @@
+# The commands. The system's own are always built; the applications are
+# each a menuconfig option (pico-os > Applications), and what is left out
+# can come from pico-os-packages instead.
+set(srcs
+	audio.c
+	cal.c
+	dates.c
+	diff.c
+	edit.c
+	fileutils.c
+	filters.c
+	find.c
+	http.c
+	man.c
+	net.c
+	passwd.c
+	pick.c
+	pkg.c
+	regex.c
+	sed.c
+	setup.c
+	shellutils.c
+	sort.c
+	sums.c
+	sysutils.c
+	textutils.c
+	theme.c
+	top.c
+	util.c)
+set(embed
+	doc/intro.txt
+	doc/commands.txt
+	doc/pico.txt
+	doc/hardware.txt)
+
+if(CONFIG_PT_APP_AI)
+	list(APPEND srcs ai.c ai_jobs.c ai_models.c ai_path.c ai_session.c ai_stats.c ai_ui.c json.c)
+	list(APPEND embed ai/study.txt ai/code.txt ai/search.txt)
+endif()
+if(CONFIG_PT_APP_NOTES)
+	list(APPEND srcs notes.c)
+endif()
+if(CONFIG_PT_APP_DIARY)
+	list(APPEND srcs alarm.c calendar.c todo.c)
+endif()
+if(CONFIG_PT_APP_CALC)
+	list(APPEND srcs calc.c)
+endif()
+if(CONFIG_PT_APP_PICTURES)
+	list(APPEND srcs canvas.c jpeg.c video.c view.c)
+endif()
+if(CONFIG_PT_NES)
+	list(APPEND srcs nes.c)
+endif()
+if(CONFIG_PT_APP_BENCH)
+	list(APPEND srcs bench.c)
+endif()
+if(CONFIG_PT_APP_FETCH)
+	list(APPEND srcs fetch.c)
+endif()
+if(CONFIG_PT_BLE)
+	list(APPEND srcs ble.c)
+endif()
+
 idf_component_register(
-	SRCS
-		ai.c
-		ai_jobs.c
-		ai_models.c
-		ai_path.c
-		ai_session.c
-		ai_stats.c
-		ai_ui.c
-		alarm.c
-		audio.c
-		bench.c
-		calc.c
-		calendar.c
-		canvas.c
-		dates.c
-		diff.c
-		edit.c
-		fetch.c
-		fileutils.c
-		filters.c
-		find.c
-		http.c
-		json.c
-		jpeg.c
-		man.c
-		nes.c
-		net.c
-		notes.c
-		passwd.c
-		pick.c
-		pkg.c
-		regex.c
-		sed.c
-		setup.c
-		shellutils.c
-		sort.c
-		sums.c
-		sysutils.c
-		textutils.c
-		theme.c
-		todo.c
-		top.c
-		util.c
-		video.c
-		view.c
+	SRCS ${srcs}
 	INCLUDE_DIRS .
 	REQUIRES kernel drivers codec emu
 	PRIV_REQUIRES esp_app_format esp_driver_gpio esp_hw_support esp_netif esp_system esp_timer heap lwip mbedtls esp_http_client esp-tls
 	WHOLE_ARCHIVE
-	EMBED_TXTFILES
-		doc/intro.txt
-		doc/commands.txt
-		doc/pico.txt
-		doc/hardware.txt
-		ai/study.txt
-		ai/code.txt
-		ai/search.txt
+	EMBED_TXTFILES ${embed}
 )

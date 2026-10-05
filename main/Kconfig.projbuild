@@ -112,6 +112,76 @@ config PT_DEV
 endmenu
 
 #
+# The applications: everything that is not needed to run, configure or
+# repair the machine. The system itself -- the shell and the standard
+# commands, the editor, the network tools, pkg and picoc, and what drives
+# the hardware -- is always built in; these can each be left out, and
+# what is left out can come from pico-os-packages instead.
+#
+menu "Applications"
+
+config PT_APP_AI
+	bool "ai: the assistant (OpenRouter)"
+	default y
+	help
+	  Chats with language models over the network: study, code and web
+	  modes, tools to read and edit files and run commands, saved chats.
+
+config PT_APP_NOTES
+	bool "notes: a reader for Markdown notes"
+	default y
+	help
+	  Lays out Markdown and text files from ~/notes for the screen,
+	  remembers where each one was left, searches and jumps between
+	  headings. ai's /history reads chats with it.
+
+config PT_APP_DIARY
+	bool "alarm, todo, calendar: the diary"
+	default y
+	help
+	  Alarms and timers that ring whatever is running, and wake the
+	  board from suspend for it; a to-do list in ~/agenda/todo.md; a
+	  calendar of events in ~/agenda/calendar.txt with reminders. Off,
+	  the alarm service is left out too. `cal` is a standard command
+	  and stays either way.
+
+config PT_APP_CALC
+	bool "calc: a calculator"
+	default y
+
+config PT_APP_PICTURES
+	bool "view and video: pictures and clips"
+	depends on PT_LCD
+	default y
+	help
+	  JPEG and BMP pictures, and clips in the board's .ptv format
+	  (tools/mkvideo.py makes them), with their sound.
+
+config PT_NES
+	bool "nes: a NES emulator"
+	depends on PT_LCD
+	default n
+	help
+	  Plays NES cartridges with Nofrendo (third_party/nofrendo). The
+	  picture is 256x240 in the middle of the screen, sound goes to the
+	  codec, and the keyboard stands in for a joypad.
+
+	  Nofrendo is Library GPL v2 and pico-os GPL v2 or later, so a
+	  binary built with this and then given to somebody else goes
+	  under the GPL (version 3, which ESP-IDF's licence fits), with
+	  its source. Building it for yourself changes nothing.
+
+config PT_APP_BENCH
+	bool "bench: how fast the board is"
+	default y
+
+config PT_APP_FETCH
+	bool "picofetch: the system at a glance"
+	default y
+
+endmenu
+
+#
 # Drivers, one option each, as in the Linux kernel. A board file under
 # boards/ turns on the set a given board needs; see boards/README.md.
 #
@@ -356,24 +426,6 @@ endif # PT_LCD
 
 endmenu
 
-menu "Games"
-
-config PT_NES
-	bool "NES emulator"
-	depends on PT_LCD
-	default n
-	help
-	  Plays NES cartridges with Nofrendo (third_party/nofrendo). The
-	  picture is 256x240 in the middle of the screen, sound goes to the
-	  codec, and the keyboard stands in for a joypad.
-
-	  Nofrendo is Library GPL v2 and pico-os GPL v2 or later, so a
-	  binary built with this and then given to somebody else goes
-	  under the GPL (version 3, which ESP-IDF's licence fits), with
-	  its source. Building it for yourself changes nothing.
-
-endmenu
-
 menu "Network"
 
 config PT_WIFI
@@ -468,6 +520,43 @@ endif
 
 endmenu
 
+menu "Bluetooth"
+
+config PT_BLE
+	bool "Bluetooth Low Energy"
+	depends on SOC_BLE_SUPPORTED
+	default n
+	select BT_ENABLED
+	help
+	  The chip's own Bluetooth LE radio: `ble on` and `ble off`, and
+	  `ble scan` for what is around. It is started only when something
+	  asks for it, because the controller and its host take tens of
+	  kilobytes of internal RAM while they run; the code is about 330
+	  KB of the image (flash, and PSRAM once it is running from there).
+
+	  ESP-IDF's NimBLE host has to be the Bluetooth host, which is a
+	  choice of its own: boards/fragments/ble.config sets it, with the
+	  rest (make BOARD=... FRAGMENTS=ble defconfig).
+
+if PT_BLE
+
+config PT_BLE_PAD
+	bool "Gamepads"
+	default y
+	help
+	  A Bluetooth pad for the games: a terminal cannot say when a key
+	  is released, and a pad can. `pad scan` looks for one and `pad
+	  connect` joins it. Which bytes of a pad's reports mean which
+	  button is set in /etc/gamepad; `pad watch` shows what yours
+	  sends. Needs BT_NIMBLE_HID_SERVICE (the fragment sets it).
+
+comment "Pick NimBLE: Component config > Bluetooth > Host"
+	depends on !BT_NIMBLE_ENABLED
+
+endif
+
+endmenu
+
 menu "Input: keyboards"
 
 config PT_KBD_UART
@@ -516,20 +605,6 @@ endif
 
 comment "USB keyboard unavailable: the console uses the native USB port"
 	depends on ESP_CONSOLE_USB_SERIAL_JTAG
-
-config PT_BLE_PAD
-	bool "Bluetooth gamepad"
-	default n
-	select BT_ENABLED
-	help
-	  A Bluetooth pad for the games: a terminal cannot say when a key
-	  is released, and a pad can. The radio is only started when `pad
-	  on` asks for it, because the stack costs tens of kilobytes of
-	  internal RAM. Which bytes of a pad's reports mean which button
-	  is set in /etc/gamepad; `pad watch` shows what yours sends.
-
-	  The Bluetooth host itself is a choice ESP-IDF makes separately:
-	  a board file that turns this on also needs BT_NIMBLE_ENABLED.
 
 config PT_USB_HOST
 	bool

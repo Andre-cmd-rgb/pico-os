@@ -31,6 +31,17 @@ CONFIG_ESP_WIFI_IRAM_OPT=n
 CONFIG_ESP_WIFI_RX_IRAM_OPT=n
 CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
 
+# With the program running from PSRAM, writing the flash no longer turns
+# the cache off, so code kept in IRAM only to run while it is off can go
+# back to PSRAM with the rest: the LED's RMT driver, the timers' interrupt
+# and libc's locks, about 4 KB of internal RAM. (The SPI master's interrupt
+# stays: the clip player's bands are sent from it, back to back.)
+CONFIG_RMT_ENCODER_FUNC_IN_IRAM=n
+CONFIG_RMT_TX_ISR_HANDLER_IN_IRAM=n
+CONFIG_RMT_RX_ISR_HANDLER_IN_IRAM=n
+CONFIG_GPTIMER_ISR_HANDLER_IN_IRAM=n
+CONFIG_LIBC_LOCKS_PLACE_IN_IRAM=n
+
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
 # Larger CPU caches: faster PSRAM access and less flash-cache thrashing,

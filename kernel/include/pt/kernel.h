@@ -123,6 +123,14 @@ void	proc_init(void);
 void	internal_init(void);
 int	on_internal_stack(int (*fn)(void *arg), void *arg);
 void	restart_now(void);		/* esp_restart(), from any stack */
+/*
+ * proc.c: a kernel task with its stack in PSRAM (internal RAM on a board
+ * without any), ended with ktask_exit() from inside, never vTaskDelete().
+ */
+BaseType_t ktask_create(TaskFunction_t fn, const char *name, uint32_t stack, void *arg,
+			UBaseType_t priority, TaskHandle_t *task, BaseType_t core);
+void	ktask_exit(void) __attribute__((noreturn));
+uint32_t kmem_caps(void);		/* for stacks, and what only tasks touch: PSRAM if any */
 struct proc *proc_current(void);	/* NULL for kernel tasks */
 int	proc_spawn_console(int argc, char **argv, struct pt_file *console);
 int	proc_wait_orphan(int pid);	/* for kernel code: wait for a pid it spawned */

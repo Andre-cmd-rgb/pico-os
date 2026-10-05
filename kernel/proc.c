@@ -23,6 +23,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/idf_additions.h"
@@ -36,13 +37,24 @@
 #define KILL_GRACE_US		500000
 #define LOADER_STACK_KB		12
 #define SIGMASK(sig)		(1u << (sig))
-#define STACK_CAPS		(heap_caps_get_total_size(MALLOC_CAP_SPIRAM) ?		\
-				 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT :			\
-				 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
 #define STOPS			(SIGMASK(PT_SIGSTOP) | SIGMASK(PT_SIGTSTP))
 #define ENDS			(SIGMASK(PT_SIGINT) | SIGMASK(PT_SIGTERM) | SIGMASK(PT_SIGKILL))
+/*
+ * A process's task keeps its struct proc in a thread-local pointer, so
+ * that finding it on every system call is one look rather than a scan of
+ * the table; slot 0 is pthreads'. And a parent waits for news of its
+ * children on a notification of its own, which they give.
+ */
+#define PROC_TLS		1
+#define CHILD_NOTIFY		1
 
-static struct proc	 procs[CONFIG_PT_MAX_PROCS];
+#if CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS <= PROC_TLS || \
+    CONFIG_FREERTOS_TASK_NOTIFICATION_ARRAY_ENTRIES <= CHILD_NOTIFY
+#error "sdkconfig.defaults asks for two thread-local pointers and two notifications: make defconfig"
+#endif
+
+/* in PSRAM: half a kilobyte each, the working directory most of it */
+EXT_RAM_BSS_ATTR static struct proc procs[CONFIG_PT_MAX_PROCS];
 static SemaphoreHandle_t table_lock;
 static int		 next_pid = 1;
 static struct pt_program *programs;
@@ -66,9 +78,15 @@ void program_register(struct pt_program *prog)
 
 const struct pt_program *program_find(const char *name)
 {
-	for (struct pt_program *p = programs; p; p = p->next)
-		if (!strcmp(p->name, name))
+	/* sorted by name: past where it would be, it is not there */
+	for (struct pt_program *p = programs; p; p = p->next) {
+		int order = strcmp(p->name, name);
+
+		if (!order)
 			return p;
+		if (order > 0)
+			break;
+	}
 	return NULL;
 }
 
@@ -238,12 +256,10 @@ static char *env_default(size_t *len)
 
 struct proc *proc_current(void)
 {
-	TaskHandle_t self = xTaskGetCurrentTaskHandle();
+	struct proc *p = pvTaskGetThreadLocalStoragePointer(NULL, PROC_TLS);
 
-	for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++)
-		if (procs[i].state == PROC_RUNNING && procs[i].task == self)
-			return &procs[i];
-	return NULL;
+	/* a slot outlives its task, and may be another process's by now */
+	return p && p->state == PROC_RUNNING && p->task == xTaskGetCurrentTaskHandle() ? p : NULL;
 }
 
 int pt_getpid(void)
@@ -394,6 +410,8 @@ static void teardown(struct proc *p, int status)
 	p->kill_waiting = false;
 	xSemaphoreGive(p->exited);
 	p->state = parent ? PROC_ZOMBIE : PROC_FREE;
+	if (parent && parent->task)
+		xTaskNotifyGiveIndexed(parent->task, CHILD_NOTIFY);	/* in pt_wait(), perhaps */
 	UNLOCK();
 }
 
@@ -465,15 +483,16 @@ int pt_wait(int pid, int *status, int flags)
 			UNLOCK();
 			return got;
 		}
-		SemaphoreHandle_t exited = child->exited;
 		UNLOCK();
 
 		if (flags & PT_WNOHANG)
 			return 0;
-		if (pid > 0)
-			xSemaphoreTake(exited, pdMS_TO_TICKS(50));
-		else
-			vTaskDelay(pdMS_TO_TICKS(20));
+		/*
+		 * Until a child has news -- it ended, or stopped -- which it
+		 * tells by a notification, or a while has passed, to look for
+		 * signals: a second while the screen is dark, as other waits.
+		 */
+		ulTaskNotifyTakeIndexed(CHILD_NOTIFY, pdTRUE, pdMS_TO_TICKS(proc_poll_ms(50)));
 		proc_stop_point();		/* the one waiting may be stopped itself */
 		if (pt_interrupted())
 			return -EINTR;
@@ -488,6 +507,7 @@ static void trampoline(void *arg)
 	int status;
 
 	p->task = xTaskGetCurrentTaskHandle();
+	vTaskSetThreadLocalStoragePointer(NULL, PROC_TLS, p);
 	if (p->prog)
 		status = p->prog->main(p->argc, p->argv);
 	else
@@ -635,7 +655,7 @@ static int spawn(struct proc *parent, const char *cmd, int argc, char *const *ar
 		made = xTaskCreatePinnedToCoreWithCaps(trampoline, p->name, p->stack_kb * 1024, p,
 						       PROC_PRIORITY, &task,
 						       prog && prog->any_core ? tskNO_AFFINITY : PROC_CORE,
-						       STACK_CAPS);
+						       kmem_caps());
 	}
 	if (made != pdPASS) {
 		teardown(p, -ENOMEM);
@@ -738,6 +758,9 @@ static void stop(struct proc *p)
 	xSemaphoreTake(p->cont, 0);
 	p->stopped = true;
 	p->stop_reported = false;
+	for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++)	/* news for a pt_wait(PT_WUNTRACED) */
+		if (procs[i].state == PROC_RUNNING && procs[i].pid == p->ppid && procs[i].task)
+			xTaskNotifyGiveIndexed(procs[i].task, CHILD_NOTIFY);
 	UNLOCK();
 	while (xSemaphoreTake(p->cont, pdMS_TO_TICKS(1000)) != pdTRUE &&
 	       !(atomic_load(&p->sigpending) & ENDS))
@@ -921,10 +944,48 @@ static int reaper_period_ms(void)
 	return 1000;
 }
 
+/* ------------------------------------------------------------ kernel tasks */
+
+uint32_t kmem_caps(void)
+{
+	return heap_caps_get_total_size(MALLOC_CAP_SPIRAM) ? MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT :
+							      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+}
+
+/*
+ * The kernel's tasks have their stacks in PSRAM too, now that their flash
+ * calls and their sleeping go through internal.c as a process's do: some
+ * 50 KB of internal RAM that sat in stacks which mostly wait. What keeps
+ * an internal stack is kflash itself and what cannot wait for the cache,
+ * the audio mixer among them.
+ */
+BaseType_t ktask_create(TaskFunction_t fn, const char *name, uint32_t stack, void *arg,
+			UBaseType_t priority, TaskHandle_t *task, BaseType_t core)
+{
+	return xTaskCreatePinnedToCoreWithCaps(fn, name, stack, arg, priority, task, core,
+					       kmem_caps());
+}
+
+/*
+ * The end of one, from inside it. Like an exited process's, its task
+ * cannot free the stack it stands on, so it stops and the reaper deletes
+ * it -- which, unlike vTaskDeleteWithCaps(NULL), needs no memory for a
+ * helper task, and a shell's task ends when there was no memory for one.
+ */
+void ktask_exit(void)
+{
+	TaskHandle_t self = xTaskGetCurrentTaskHandle();
+
+	xQueueSend(finished, &self, portMAX_DELAY);
+	vTaskSuspend(NULL);
+	for (;;)
+		vTaskDelay(portMAX_DELAY);
+}
+
 /*
  * The kernel's own task on core 0: deletes the tasks of processes that
- * have exited, kills what SIGKILL did not end, and once a second the
- * clock's chores.
+ * have exited, and of kernel tasks that ended, kills what SIGKILL did not
+ * end, and once a second the clock's chores.
  */
 static void reaper(void *arg)
 {
@@ -957,7 +1018,7 @@ void proc_init(void)
 	/* 4 KB: after a forced kill the reaper closes the program's files
 	 * itself, and one with unwritten data is a write down through FAT
 	 * and the card driver. */
-	xTaskCreatePinnedToCore(reaper, "kreaper", 4096, NULL, 5, NULL, 0);
+	ktask_create(reaper, "kreaper", 4096, NULL, 5, NULL, 0);
 	klog("proc: %d process slots, programs on core %d, stacks in %s", CONFIG_PT_MAX_PROCS,
-	     PROC_CORE, (STACK_CAPS & MALLOC_CAP_SPIRAM) ? "PSRAM" : "internal RAM");
+	     PROC_CORE, (kmem_caps() & MALLOC_CAP_SPIRAM) ? "PSRAM" : "internal RAM");
 }

@@ -22,19 +22,32 @@
 #
 #   make BOARD=devkit-uno-shield flash term
 #
+# FRAGMENTS adds boards/fragments/NAME.config on top of the board file,
+# like the kernel's config fragments; they seed a configuration the way
+# the board file does, so they go with defconfig:
+#
+#   make BOARD=freenove-fnk0104b FRAGMENTS=ble defconfig
+#
 # PORT defaults to the first /dev/ttyUSB* or /dev/ttyACM* found.
+
+# ESP-IDF's export.sh finds its own directory under bash, not under the
+# dash that is /bin/sh on Debian and Ubuntu.
+SHELL    := bash
 
 empty    :=
 space    := $(empty) $(empty)
 BOARD    ?= freenove-fnk0104b
+FRAGMENTS ?=
 BUILD    ?= build/$(BOARD)
 IDF_PATH ?= $(HOME)/esp/esp-idf
+export IDF_PATH
 PORT     ?= $(firstword $(wildcard /dev/ttyUSB*) $(wildcard /dev/ttyACM*))
 EXPORT   := . $(IDF_PATH)/export.sh >/dev/null
+DEFAULTS := sdkconfig.defaults;boards/$(BOARD).defconfig$(subst $(eval) ,,$(foreach f,$(FRAGMENTS),;boards/fragments/$(f).config))
 # APPS: applications kept outside this tree, each an ESP-IDF component
 # directory (absolute paths); see docs/HACKING.md.
 IDF      := $(EXPORT) && idf.py -B $(BUILD) -D SDKCONFIG=$(BUILD)/sdkconfig \
-	    -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/$(BOARD).defconfig" \
+	    -D "SDKCONFIG_DEFAULTS=$(DEFAULTS)" \
 	    $(if $(strip $(APPS)),-D "PT_EXTRA_APPS=$(subst $(space),;,$(strip $(APPS)))")
 
 .PHONY: all build defconfig menuconfig flash time term monitor clean distclean size font boards stale-config \
@@ -51,15 +64,24 @@ build: need-board stale-config
 	@rm -f $(APP_DESC)
 	@$(IDF) build
 
-# The board file only seeds a configuration that does not exist yet, so
-# changing it later is silent unless someone says so.
+# The board file and fragments only seed a configuration that does not
+# exist yet, so changing them later is silent unless someone says so.
 stale-config:
-	@if [ -f $(BUILD)/sdkconfig ] && \
-	    [ boards/$(BOARD).defconfig -nt $(BUILD)/sdkconfig ]; then \
-		echo "note: boards/$(BOARD).defconfig is newer than $(BUILD)/sdkconfig;"; \
-		echo "      run 'make BOARD=$(BOARD) defconfig' to apply it"; \
-		echo "      (that discards anything menuconfig changed)"; \
-	fi
+	@for f in boards/$(BOARD).defconfig sdkconfig.defaults sdkconfig.defaults.*; do \
+		if [ -f $(BUILD)/sdkconfig ] && [ $$f -nt $(BUILD)/sdkconfig ]; then \
+			echo "note: $$f is newer than $(BUILD)/sdkconfig;"; \
+			echo "      run 'make BOARD=$(BOARD) defconfig' to apply it"; \
+			echo "      (that discards anything menuconfig changed)"; \
+			break; \
+		fi; \
+	done
+	@for f in $(FRAGMENTS); do \
+		if [ -f $(BUILD)/sdkconfig ] && \
+		    grep '^CONFIG_' boards/fragments/$$f.config | grep -qvxFf $(BUILD)/sdkconfig; then \
+			echo "note: $(BUILD)/sdkconfig was not made with the $$f fragment;"; \
+			echo "      run 'make BOARD=$(BOARD) FRAGMENTS=\"$(FRAGMENTS)\" defconfig' to apply it"; \
+		fi; \
+	done
 
 # Like the kernel's: throw the configuration away and take the board's.
 defconfig: need-board
@@ -93,12 +115,16 @@ distclean:
 
 boards:
 	@echo "boards (BOARD=...):"; ls boards/*.defconfig | sed 's|boards/||;s|\.defconfig||;s|^|  |'
+	@echo "fragments (FRAGMENTS=...):"; ls boards/fragments/*.config | sed 's|boards/fragments/||;s|\.config||;s|^|  |'
 
 font:
 	python3 tools/mkfont.py > drivers/tty/font5x8.h
 
 need-board:
 	@test -f boards/$(BOARD).defconfig || { echo "no such board: $(BOARD)"; $(MAKE) -s boards; exit 1; }
+	@for f in $(FRAGMENTS); do \
+		test -f boards/fragments/$$f.config || { echo "no such fragment: $$f"; $(MAKE) -s boards; exit 1; }; \
+	done
 
 need-port:
 	@test -n "$(PORT)" || { echo "no board found: plug it in, or pass PORT=/dev/ttyACM0"; exit 1; }

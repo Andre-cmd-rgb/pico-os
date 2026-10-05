@@ -84,7 +84,7 @@ int button_init(void)
 
 	if (gpio_config(&cfg) != ESP_OK)
 		return -EIO;
-	if (xTaskCreatePinnedToCore(button_task, "kbutton", 4096, NULL, 4, &task, 0) != pdPASS)
+	if (ktask_create(button_task, "kbutton", 4096, NULL, 4, &task, 0) != pdPASS)
 		return -ENOMEM;
 	/* a low level, so that it also wakes the chip out of light sleep */
 	gpio_install_isr_service(0);		/* already there is fine */

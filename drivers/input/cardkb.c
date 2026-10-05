@@ -155,7 +155,7 @@ static void cardkb_task(void *arg)
 					 CONFIG_PT_CARDKB_POLL_MS));
 	}
 	xSemaphoreGive(stopped);
-	vTaskDelete(NULL);
+	ktask_exit();
 }
 
 int cardkb_init(void)
@@ -179,7 +179,7 @@ int cardkb_init(void)
 	}
 	stopping = false;
 	stopped = xSemaphoreCreateBinary();
-	xTaskCreatePinnedToCore(cardkb_task, "kcardkb", 4096, NULL, 9, &task, 0);
+	ktask_create(cardkb_task, "kcardkb", 4096, NULL, 9, &task, 0);
 	return 0;
 }
 

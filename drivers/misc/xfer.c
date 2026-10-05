@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "sdkconfig.h"
 
@@ -43,7 +44,7 @@
 static const char B64[] =
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-static struct {
+EXT_RAM_BSS_ATTR static struct {
 	FILE	*f;
 	char	 path[PT_PATH_MAX + 16];	/* the file, as the VFS has it */
 	char	 part[PT_PATH_MAX + 24];	/* and the one being written */
@@ -150,7 +151,7 @@ static bool resolve(const char *path, char *vfs, size_t size)
 /* The CRC of what is in `f`, reading it again from the start. */
 static bool file_crc(FILE *f, uint32_t *len, uint32_t *crc)
 {
-	static uint8_t buf[CHUNK];
+	EXT_RAM_BSS_ATTR static uint8_t buf[CHUNK];
 	size_t n;
 
 	*len = 0;
@@ -192,7 +193,7 @@ static void put(const char *args)
 
 static void chunk(const char *args)
 {
-	static uint8_t data[CHUNK];
+	EXT_RAM_BSS_ATTR static uint8_t data[CHUNK];
 	unsigned long k, crc;
 	int at = 0, n;
 
@@ -267,8 +268,8 @@ static void get(const char *path)
 
 static void read_chunk(const char *args)
 {
-	static uint8_t data[CHUNK];
-	static char line[CHUNK * 4 / 3 + 40];
+	EXT_RAM_BSS_ATTR static uint8_t data[CHUNK];
+	EXT_RAM_BSS_ATTR static char line[CHUNK * 4 / 3 + 40];
 	unsigned long k;
 	size_t n;
 	int head;

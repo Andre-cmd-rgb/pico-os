@@ -18,6 +18,7 @@
 #include "pt/program.h"
 
 #define VFS_PATH_MAX	(PT_PATH_MAX + 16)
+#define VT_STACK	4608	/* a terminal's task, which starts and waits for its shell */
 
 static const char motd[] =
 	" \x1b[2mtype 'help' for the commands, 'help <cmd>' for one\x1b[0m\n\n";
@@ -189,7 +190,7 @@ static void vt_shell_task(void *arg)
 		vTaskDelay(pdMS_TO_TICKS(500));
 	}
 	vt_task[vt] = NULL;
-	vTaskDelete(NULL);
+	ktask_exit();
 }
 
 /* Called when a terminal is switched to for the first time. */
@@ -202,16 +203,45 @@ static void vt_activated(int vt)
 	snprintf(name, sizeof(name), "kvt%d", vt);
 	/* proc_spawn_console() copies argv and the environment on this
 	 * stack, so it needs more than a waiting task would suggest. */
-	xTaskCreatePinnedToCore(vt_shell_task, name, 4608, (void *)(intptr_t)vt, 5,
-				&vt_task[vt], 0);
+	ktask_create(vt_shell_task, name, VT_STACK, (void *)(intptr_t)vt, 5, &vt_task[vt], 0);
+}
+
+static bool root;		/* / is there: the user and /etc/rc can be read */
+
+/*
+ * The first terminal's: the first start's questions, /etc/rc, then a
+ * login shell for as long as the system runs. A task of its own with a
+ * stack in PSRAM, like the other terminals', so that app_main can return
+ * and give the 8 KB of internal RAM the boot needed back to the heap.
+ */
+static void console_task(void *arg)
+{
+	struct pt_stat st;
+
+	/* the first start: a name, the time zone, Wi-Fi, before any shell */
+	if (root && !user_configured()) {
+		char *setup[] = { "setup", "-f", NULL };
+		run_console(2, setup);
+	}
+	if (!pt_stat("/etc/rc", &st) && !st.is_dir) {
+		char *rc[] = { "sh", "/etc/rc", NULL };
+		run_console(2, rc);
+	}
+	for (;;) {
+		char *login[] = { "sh", "-l", NULL };
+		int status = run_console(2, login);
+		klog("init: shell exited (%d), restarting", status);
+		vTaskDelay(pdMS_TO_TICKS(500));
+	}
 }
 
 void app_main(void)
 {
-	struct pt_stat st;
-
 	klog_init();
 	file_init();
+	/* before any kernel task: their stacks are in PSRAM, and kflash is
+	 * where their flash calls go */
+	internal_init();
 	setenv("TZ", CONFIG_PT_TZ, 1);
 	tzset();
 	banner();
@@ -219,13 +249,12 @@ void app_main(void)
 	memtest_quick();
 	led_init();
 	serial_console_init();
-	internal_init();
 	proc_init();
 	cpufreq_init();
 	wifi_init();
 
 	/* / first: it says which way up the screen goes and in what colours */
-	bool root = !rootfs_init();
+	root = !rootfs_init();
 
 	if (root) {
 		user_restore();	/* the home directory's name, the time zone */
@@ -265,6 +294,7 @@ void app_main(void)
 	idle_init();			/* and /etc/power */
 	netconsole_init();
 	modem_init();
+	ble_init();			/* the radio itself waits to be asked for */
 	klog("init: %d programs, starting shell", count_programs());
 
 	/* From here on kernel messages go to dmesg and the serial port only,
@@ -273,19 +303,6 @@ void app_main(void)
 	led_set_mode(LED_CHARGE);
 
 	logo();
-	/* the first start: a name, the time zone, Wi-Fi, before any shell */
-	if (root && !user_configured()) {
-		char *setup[] = { "setup", "-f", NULL };
-		run_console(2, setup);
-	}
-	if (!pt_stat("/etc/rc", &st) && !st.is_dir) {
-		char *rc[] = { "sh", "/etc/rc", NULL };
-		run_console(2, rc);
-	}
-	for (;;) {
-		char *login[] = { "sh", "-l", NULL };
-		int status = run_console(2, login);
-		klog("init: shell exited (%d), restarting", status);
-		vTaskDelay(pdMS_TO_TICKS(500));
-	}
+	if (ktask_create(console_task, "kvt0", VT_STACK, NULL, 5, &vt_task[0], 0) != pdPASS)
+		console_task(NULL);	/* no room for a task: on this one, then */
 }

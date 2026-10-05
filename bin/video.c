@@ -57,8 +57,6 @@
 #include "canvas.h"
 #include "util.h"
 
-#if CONFIG_PT_LCD
-
 #define HEADER		32
 #define MAX_FRAME	(256 * 1024)	/* a sane limit on one frame */
 #define MAX_SLICES	4
@@ -1290,13 +1288,3 @@ PT_PROGRAM_STACK(video, 8, "play a clip\n"
 			return ret;
 	}
 }
-
-#else
-
-PT_PROGRAM(video, "play a clip (no screen on this board)")
-{
-	pt_dprintf(PT_STDERR, "video: this board has no screen\n");
-	return 1;
-}
-
-#endif

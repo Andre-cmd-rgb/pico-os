@@ -1559,7 +1559,7 @@ int battery_init(void)
 		     (int)(bat.used / 100 / bat.capacity / 10), (int)(bat.used / 100 / bat.capacity % 10));
 	}
 	count_sleep();
-	xTaskCreatePinnedToCore(battery_task, "kbattery", 4096, NULL, 1, NULL, 0);
+	ktask_create(battery_task, "kbattery", 4096, NULL, 1, NULL, 0);
 	return 0;
 }
 
