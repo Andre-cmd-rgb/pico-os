@@ -73,19 +73,26 @@ static inline int32_t jack_gain_for(int percent)
  * A mixed sample, with the limiter's gain and the headphones' volume, as
  * the DAC's 32 bits. Both gains are applied at once and nothing is
  * rounded off: turned down 40 dB, a 24-bit sample keeps all its bits
- * where a 16-bit output would keep nine of a CD's.
+ * where a 16-bit output would keep nine of a CD's. Both are Q15, at most
+ * 32768, so their product fits 32 bits and is the same for a whole
+ * block: one multiply a sample, not two.
  */
 static inline int32_t jack_sample(int32_t mixed, int32_t gain, int32_t volume)
 {
-	int64_t v = ((int64_t)mixed * gain * volume) >> 22;
+	int64_t v = ((int64_t)mixed * (gain * volume)) >> 22;
 
 	return v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : (int32_t)v;
 }
 
-/* A mixed sample, with the limiter's gain, as the codec's 16 bits: rounded, not cut. */
+/*
+ * A mixed sample, with the limiter's gain, as the codec's 16 bits:
+ * rounded, not cut. At unity -- the limiter idle, nearly always -- the
+ * product is the sample itself, and is left out.
+ */
 static inline int16_t speaker_sample(int32_t mixed, int32_t gain)
 {
-	int64_t v = (((int64_t)mixed * gain >> 15) + 128) >> 8;
+	int64_t v = gain == 32768 ? ((int64_t)mixed + 128) >> 8
+				  : (((int64_t)mixed * gain >> 15) + 128) >> 8;
 
 	return v > INT16_MAX ? INT16_MAX : v < INT16_MIN ? INT16_MIN : (int16_t)v;
 }

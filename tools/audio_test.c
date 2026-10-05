@@ -163,6 +163,18 @@ int main(void)
 	}
 	assert(jack_sample(1, 32768, jack_gain_for(40)) != jack_sample(2, 32768, jack_gain_for(40)));
 
+	/* Both as their plain arithmetic gives them, over the whole range. */
+	for (int i = 0; i < 1000000; i++) {
+		int32_t m = (int32_t)(rnd() % (4u * MIX_OVER + 1)) - 2 * MIX_OVER;
+		int32_t g = i % 3 ? (int32_t)(rnd() % 32769) : 32768, vol = rnd() % 32769;
+		int64_t j = ((int64_t)m * g * vol) >> 22, sp = (((int64_t)m * g >> 15) + 128) >> 8;
+
+		assert(jack_sample(m, g, vol) == (j > INT32_MAX ? INT32_MAX : j < INT32_MIN ?
+						  INT32_MIN : j));
+		assert(speaker_sample(m, g) == (sp > INT16_MAX ? INT16_MAX : sp < INT16_MIN ?
+						 INT16_MIN : sp));
+	}
+
 	/* The speaker's 16 bits: rounded to the nearest, and held at the ends. */
 	assert(speaker_sample(1000 * 256, 32768) == 1000);
 	assert(speaker_sample(1000 * 256 + 127, 32768) == 1000);
