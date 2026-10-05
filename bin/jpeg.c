@@ -552,7 +552,8 @@ static int decode_block(struct jpeg *j, struct jpeg_comp *c)
 	const int16_t *fac = j->fast_ac[c->ta];
 	const uint32_t *q = j->qs[c->tq];
 	int16_t *out = j->coef;
-	int t, k = 1, last = 0;
+	uint32_t bits;
+	int t, nbits, k = 1, last = 0;
 
 	/* Kept to 16 bits, as the coefficients are: real data never needs
 	 * more, and damaged data then cannot overflow anything. */
@@ -560,33 +561,54 @@ static int decode_block(struct jpeg *j, struct jpeg_comp *c)
 	if (t)
 		c->pred = (int16_t)(c->pred + receive(j, t > 16 ? 16 : t));
 	out[0] = (int16_t)((uint32_t)c->pred * q[0]);
+	/*
+	 * The bit buffer is in registers for the coefficients, where most
+	 * come out of one lookup in fac, and goes back to j for anything
+	 * that takes it from there.
+	 */
+	bits = j->bits;
+	nbits = j->nbits;
 	do {
 		int r, z;
 
-		if (j->nbits < 16)
+		if (nbits < 16) {
+			j->bits = bits;
+			j->nbits = nbits;
 			fill(j);
-		r = fac[j->bits >> (32 - JPEG_FAST)];
+			bits = j->bits;
+			nbits = j->nbits;
+		}
+		r = fac[bits >> (32 - JPEG_FAST)];
 		if (r) {
-			consume(j, r & 15);
+			bits <<= r & 15;
+			nbits -= r & 15;
 			k += (r >> 4) & 15;
 			z = dezigzag[k++];
 			out[z] = (int16_t)((r >> 8) * q[z]);
 			last = k;
 		} else {
-			int rs = huff_decode(j, ac), s = rs & 15;
+			int rs, s;
 
+			j->bits = bits;
+			j->nbits = nbits;
+			rs = huff_decode(j, ac);
+			if ((s = rs & 15)) {
+				k += rs >> 4;
+				z = dezigzag[k++];
+				out[z] = (int16_t)((uint32_t)receive(j, s) * q[z]);
+				last = k;
+			}
+			bits = j->bits;
+			nbits = j->nbits;
 			if (!s) {
 				if (rs != 0xf0)
 					break;	/* end of block */
 				k += 16;	/* sixteen zeros */
-				continue;
 			}
-			k += rs >> 4;
-			z = dezigzag[k++];
-			out[z] = (int16_t)((uint32_t)receive(j, s) * q[z]);
-			last = k;
 		}
 	} while (k < 64);
+	j->bits = bits;
+	j->nbits = nbits;
 	return last;
 }
 
