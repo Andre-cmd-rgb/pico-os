@@ -20,6 +20,7 @@ set(srcs
 	sed.c
 	setup.c
 	shellutils.c
+	sink.c
 	sort.c
 	sums.c
 	sysutils.c
