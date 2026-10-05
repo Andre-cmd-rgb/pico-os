@@ -10,7 +10,7 @@ if(PT_EXTRA_APPS)
 	list(APPEND EXTRA_COMPONENT_DIRS ${PT_EXTRA_APPS})
 endif()
 # The same as PT_VERSION (kernel/include/pt/kernel.h), for the image's header
-set(PROJECT_VER "1.0-beta3")
+set(PROJECT_VER "1.0-beta4")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # One lock file per chip: the ESP32-P4 pulls in Wi-Fi components the S3
