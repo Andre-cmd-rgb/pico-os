@@ -50,6 +50,9 @@ endif()
 if(CONFIG_PT_APP_PICTURES)
 	list(APPEND srcs canvas.c jpeg.c video.c view.c)
 endif()
+if(CONFIG_PT_APP_MUSIC)
+	list(APPEND srcs music.c tags.c lrc.c jpeg.c)
+endif()
 if(CONFIG_PT_NES)
 	list(APPEND srcs nes.c)
 endif()
@@ -62,6 +65,8 @@ endif()
 if(CONFIG_PT_BLE)
 	list(APPEND srcs ble.c)
 endif()
+
+list(REMOVE_DUPLICATES srcs)	# jpeg.c: pictures and music both
 
 idf_component_register(
 	SRCS ${srcs}

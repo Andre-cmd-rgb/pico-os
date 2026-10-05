@@ -171,6 +171,16 @@ config PT_NES
 	  under the GPL (version 3, which ESP-IDF's licence fits), with
 	  its source. Building it for yourself changes nothing.
 
+config PT_APP_MUSIC
+	bool "music: the music player"
+	depends on PT_AUDIO
+	default y
+	help
+	  ~/music as a library of albums, from the files' own tags: the
+	  cover beside the song, its lyrics moving with it (LRC, a line or
+	  a word at a time), seeking, shuffle and repeat. It plays on while
+	  another terminal is in front and the screen is dark.
+
 config PT_APP_BENCH
 	bool "bench: how fast the board is"
 	default y
