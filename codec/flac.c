@@ -307,8 +307,52 @@ static void restore_fixed(int32_t *s, int block, int order)
  * The encoder's predictor: a weighted sum of the samples before, shifted
  * down. The shift means 32 bits only do when the sum cannot leave them,
  * which the weights say: a CD's samples nearly always, 24-bit ones never,
- * and those take the 64-bit sum, a few times slower here.
+ * and those take the 64-bit sum, twice the work here.
+ *
+ * Both are inlined into restore_lpc() once for each order up to twelve,
+ * as far as encoders go but for their highest levels, with the order a
+ * constant: the sum is then straight-line code instead of a loop, which
+ * at order 8 is a third of the work in 32 bits and nearly half in 64.
  */
+static inline __attribute__((always_inline)) void lpc_32(uint32_t *u, int block, int order,
+							  const int32_t *coeff, int shift)
+{
+	for (int i = order; i < block; i++) {
+		uint32_t sum = 0;
+
+#pragma GCC unroll 12
+		for (int k = 0; k < order; k++)
+			sum += (uint32_t)coeff[k] * u[i - 1 - k];
+		u[i] += (uint32_t)((int32_t)sum >> shift);
+	}
+}
+
+/*
+ * The sum shifted down and added in halves of 32 bits, the shift being at
+ * most 15: as a 64-bit shift it is a call into the compiler's library.
+ * False when the sample would not fit in 32 bits; in a valid stream it does.
+ */
+static inline __attribute__((always_inline)) bool lpc_64(int32_t *s, int block, int order,
+							  const int32_t *coeff, int shift)
+{
+	for (int i = order; i < block; i++) {
+		int64_t sum = 0;
+		uint32_t lo, hi, r;
+
+#pragma GCC unroll 12
+		for (int k = 0; k < order; k++)
+			sum += (int64_t)coeff[k] * s[i - 1 - k];
+		lo = (uint32_t)sum >> shift | (uint32_t)(sum >> 32) << 1 << (31 - shift);
+		hi = (uint32_t)((int32_t)(sum >> 32) >> shift);
+		r = lo + (uint32_t)s[i];
+		hi += (uint32_t)(s[i] >> 31) + (r < lo);
+		if (hi != (uint32_t)((int32_t)r >> 31))
+			return false;
+		s[i] = (int32_t)r;
+	}
+	return true;
+}
+
 static bool restore_lpc(int32_t *s, int block, int order, const int32_t *coeff, int shift,
 			int bps)
 {
@@ -319,26 +363,38 @@ static bool restore_lpc(int32_t *s, int block, int order, const int32_t *coeff, 
 	if ((weight << (bps - 1)) <= INT32_MAX) {
 		uint32_t *u = (uint32_t *)s;
 
-		for (int i = order; i < block; i++) {
-			uint32_t sum = 0;
-
-			for (int k = 0; k < order; k++)
-				sum += (uint32_t)coeff[k] * u[i - 1 - k];
-			u[i] += (uint32_t)((int32_t)sum >> shift);
+		switch (order) {
+		case 1: lpc_32(u, block, 1, coeff, shift); break;
+		case 2: lpc_32(u, block, 2, coeff, shift); break;
+		case 3: lpc_32(u, block, 3, coeff, shift); break;
+		case 4: lpc_32(u, block, 4, coeff, shift); break;
+		case 5: lpc_32(u, block, 5, coeff, shift); break;
+		case 6: lpc_32(u, block, 6, coeff, shift); break;
+		case 7: lpc_32(u, block, 7, coeff, shift); break;
+		case 8: lpc_32(u, block, 8, coeff, shift); break;
+		case 9: lpc_32(u, block, 9, coeff, shift); break;
+		case 10: lpc_32(u, block, 10, coeff, shift); break;
+		case 11: lpc_32(u, block, 11, coeff, shift); break;
+		case 12: lpc_32(u, block, 12, coeff, shift); break;
+		default: lpc_32(u, block, order, coeff, shift); break;
 		}
 		return true;
 	}
-	for (int i = order; i < block; i++) {
-		int64_t sum = 0;
-
-		for (int k = 0; k < order; k++)
-			sum += (int64_t)coeff[k] * s[i - 1 - k];
-		sum = s[i] + (sum >> shift);
-		if (sum < INT32_MIN || sum > INT32_MAX)
-			return false;
-		s[i] = sum;
+	switch (order) {
+	case 1: return lpc_64(s, block, 1, coeff, shift);
+	case 2: return lpc_64(s, block, 2, coeff, shift);
+	case 3: return lpc_64(s, block, 3, coeff, shift);
+	case 4: return lpc_64(s, block, 4, coeff, shift);
+	case 5: return lpc_64(s, block, 5, coeff, shift);
+	case 6: return lpc_64(s, block, 6, coeff, shift);
+	case 7: return lpc_64(s, block, 7, coeff, shift);
+	case 8: return lpc_64(s, block, 8, coeff, shift);
+	case 9: return lpc_64(s, block, 9, coeff, shift);
+	case 10: return lpc_64(s, block, 10, coeff, shift);
+	case 11: return lpc_64(s, block, 11, coeff, shift);
+	case 12: return lpc_64(s, block, 12, coeff, shift);
+	default: return lpc_64(s, block, order, coeff, shift);
 	}
-	return true;
 }
 
 /*
