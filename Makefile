@@ -151,6 +151,7 @@ hosttest:
 	@python3 tools/wav_test.py
 	@python3 tools/seek_test.py
 	@python3 tools/tags_test.py
+	@python3 tools/gym_test.py
 	@python3 tools/pkg_test.py
 	@python3 tools/auth_test.py
 	@python3 tools/netconsole_test.py

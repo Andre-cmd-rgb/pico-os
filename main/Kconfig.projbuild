@@ -181,6 +181,15 @@ config PT_APP_MUSIC
 	  a word at a time), seeking, shuffle and repeat. It plays on while
 	  another terminal is in front and the screen is dark.
 
+config PT_APP_GYM
+	bool "gym: a training log"
+	default y
+	help
+	  The day's exercises from ~/gym/schede.txt, the sets as they are
+	  done (kept in ~/gym/log.txt), last time's sets beside them and
+	  what to aim for: double progression, a step up once every set
+	  reaches the top of its reps.
+
 config PT_APP_BENCH
 	bool "bench: how fast the board is"
 	default y
