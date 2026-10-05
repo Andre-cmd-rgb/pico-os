@@ -252,6 +252,12 @@ static __attribute__((noinline)) union pico_val *concat_target(struct pico_vm *v
 	return local >= 0 ? &bp[local] : &vm->globals[global];
 }
 
+/* 0 when two strings are the same; ones of different lengths are not. */
+static inline int str_differ(const struct pico_str *a, const struct pico_str *b)
+{
+	return a->len != b->len || memcmp(a->data, b->data, a->len);
+}
+
 #define INCREF(o)	do { struct pico_obj *o_ = (o); if (o_) o_->refs++; } while (0)
 #define DECREF(o)	do { struct pico_obj *o_ = (o); if (o_ && --o_->refs == 0) pico_obj_free(vm, o_); } while (0)
 #define STR(v)		((struct pico_str *)(v).o)
@@ -361,12 +367,12 @@ int pico_vm_exec(struct pico_vm *vm, uint16_t fn, union pico_val *result)
 		sp--;							\
 		NEXT(1);						\
 	}
-#define STR_CMP(op, expr)						\
+#define STR_CMP(op, cmp, expr)						\
 	CASE(op) {							\
 		struct pico_str *a = STR(sp[-2]), *b = STR(sp[-1]);	\
 		if (!OK(a, OT_STR) || !OK(b, OT_STR))			\
 			THROW("null string");				\
-		int r = pico_str_cmp(a, b);				\
+		int r = cmp(a, b);					\
 		sp[-2].i = (expr);					\
 		sp--;							\
 		DECREF(&a->h);						\
@@ -603,12 +609,12 @@ dispatch:
 		DECREF(&b->h);
 		NEXT(1);
 	}
-	STR_CMP(EQS, r == 0)
-	STR_CMP(NES, r != 0)
-	STR_CMP(LTS, r < 0)
-	STR_CMP(LES, r <= 0)
-	STR_CMP(GTS, r > 0)
-	STR_CMP(GES, r >= 0)
+	STR_CMP(EQS, str_differ, r == 0)
+	STR_CMP(NES, str_differ, r != 0)
+	STR_CMP(LTS, pico_str_cmp, r < 0)
+	STR_CMP(LES, pico_str_cmp, r <= 0)
+	STR_CMP(GTS, pico_str_cmp, r > 0)
+	STR_CMP(GES, pico_str_cmp, r >= 0)
 	CASE(EQR)
 	CASE(NER) {
 		struct pico_obj *a = sp[-2].o, *b = sp[-1].o;
