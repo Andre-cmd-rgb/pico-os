@@ -70,6 +70,8 @@ static size_t half_run(struct half *h, int32_t *pcm, size_t frames, int channels
 int sink_open(struct sink *s, bool dry)
 {
 	*s = (struct sink){ .dry = dry, .started = pt_uptime_us() };
+	if (!dry)
+		return 0;		/* only the checksum wants the mono copy */
 	s->mono = pt_malloc(SINK_PASS * sizeof(*s->mono));
 	return s->mono ? 0 : -ENOMEM;
 }
