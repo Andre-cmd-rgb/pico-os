@@ -24,27 +24,42 @@
 
 #include "pt/sys.h"
 
+#ifndef BUF_BYTES			/* tools/flac_test.py tries a few bytes too */
 #define BUF_BYTES	16384		/* a few frames: one card read a tenth of a second */
+#endif
+#define KEEP		4		/* room before them for bytes still in the cache */
 #define MAX_CHANNELS	8
 #define MAX_ORDER	32
 
 /* ------------------------------------------------------------ bits */
 
 /*
- * A bit reader over a file, with the two check sums the format uses
- * folded in as bytes arrive: CRC-8 over a frame header, CRC-16 over a
- * whole frame. Every field in the stream is read most-significant bit
- * first.
+ * A bit reader over a file. The next bits wait in a 32-bit word, from its
+ * top bit down, so that looking at them is reading the word and taking
+ * them is a shift. Whole bytes go in below them while one fits, so it
+ * holds at most 31 and a shift never has to be by 32. Below those there
+ * may be copies of the bits that come next, left by a load of three bytes
+ * at once: loading those bytes puts the same bits there again, so they
+ * do no harm.
+ *
+ * The two check sums the format uses -- CRC-8 over a frame's header,
+ * CRC-16 over the whole frame -- are not folded in as bytes arrive, which
+ * cost a table lookup for every byte in the hot loop, but over the bytes
+ * used so far in a loop of their own: before the buffer is read again,
+ * and before a check sum is compared. Every field in the stream is read
+ * most-significant bit first.
  */
 struct bits {
 	int	 fd;
-	uint8_t	 buf[BUF_BYTES];
-	int	 len, pos;
-	uint64_t acc;		/* the next bits, right-aligned in `have` */
-	int	 have;
+	uint32_t cache;		/* the next bits, from the top */
+	int	 count;		/* how many of them there are */
+	int	 len, pos;	/* the end of buf, and the next byte for the cache */
+	int	 summed;	/* the check sums cover buf up to here */
 	uint8_t	 crc8;
 	uint16_t crc16;
+	bool	 header;	/* in a frame's header: the CRC-8 too */
 	bool	 eof;
+	uint8_t	 buf[KEEP + BUF_BYTES];
 };
 
 /* CRC-8 polynomial 0x07 and CRC-16 polynomial 0x8005. Immutable tables
@@ -87,47 +102,83 @@ static const uint16_t crc16_table[256] = {
 	0x0220, 0x8225, 0x822f, 0x022a, 0x823b, 0x023e, 0x0234, 0x8231, 0x8213, 0x0216, 0x021c, 0x8219, 0x0208, 0x820d, 0x8207, 0x0202,
 };
 
-static int next_byte(struct bits *b)
+/*
+ * Where the bytes the reader has used end: the whole bytes waiting in the
+ * cache are not used yet, but a byte partly read is.
+ */
+static int used(const struct bits *b)
 {
-	if (b->pos == b->len) {
-		ssize_t n = pt_read(b->fd, b->buf, sizeof(b->buf));
-
-		if (n <= 0) {
-			b->eof = true;
-			return -1;
-		}
-		b->len = n;
-		b->pos = 0;
-	}
-	uint8_t byte = b->buf[b->pos++];
-
-	b->crc8 = crc8_table[b->crc8 ^ byte];
-	b->crc16 = (b->crc16 << 8) ^ crc16_table[(b->crc16 >> 8) ^ byte];
-	return byte;
+	return b->pos - (b->count >> 3);
 }
 
-/* Keeps at least `n` bits ready; n is never more than 57. */
+/* Folds the bytes used since the last time into the check sums. */
+static void sum(struct bits *b)
+{
+	const uint8_t *p = b->buf + b->summed, *end = b->buf + used(b);
+	uint16_t crc = b->crc16;
+
+	if (b->header) {
+		uint8_t crc8 = b->crc8;
+
+		for (const uint8_t *q = p; q < end; q++)
+			crc8 = crc8_table[crc8 ^ *q];
+		b->crc8 = crc8;
+	}
+	for (; p < end; p++)
+		crc = (crc << 8) ^ crc16_table[(crc >> 8) ^ *p];
+	b->crc16 = crc;
+	b->summed = used(b);
+}
+
+/*
+ * Reads on from the file. The bytes the cache holds whole go just before
+ * the new ones, where align() can still give them back.
+ */
+static bool refill(struct bits *b)
+{
+	int keep = b->count >> 3;
+	ssize_t n;
+
+	sum(b);
+	memmove(b->buf + KEEP - keep, b->buf + b->pos - keep, keep);
+	b->summed = KEEP - keep;
+	b->len = b->pos = KEEP;
+	n = pt_read(b->fd, b->buf + KEEP, BUF_BYTES);
+	if (n <= 0)
+		return false;
+	b->len = KEEP + n;
+	return true;
+}
+
+/* Keeps at least `n` bits ready, n being at most 24; false at the end. */
 static bool fill(struct bits *b, int n)
 {
-	while (b->have < n) {
-		int byte = next_byte(b);
-
-		if (byte < 0)
-			return false;
-		b->acc = (b->acc << 8) | (unsigned)byte;
-		b->have += 8;
+	while (b->count < 24) {
+		if (b->pos == b->len && (b->count >= n || !refill(b)))
+			break;
+		b->cache |= (uint32_t)b->buf[b->pos++] << (24 - b->count);
+		b->count += 8;
 	}
-	return true;
+	if (b->count >= n)
+		return true;
+	b->eof = true;
+	return false;
 }
 
 static uint32_t get(struct bits *b, int n)
 {
-	if (!n)
+	uint32_t v;
+
+	if (n > 24) {
+		v = get(b, n - 16) << 16;
+		return v | get(b, 16);
+	}
+	if (!n || (b->count < n && !fill(b, n)))
 		return 0;
-	if (!fill(b, n))
-		return 0;
-	b->have -= n;
-	return (uint32_t)((b->acc >> b->have) & (n == 32 ? 0xffffffffu : (1u << n) - 1));
+	v = b->cache >> (32 - n);
+	b->cache <<= n;
+	b->count -= n;
+	return v;
 }
 
 static int32_t get_signed(struct bits *b, int n)
@@ -139,47 +190,62 @@ static int32_t get_signed(struct bits *b, int n)
 	return (int32_t)v;
 }
 
-/* Zeros before the next 1 bit: the high half of a Rice code. */
+/*
+ * Zeros before the next 1 bit: the high half of a Rice code. A 1 found
+ * below the bits the cache holds is one of the copies, not a bit read.
+ */
 static int get_unary(struct bits *b)
 {
 	int zeros = 0;
 
 	for (;;) {
-		int chunk;
-		uint32_t peek;
+		int lead;
 
-		if (!fill(b, 1))
+		if (!b->count && !fill(b, 1))
 			return -1;
-		chunk = b->have < 32 ? b->have : 32;
-		peek = (uint32_t)(b->acc >> (b->have - chunk));
-		if (chunk < 32)
-			peek &= (1u << chunk) - 1;
-		if (peek) {
-			int lead = __builtin_clz(peek) - (32 - chunk);
-
-			b->have -= lead + 1;
+		lead = __builtin_clz(b->cache | 1);
+		if (lead < b->count) {
+			b->cache <<= lead + 1;
+			b->count -= lead + 1;
 			return zeros + lead;
 		}
-		zeros += chunk;
-		b->have -= chunk;
+		zeros += b->count;
+		b->cache <<= b->count;
+		b->count = 0;
 	}
 }
 
 /*
- * Drops the rest of the current byte. After this the reader holds no
- * loaded bytes at all, which is what makes the check sums line up: every
- * byte folded into them is a byte the frame really used.
+ * Drops the rest of the current byte, and gives back the whole ones the
+ * cache holds. After this the reader holds no loaded bytes at all, which
+ * is what makes the check sums line up: every byte folded into them is a
+ * byte the frame really used.
  */
 static void align(struct bits *b)
 {
-	b->have = 0;
+	b->pos = used(b);
+	b->cache = 0;
+	b->count = 0;
+}
+
+/* The next byte as it is, when looking for a frame: the cache is empty. */
+static int next_byte(struct bits *b)
+{
+	if (b->pos == b->len && !refill(b)) {
+		b->eof = true;
+		return -1;
+	}
+	return b->buf[b->pos++];
 }
 
 static bool seek_to(struct bits *b, off_t off)
 {
 	if (pt_lseek(b->fd, off, SEEK_SET) < 0)
 		return false;
-	b->len = b->pos = b->have = 0;
+	b->len = b->pos = b->summed = KEEP;
+	b->cache = 0;
+	b->count = 0;
+	b->header = false;
 	b->eof = false;
 	return true;
 }
@@ -280,76 +346,77 @@ static bool restore_lpc(int32_t *s, int block, int order, const int32_t *coeff, 
  * The reader's state is kept in locals, so that it stays in registers, and
  * bytes are taken straight from the buffer: get() and get_unary() cost a
  * call each, and a call this deep in the stack spills the processor's
- * register window, which came to 370 cycles a sample. Only the CRC-16 is
- * kept up here; the CRC-8 covers the frame's header, which is behind us.
+ * register window, which came to 370 cycles a sample. Even a call on a
+ * rare path costs: in a function that calls, the values the loop needs do
+ * not all fit in the registers a call leaves alone, and some go to the
+ * stack. So the loop is a function of its own that calls nothing, kept
+ * out of its caller, and read_rice() takes the rare codes between runs.
+ *
+ * A code that fits in the cache is taken whole: its zeros counted by one
+ * instruction, then one shift down for the 1 and the low bits and one up
+ * to drop them. The cache takes three bytes at a time, as many of them as
+ * fit. A run of zeros longer than the cache, a parameter too large for
+ * it, or the end of the buffer stops the loop, and read_rice() takes that
+ * code the slow way. Returns how many codes it took.
  */
+static __attribute__((noinline)) int rice_fast(struct bits *b, int32_t *out, int n,
+					       unsigned param)
+{
+	const uint8_t *p = b->buf + b->pos, *last = b->buf + b->len - 3;
+	int32_t *o = out, *end = out + n;
+	uint32_t cache = b->cache;
+	int count = b->count, k1 = param + 1, top = 31 - param;
+
+	while (o < end) {
+		int lead = __builtin_clz(cache | 1), bits = lead + k1;
+		uint32_t v;
+
+		if (__builtin_expect(bits > count, 0)) {
+			if (p > last)
+				break;
+			v = (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8;
+			cache |= v >> count;
+			p += 3 - (count >> 3);
+			count = 24 + (count & 7);
+			lead = __builtin_clz(cache | 1);
+			bits = lead + k1;
+			if (bits > count)
+				break;
+		}
+		v = cache >> (top - lead);	/* the 1, then the low bits */
+		cache <<= bits;
+		count -= bits;
+		v += (uint32_t)(lead - 1) << param;	/* the zeros above them */
+		*o = (int32_t)(v >> 1) ^ -(int32_t)(v & 1);	/* zig-zag */
+		o++;
+	}
+	b->cache = cache;
+	b->count = count;
+	b->pos = p - b->buf;
+	return o - out;
+}
+
+/* The codes rice_fast() leaves, one by one the slow way, and on. */
 static bool read_rice(struct bits *b, int32_t *out, int n, unsigned param)
 {
-	const uint8_t *buf = b->buf;
-	uint64_t acc = b->acc;
-	uint16_t crc = b->crc16;
-	int have = b->have, pos = b->pos, len = b->len;
-	bool ok = true;
+	for (;;) {
+		int done = rice_fast(b, out, n, param), zeros;
+		uint32_t v;
 
-#define TAKE_BYTE()							\
-	do {								\
-		int byte_;						\
-									\
-		if (pos < len) {					\
-			byte_ = buf[pos++];				\
-			crc = (crc << 8) ^ crc16_table[(crc >> 8) ^ byte_]; \
-		} else {	/* the buffer refilled, the slow way */	\
-			b->pos = pos;					\
-			b->crc16 = crc;					\
-			byte_ = next_byte(b);				\
-			pos = b->pos;					\
-			len = b->len;					\
-			crc = b->crc16;					\
-			if (byte_ < 0) {				\
-				ok = false;				\
-				goto out;				\
-			}						\
-		}							\
-		acc = acc << 8 | (unsigned)byte_;			\
-		have += 8;						\
-	} while (0)
-
-	for (int i = 0; i < n; i++) {
-		uint32_t q = 0, v;
-
-		for (;;) {			/* zeros, then a one */
-			if (have) {
-				uint32_t peek = have >= 32 ? (uint32_t)(acc >> (have - 32))
-							   : (uint32_t)acc << (32 - have);
-
-				if (peek) {
-					int lead = __builtin_clz(peek);
-
-					q += lead;
-					have -= lead + 1;
-					break;
-				}
-				q += have >= 32 ? 32 : have;
-				have -= have >= 32 ? 32 : have;
-			}
-			TAKE_BYTE();
-		}
-		while (have < (int)param)
-			TAKE_BYTE();
-		v = q << param;
-		if (param) {
-			have -= param;
-			v |= (uint32_t)(acc >> have) & ((1u << param) - 1);
-		}
-		out[i] = (int32_t)(v >> 1) ^ -(int32_t)(v & 1);		/* zig-zag */
+		out += done;
+		n -= done;
+		if (!n)
+			return true;
+		zeros = get_unary(b);
+		if (zeros < 0)
+			return false;
+		v = (uint32_t)zeros << param;
+		v |= get(b, param);
+		if (b->eof)
+			return false;
+		*out++ = (int32_t)(v >> 1) ^ -(int32_t)(v & 1);
+		n--;
 	}
-#undef TAKE_BYTE
-out:
-	b->acc = acc;
-	b->have = have;
-	b->pos = pos;
-	b->crc16 = crc;
-	return ok;
 }
 
 /*
@@ -492,8 +559,10 @@ static bool decode_frame(struct flac *f)
 	uint16_t want16;
 
 	align(b);
+	b->summed = b->pos;
 	b->crc8 = 0;
 	b->crc16 = 0;
+	b->header = true;
 	if (get(b, 14) != 0x3ffe || b->eof)
 		return false;			/* frame sync */
 	get(b, 1);				/* reserved */
@@ -538,6 +607,8 @@ static bool decode_frame(struct flac *f)
 	if (!bps || block > f->max_block || channels != f->channels)
 		return false;
 
+	sum(b);
+	b->header = false;
 	want8 = b->crc8;
 	if (get(b, 8) != want8)
 		return false;			/* header check sum */
@@ -555,6 +626,7 @@ static bool decode_frame(struct flac *f)
 			return false;
 	}
 	align(b);
+	sum(b);
 	want16 = b->crc16;
 	if (get(b, 16) != want16)
 		return false;			/* frame check sum */

@@ -2,7 +2,9 @@
 """Decode independent FLAC fixtures and reject malformed headers/predictors.
 
 Uses eight concurrent readers of the actual decoder under ASan/UBSan;
-no audio, board or encoder needed.
+no audio, board or encoder needed. Everything is decoded twice: also with
+a read buffer of a few bytes, so that the bit reader's refills fall on
+every kind of field, check sum and frame boundary.
 """
 from pathlib import Path
 import subprocess
@@ -45,11 +47,11 @@ def metadata(kind, payload, last):
     return bytes([kind | (128 if last else 0)]) + len(payload).to_bytes(3, "big") + payload
 
 
-def frame(block, subframe):
+def frame(block, subframe, damaged=None):
     # Variable block length in the header, mono, 16-bit, STREAMINFO's rate.
     header = bytes([0xff, 0xf8, 0x60, 0x00, 0, block - 1])
-    data = header + bytes([crc(header, 8, 0x07)]) + subframe.bytes()
-    return data + crc(data, 16, 0x8005).to_bytes(2, "big")
+    data = header + bytes([crc(header, 8, 0x07) ^ (damaged == "crc8")]) + subframe.bytes()
+    return data + (crc(data, 16, 0x8005) ^ (damaged == "crc16")).to_bytes(2, "big")
 
 
 def constant(value, bps=16):
@@ -71,6 +73,33 @@ def predictor(order, block, lpc=False, bps=16, value=10):
     return bits
 
 
+def rice(value, param, block=16, wide=False):
+    """Fixed order 0, every residual `value`, Rice coded with `param`
+    (five-bit parameters when wide)."""
+    bits = Bits().add(8 << 1, 8).add(wide, 2).add(0, 4).add(param, 5 if wide else 4)
+    folded = 2 * value if value >= 0 else -2 * value - 1
+    for _ in range(block):
+        bits.bits += "0" * (folded >> param) + "1"
+        if param:
+            bits.add(folded, param)
+    return bits
+
+
+def escaped(value, width, block=16):
+    """Fixed order 0, the residual written out plainly in `width` bits."""
+    bits = Bits().add(8 << 1, 8).add(0, 2).add(0, 4).add(15, 4).add(width, 5)
+    for _ in range(block):
+        bits.add(value, width)
+    return bits
+
+
+def wasted(value, shift, bps=16):
+    """A constant subframe whose low `shift` bits the encoder dropped."""
+    bits = Bits().add(1, 8)
+    bits.bits += "0" * (shift - 1) + "1"
+    return bits.add(value, bps - shift)
+
+
 def main():
     stream = b"fLaC" + metadata(0, info(), True)
     cases = [
@@ -88,6 +117,15 @@ def main():
          + frame(16, predictor(2, 16, bps=32, value=2147483647)), 8388607, 16, "ok"),
         ("large-frame-count", b"fLaC" + metadata(0, info(frames=0x80000000), True)
          + frame(16, constant(1)), 256, 16, "ok"),
+        # a run of zeros longer than the bit reader holds, each code
+        ("rice-long-unary", stream + frame(16, rice(-300, 0)), -300 * 256, 16, "ok"),
+        ("rice-parameter-14", stream + frame(16, rice(12345, 14)), 12345 * 256, 16, "ok"),
+        ("rice-parameter-28", b"fLaC" + metadata(0, info(bps=32), True)
+         + frame(16, rice(-0x12345678, 28, wide=True)), -0x12345678 >> 8, 16, "ok"),
+        ("escaped-residual", stream + frame(16, escaped(-1234, 12)), -1234 * 256, 16, "ok"),
+        ("wasted-bits", stream + frame(16, wasted(-5, 3)), -40 * 256, 16, "ok"),
+        ("damaged-crc8", stream + frame(16, constant(7), "crc8"), 0, 0, "read-error"),
+        ("damaged-crc16", stream + frame(16, constant(7), "crc16"), 0, 0, "read-error"),
         ("missing-streaminfo", b"fLaC" + metadata(1, b"", True), 0, 0, "open-error"),
         ("streaminfo-not-first", b"fLaC" + metadata(1, b"", False)
          + metadata(0, info(), True), 0, 0, "open-error"),
@@ -104,25 +142,28 @@ def main():
          0, 0, "read-error"),
     ]
     with tempfile.TemporaryDirectory(prefix="pico-flac-test-") as tmp:
-        exe = str(Path(tmp) / "flac_test")
-        subprocess.run([
-            "cc", "-std=gnu11", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-pthread",
-            "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
-            "-I", str(ROOT / "kernel/include"), str(ROOT / "tools/flac_test.c"),
-            "-o", exe,
-        ], check=True)
+        exes = []
+        for name, flags in (("flac_test", []), ("flac_test_7", ["-DBUF_BYTES=7"])):
+            exes.append(str(Path(tmp) / name))
+            subprocess.run([
+                "cc", "-std=gnu11", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-pthread",
+                "-fsanitize=address,undefined", "-fno-sanitize-recover=all", *flags,
+                "-I", str(ROOT / "kernel/include"), str(ROOT / "tools/flac_test.c"),
+                "-o", exes[-1],
+            ], check=True)
         for name, data, value, frames, result in cases:
             path = Path(tmp) / (name + ".flac")
             path.write_bytes(data)
-            subprocess.run([exe, str(path), str(value), str(frames), result],
-                           check=True, timeout=10)
+            for exe in exes:
+                subprocess.run([exe, str(path), str(value), str(frames), result],
+                               check=True, timeout=10)
             print("PASS", name)
-        encoded = against_ffmpeg(exe, Path(tmp))
+        encoded = against_ffmpeg(exes, Path(tmp))
     print(f"flac: {len(cases)} fixtures passed with eight concurrent readers (ASan/UBSan); "
           f"{encoded} files from ffmpeg's encoder decoded to the same 24 bits")
 
 
-def against_ffmpeg(exe, tmp):
+def against_ffmpeg(exes, tmp):
     """Real encoder output -- the fixed predictors (level 0), LPC up to
     order 12, every stereo mode, 16 and 24 bits, CD to 192 kHz rates --
     checked sample for sample against ffmpeg's own decoder. Music-like:
@@ -141,14 +182,16 @@ def against_ffmpeg(exe, tmp):
         reference = subprocess.run(["ffmpeg", "-v", "error", "-i", str(src), "-f", "s32le",
                                     "-acodec", "pcm_s32le", "-"],
                                    check=True, capture_output=True).stdout
-        ours = tmp / "ours.raw"
-        head = subprocess.run([exe, "dump", str(src), str(ours)], check=True,
-                              capture_output=True, text=True, timeout=60).stdout.split()
-        assert head == [str(rate), "2", str(bits)], head
         want = [v >> 8 for v in memoryview(reference).cast("i")]
-        got = list(memoryview(ours.read_bytes()).cast("i"))
-        assert len(got) == len(want) and got == want, f"{rate} Hz {bits}-bit level {level} differs"
-        assert any(v & 0xff for v in got) == (bits == 24)
+        for exe in exes:
+            ours = tmp / "ours.raw"
+            head = subprocess.run([exe, "dump", str(src), str(ours)], check=True,
+                                  capture_output=True, text=True, timeout=60).stdout.split()
+            assert head == [str(rate), "2", str(bits)], head
+            got = list(memoryview(ours.read_bytes()).cast("i"))
+            assert len(got) == len(want) and got == want, \
+                f"{rate} Hz {bits}-bit level {level} differs ({Path(exe).name})"
+            assert any(v & 0xff for v in got) == (bits == 24)
         print(f"PASS ffmpeg {rate} Hz {bits}-bit level {level}, {len(got) // 2} frames")
         count += 1
     return count
