@@ -65,3 +65,8 @@ CONFIG_RTC_CLK_CAL_CYCLES=3000
 # The battery's estimate of the current counts the time the chip spends
 # in light sleep, which it learns from these.
 CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y
+
+# Nothing here uses FreeRTOS's software timers -- esp_timer does that
+# work -- but with the trace facility and event groups linked in, the
+# timer task is made anyway: its 2 KB stack and queue are internal RAM.
+CONFIG_FREERTOS_USE_TIMERS=n
