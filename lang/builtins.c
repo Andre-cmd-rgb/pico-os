@@ -402,13 +402,27 @@ static int bi_substr(struct pico_vm *vm, union pico_val *a, int argc)
 	return ret_str(vm, a, r);
 }
 
+/*
+ * Where needle (n bytes) first is in s at or after from, or -1. Text
+ * without the needle's first byte is skipped by memchr, which the C
+ * library does a word at a time; its last byte is checked before calling
+ * memcmp, so text full of the first byte does not cost a call a byte.
+ */
 static int32_t search(const struct pico_str *s, const char *needle, uint32_t n, uint32_t from)
 {
+	const char *p, *last;
+
 	if (n == 0)
 		return from <= s->len ? (int32_t)from : -1;
-	for (uint32_t i = from; n <= s->len && i <= s->len - n; i++)
-		if (s->data[i] == needle[0] && !memcmp(s->data + i, needle, n))
-			return i;
+	if (n > s->len || from > s->len - n)
+		return -1;
+	last = s->data + s->len - n;
+	for (p = s->data + from; p <= last; p++) {
+		if (*p != needle[0] && !(p = memchr(p, needle[0], last - p + 1)))
+			return -1;
+		if (p[n - 1] == needle[n - 1] && !memcmp(p + 1, needle + 1, n - 1))
+			return p - s->data;
+	}
 	return -1;
 }
 
@@ -657,10 +671,8 @@ static int affix(struct pico_vm *vm, union pico_val *a, bool start)
 static int bi_contains(struct pico_vm *vm, union pico_val *a, int argc)
 {
 	struct pico_str *s = STR(a[0]), *p = STR(a[1]);
-	bool found = p->len == 0;
+	bool found = search(s, p->data, p->len, 0) >= 0;
 
-	for (size_t i = 0; !found && p->len <= s->len && i + p->len <= s->len; i++)
-		found = !memcmp(s->data + i, p->data, p->len);
 	rel(vm, a[0]);
 	rel(vm, a[1]);
 	return ret_int(a, found);

@@ -1,0 +1,26 @@
+// find, contains, split and replace at the edges: empty strings, a needle
+// at the very end or longer than the text, starts past the end, repeats.
+int main() {
+    str[] texts = ["", "a", "aaaa", "abcabcab", "xyz", "hello world", "aXbXXcX", "ab" + chr(0) + "cd"];
+    str[] needles = ["", "a", "aa", "aaa", "ab", "abc", "cab", "b", "z", "xyz", "xyzw", "X", "XX", "d", chr(0) + "c", "world"];
+    for (int i = 0; i < len(texts); i++) {
+        str t = texts[i];
+        str line = "";
+        for (str n in needles) {
+            line += str(find(t, n)) + (contains(t, n) ? "+" : "-");
+            for (int from = -1; from <= len(t) + 1; from++) { line += "," + str(find(t, n, from)); }
+            line += " ";
+        }
+        println(i, " ", line);
+    }
+    println(split("a,b,,c,", ","), " ", split(",", ","), " ", split("", ","), " ", split("abc", "abc"));
+    println(split("one::two::::three", "::"), " ", split("x", "xx"), " ", split("aaa", "a"));
+    println(replace("aaaa", "aa", "b"), " ", replace("abcabc", "c", ""), " ", replace("", "a", "b"),
+            " ", replace("xyz", "xyzw", "q"), " ", replace("aXbXXcX", "X", "--"));
+    str long = "";
+    for (int i = 0; i < 300; i++) { long += "ab"; }
+    long += "needle";
+    println(find(long, "needle"), " ", find(long, "ab", 599), " ", find(long, "ba", 598), " ",
+            find(long, "e", 601), " ", contains(long, "eedl"), " ", contains(long, "needles"));
+    return 0;
+}
