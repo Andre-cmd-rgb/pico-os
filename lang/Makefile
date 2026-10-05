@@ -18,7 +18,7 @@ B   := build/host
 A   := build/asan
 OBJ := $(SRC:%.c=$(B)/%.o)
 AOBJ := $(SRC:%.c=$(A)/%.o)
-ASAN := -fsanitize=address,undefined -fno-omit-frame-pointer -DAL_NO_POOL
+ASAN := -fsanitize=address,undefined -fno-omit-frame-pointer -DPICO_NO_POOL
 
 .PHONY: all test asan bench clean
 all: $(B)/pico $(B)/picoc
