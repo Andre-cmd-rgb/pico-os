@@ -41,6 +41,10 @@ CONFIG_RMT_TX_ISR_HANDLER_IN_IRAM=n
 CONFIG_RMT_RX_ISR_HANDLER_IN_IRAM=n
 CONFIG_GPTIMER_ISR_HANDLER_IN_IRAM=n
 CONFIG_LIBC_LOCKS_PLACE_IN_IRAM=n
+# Nor does anything call the ring buffer's ISR functions from an IRAM
+# interrupt: the UART's and the USB console's handlers that use them are
+# not in IRAM themselves. 2.7 KB.
+CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH=y
 
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
