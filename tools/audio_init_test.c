@@ -148,7 +148,7 @@ int main(void)
 #define CONFIG_PT_AUDIO_MIC_ALC 1
 #define CONFIG_PT_AUDIO_MIC_ALC_MAX_DB 18
 #define CONFIG_PT_AUDIO_JACK_DETECT 2
-#define MALLOC_CAP_INTERNAL 1
+#define MALLOC_CAP_SPIRAM 2
 #define I2S_NUM_0 0
 #define I2S_ROLE_MASTER 0
 #define I2S_CHANNEL_DEFAULT_CONFIG(a, b) ((i2s_chan_config_t){0})
@@ -178,9 +178,10 @@ static enum audio_out out_wanted;
 static i2s_std_config_t std_config(void) { return (i2s_std_config_t){0}; }
 static void *xSemaphoreCreateMutex(void) { return fails() ? NULL : allocate(1); }
 static void vSemaphoreDelete(void *p) { release(p); }
+static int kmem_caps(void) { return MALLOC_CAP_SPIRAM; }
 static void *heap_caps_malloc(size_t n, int caps)
 {
-	assert(caps == MALLOC_CAP_INTERNAL);
+	assert(caps == MALLOC_CAP_SPIRAM);
 	return fails() ? NULL : allocate(n);
 }
 static void heap_caps_free(void *p) { release(p); }
@@ -228,8 +229,8 @@ static void jack_volume(int percent) { assert(percent == jack_percent); }
 static void xTaskNotifyGive(void *task) { assert(ready && task == mixer && task_created); }
 #endif
 static void mixer_task(void *arg) { (void)arg; }
-static int xTaskCreatePinnedToCore(void (*fn)(void *), const char *name, int stack, void *arg,
-				 int priority, void **out, int core)
+static int ktask_create(void (*fn)(void *), const char *name, int stack, void *arg,
+			int priority, void **out, int core)
 {
 	assert(fn == mixer_task && !strcmp(name, "kaudio") && stack == 3072 && !arg);
 	assert(priority == 18 && core == 0);

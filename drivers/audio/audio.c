@@ -695,8 +695,14 @@ int audio_init(void)
 		return -ENOMEM;
 	/* All resources exist before the task starts, so an allocation
 	 * failure cannot leave writers waiting on a mixer that has exited. */
-	mixer_acc = heap_caps_malloc(BLOCK * 2 * sizeof(*mixer_acc), MALLOC_CAP_INTERNAL);
-	mixer_wire = heap_caps_malloc(BLOCK * 2 * sizeof(*mixer_wire), MALLOC_CAP_INTERNAL);
+	/*
+	 * In PSRAM, with the streams it reads and the code it runs: the I2S
+	 * driver copies a block into its own DMA buffers, so nothing here
+	 * has to be internal, and the DMA's four blocks queued cover far
+	 * more than any wait for the cache.
+	 */
+	mixer_acc = heap_caps_malloc(BLOCK * 2 * sizeof(*mixer_acc), kmem_caps());
+	mixer_wire = heap_caps_malloc(BLOCK * 2 * sizeof(*mixer_wire), kmem_caps());
 	if (!mixer_acc || !mixer_wire) {
 		ret = -ENOMEM;
 		goto fail;
@@ -741,7 +747,7 @@ int audio_init(void)
 	jack_init();
 	jack_volume(jack_percent);
 #endif
-	if (xTaskCreatePinnedToCore(mixer_task, "kaudio", 3072, NULL, 18, &mixer, 0) != pdPASS) {
+	if (ktask_create(mixer_task, "kaudio", 3072, NULL, 18, &mixer, 0) != pdPASS) {
 		ret = -ENOMEM;
 		goto fail;
 	}

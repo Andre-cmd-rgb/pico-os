@@ -956,8 +956,9 @@ uint32_t kmem_caps(void)
  * The kernel's tasks have their stacks in PSRAM too, now that their flash
  * calls and their sleeping go through internal.c as a process's do: some
  * 50 KB of internal RAM that sat in stacks which mostly wait. What keeps
- * an internal stack is kflash itself and what cannot wait for the cache,
- * the audio mixer among them.
+ * an internal stack is kflash itself, and the USB host's tasks. (The
+ * audio mixer did, to never wait for the cache; but its code and the
+ * rings it mixes are in PSRAM anyway, and the DMA holds 15 ms queued.)
  */
 BaseType_t ktask_create(TaskFunction_t fn, const char *name, uint32_t stack, void *arg,
 			UBaseType_t priority, TaskHandle_t *task, BaseType_t core)
