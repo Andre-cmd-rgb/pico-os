@@ -33,6 +33,8 @@ struct codec_ops {
 	const char *name;
 	/* Reads interleaved frames: how many, 0 at the end, -errno. */
 	ssize_t	(*read)(struct codec *c, int32_t *pcm, size_t frames);
+	/* Moves to a frame: where reading starts now, or -errno. May be NULL. */
+	int64_t	(*seek)(struct codec *c, uint64_t frame);
 	void	(*close)(struct codec *c);
 };
 
@@ -57,6 +59,15 @@ int	codec_open_raw(int fd, int rate, struct codec **out);
 
 ssize_t	codec_read(struct codec *c, int32_t *pcm, size_t frames);
 void	codec_close(struct codec *c);
+
+/*
+ * Moves to `frame` (one sample of every channel; a frame past the end
+ * means the end) and returns the frame reading starts at now: exactly
+ * that one for WAV and FLAC, and for MP3 where the file's own table of
+ * contents, or failing that its bitrate, puts it -- MP3 frames carry no
+ * numbers. -ENOTSUP for raw samples.
+ */
+int64_t	codec_seek(struct codec *c, uint64_t frame);
 const char *codec_name(const struct codec *c);
 
 /*

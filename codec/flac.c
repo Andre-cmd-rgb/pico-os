@@ -194,6 +194,8 @@ struct flac {
 	int		 channels;	/* in the file; the caller sees at most 2 */
 	int		 block;		/* samples in the block just decoded */
 	int		 taken;		/* how many of them the caller has */
+	uint64_t	 first;		/* the stream's sample that block starts at */
+	off_t		 audio, end;	/* where the frames start, and the file ends */
 	bool		 broken;
 	int32_t		*ch[MAX_CHANNELS];
 };
@@ -453,19 +455,30 @@ static bool read_subframe(struct flac *f, int32_t *s, int block, int bps)
 	return !f->b.eof;
 }
 
-/* The frame number, coded the way UTF-8 codes a character. */
-static bool skip_frame_number(struct bits *b)
+/*
+ * The frame's number in a stream of fixed-size blocks, or its first
+ * sample's in one of varying blocks: coded the way UTF-8 codes a
+ * character, in up to seven bytes (a sample number has 36 bits).
+ */
+static bool frame_number(struct bits *b, uint64_t *out)
 {
 	uint32_t first = get(b, 8);
-	int extra = 0;
+	int bytes = 0;
+	uint64_t v;
 
-	while (extra < 6 && (first & (0x80 >> extra)))
-		extra++;
-	if (extra == 1)
+	while (bytes < 8 && (first & (0x80 >> bytes)))
+		bytes++;
+	if (bytes == 1 || bytes == 8)
 		return false;			/* a continuation byte cannot start one */
-	for (int i = 1; i < extra; i++)
-		if ((get(b, 8) & 0xc0) != 0x80)
+	v = bytes ? first & (0xff >> (bytes + 1)) : first;
+	for (int i = 1; i < bytes; i++) {
+		uint32_t next = get(b, 8);
+
+		if ((next & 0xc0) != 0x80)
 			return false;
+		v = v << 6 | (next & 0x3f);
+	}
+	*out = v;
 	return true;
 }
 
@@ -473,6 +486,8 @@ static bool decode_frame(struct flac *f)
 {
 	struct bits *b = &f->b;
 	int block_code, rate_sel, channel_mode, bps_sel, channels, block, bps, rate;
+	bool varying;
+	uint64_t number;
 	uint8_t want8;
 	uint16_t want16;
 
@@ -482,14 +497,14 @@ static bool decode_frame(struct flac *f)
 	if (get(b, 14) != 0x3ffe || b->eof)
 		return false;			/* frame sync */
 	get(b, 1);				/* reserved */
-	get(b, 1);				/* fixed or variable block size */
+	varying = get(b, 1);			/* fixed or variable block size */
 	block_code = get(b, 4);
 	rate_sel = get(b, 4);
 	channel_mode = get(b, 4);
 	bps_sel = get(b, 3);
 	if (get(b, 1))
 		return false;			/* reserved bit */
-	if (!skip_frame_number(b))
+	if (!frame_number(b, &number))
 		return false;
 
 	if (block_code == 1)
@@ -575,6 +590,8 @@ static bool decode_frame(struct flac *f)
 	}
 	f->block = block;
 	f->taken = 0;
+	/* every block but the last is the stream's one size when it is fixed */
+	f->first = varying ? number : number * (uint64_t)f->max_block;
 	return true;
 }
 
@@ -620,6 +637,95 @@ static ssize_t flac_read(struct codec *c, int32_t *pcm, size_t frames)
 	return done;
 }
 
+/* ------------------------------------------------------------ seeking */
+
+#define SCAN_BYTES	(256 * 1024)	/* farther than any frame is long */
+#define NEAR_SECONDS	2		/* closer than this, decoding on is quicker */
+
+/*
+ * The first frame that starts at or after byte `from`, decoded: its
+ * samples are ready to hand over and f->first says where it lies. A
+ * frame is only believed once both its check sums agree, so the sync
+ * code turning up by chance inside a frame's own bytes is passed over.
+ */
+static bool frame_from(struct flac *f, off_t from)
+{
+	struct bits *b = &f->b;
+	int prev = -1;
+
+	if (!seek_to(b, from))
+		return false;
+	for (off_t at = from; at < from + SCAN_BYTES; at++) {
+		int byte = next_byte(b);
+
+		if (byte < 0)
+			return false;
+		if (prev == 0xff && (byte & 0xfe) == 0xf8) {
+			if (seek_to(b, at - 1) && decode_frame(f))
+				return true;
+			if (!seek_to(b, at + 1))	/* on from the byte after it */
+				return false;
+			byte = -1;
+		}
+		prev = byte;
+	}
+	return false;
+}
+
+/*
+ * Interpolation between what is known before and after the sample: a
+ * guess at its byte, the frame found from there, and the range shrinks
+ * to whichever side the frame fell. Close enough, it decodes forward to
+ * the block holding the sample and hands out from that sample on.
+ */
+static int64_t flac_seek(struct codec *c, uint64_t target)
+{
+	struct flac *f = (struct flac *)c;
+	off_t lo = f->audio, hi = f->end;
+	uint64_t lo_s = 0, hi_s = c->frames;
+	uint64_t near = (uint64_t)c->rate * NEAR_SECONDS;
+	bool found;
+
+	f->broken = false;
+	if (c->frames && target >= c->frames) {
+		f->b.eof = true;		/* the end: nothing more to read */
+		f->taken = f->block;
+		return c->frames;
+	}
+	for (int tries = 0; tries < 32 && lo < hi; tries++) {
+		off_t guess = lo + (hi - lo) / 2;
+
+		if (hi_s > lo_s) {
+			double bytes = (double)(hi - lo) / (double)(hi_s - lo_s);
+
+			/* a block early, so the frame found is the one holding it */
+			guess = lo + (off_t)(bytes * ((double)(target - lo_s) - f->max_block));
+			if (guess < lo)
+				guess = lo;
+			if (guess >= hi)
+				guess = hi - 1;
+		}
+		found = frame_from(f, guess);
+		if (!found || f->first > target) {
+			hi = guess;			/* it starts before here */
+			if (found && f->first < hi_s)
+				hi_s = f->first;
+			continue;
+		}
+		if (target - f->first >= near) {
+			lo = guess + 1;
+			lo_s = f->first;
+			continue;
+		}
+		while (target >= f->first + (uint64_t)f->block)
+			if (!decode_frame(f))
+				return -EIO;
+		f->taken = target - f->first;
+		return target;
+	}
+	return -EIO;
+}
+
 static void flac_close(struct codec *c)
 {
 	struct flac *f = (struct flac *)c;
@@ -632,6 +738,7 @@ static void flac_close(struct codec *c)
 static const struct codec_ops flac_ops = {
 	.name = "FLAC",
 	.read = flac_read,
+	.seek = flac_seek,
 	.close = flac_close,
 };
 
@@ -658,6 +765,7 @@ int flac_open(int fd, const uint8_t *head, size_t n, struct codec **out)
 		return -EIO;
 	}
 
+	f->audio = 4;
 	while (!last) {
 		uint32_t type, len;
 
@@ -666,20 +774,23 @@ int flac_open(int fd, const uint8_t *head, size_t n, struct codec **out)
 		len = get(&f->b, 24);
 		if (f->b.eof)
 			goto bad;
+		f->audio += 4 + len;
 		if (type == 0) {		/* STREAMINFO */
 			if (have_info || len != sizeof(info))
 				goto bad;
 			for (size_t i = 0; i < sizeof(info); i++)
 				info[i] = get(&f->b, 8);
-			len -= sizeof(info);
 			have_info = true;
-		} else if (!have_info)
+		} else if (!have_info) {
 			goto bad;		/* STREAMINFO must be the first block */
-		for (uint32_t i = 0; i < len; i++)	/* skip the rest */
-			get(&f->b, 8);
-		if (f->b.eof)
+		}
+		/* past the rest: a cover can be half a megabyte */
+		if (!seek_to(&f->b, f->audio))
 			goto bad;
 	}
+	f->end = pt_lseek(fd, 0, SEEK_END);
+	if (f->end < f->audio || !seek_to(&f->b, f->audio))
+		goto bad;
 
 	f->max_block = info[2] << 8 | info[3];
 	f->base.rate = info[10] << 12 | info[11] << 4 | info[12] >> 4;

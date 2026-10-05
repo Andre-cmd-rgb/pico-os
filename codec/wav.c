@@ -23,6 +23,8 @@ struct wav {
 	int		width;		/* bytes a sample */
 	bool		is_float;
 	uint32_t	left;		/* bytes of samples still to come */
+	uint32_t	size;		/* bytes of samples in all */
+	off_t		start;		/* where they begin in the file */
 };
 
 static uint32_t le32(const uint8_t *p)
@@ -106,6 +108,22 @@ static ssize_t wav_read(struct codec *c, int32_t *pcm, size_t frames)
 	return n / w->bytes_per_frame;
 }
 
+static int64_t wav_seek(struct codec *c, uint64_t frame)
+{
+	struct wav *w = (struct wav *)c;
+	uint64_t at;
+
+	if (w->size == UINT32_MAX)
+		return -ENOTSUP;		/* a stream with no length */
+	if (frame > c->frames)
+		frame = c->frames;
+	at = frame * w->bytes_per_frame;
+	if (pt_lseek(c->fd, w->start + (off_t)at, SEEK_SET) < 0)
+		return -EIO;
+	w->left = w->size - at;
+	return frame;
+}
+
 static void wav_close(struct codec *c)
 {
 	pt_free(c);
@@ -114,6 +132,7 @@ static void wav_close(struct codec *c)
 static const struct codec_ops wav_ops = {
 	.name = "WAV",
 	.read = wav_read,
+	.seek = wav_seek,
 	.close = wav_close,
 };
 
@@ -128,7 +147,7 @@ int wav_open(int fd, const uint8_t *head, size_t n, struct codec **out)
 	w = pt_malloc(sizeof(*w));
 	if (!w)
 		return -ENOMEM;
-	*w = (struct wav){ .base = { .ops = &wav_ops, .fd = fd }, .left = UINT32_MAX };
+	*w = (struct wav){ .base = { .ops = &wav_ops, .fd = fd }, .left = UINT32_MAX, .size = UINT32_MAX };
 	if (pt_lseek(fd, 12, SEEK_SET) < 0)
 		goto bad;
 
@@ -162,7 +181,10 @@ int wav_open(int fd, const uint8_t *head, size_t n, struct codec **out)
 		} else if (!memcmp(chunk, "data", 4)) {
 			if (!w->bytes_per_frame)
 				goto bad;	/* samples before their description */
-			w->left = len;
+			w->left = w->size = len;
+			w->start = pt_lseek(fd, 0, SEEK_CUR);
+			if (w->start < 0)
+				goto bad;
 			w->base.frames = len / w->bytes_per_frame;
 			*out = &w->base;
 			return 0;

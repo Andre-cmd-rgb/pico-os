@@ -82,6 +82,11 @@ ssize_t codec_read(struct codec *c, int32_t *pcm, size_t frames)
 	return c->ops->read(c, pcm, frames);
 }
 
+int64_t codec_seek(struct codec *c, uint64_t frame)
+{
+	return c->ops->seek ? c->ops->seek(c, frame) : -ENOTSUP;
+}
+
 void codec_close(struct codec *c)
 {
 	c->ops->close(c);
