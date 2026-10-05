@@ -1083,6 +1083,11 @@ bool audio_mic_alc(void)
 	return alc_on;
 }
 
+static inline int32_t over(int32_t v)
+{
+	return v > MIX_OVER ? MIX_OVER : v < -MIX_OVER ? -MIX_OVER : v;
+}
+
 /*
  * Samples into the caller's ring, waiting while it is full: 16-bit ones
  * (`wide` false) are taken to 24, and 24-bit ones kept to MIX_OVER, so
@@ -1111,6 +1116,7 @@ static ssize_t put(const void *pcm, size_t frames, int channels, bool wide)
 		size_t head = __atomic_load_n(&s->head, __ATOMIC_RELAXED);
 		size_t room = s->size - (head - __atomic_load_n(&s->tail, __ATOMIC_ACQUIRE));
 		size_t n = frames - done < room ? frames - done : room;
+		size_t at, last;
 
 		if (!n) {
 			if (proc && pt_interrupted())
@@ -1119,15 +1125,21 @@ static ssize_t put(const void *pcm, size_t frames, int channels, bool wide)
 			xSemaphoreTake(s->space, pdMS_TO_TICKS(50));
 			continue;
 		}
-		for (size_t k = 0; k < n; k++, done++) {
-			int32_t *f = &s->ring[(head + k) % s->size * 2];
+		/* the ring's place counted, not divided out, frame by frame;
+		 * a 16-bit sample taken to 24 cannot reach MIX_OVER */
+		at = head % s->size;
+		for (last = done + n; done < last; done++) {
+			int32_t *f = &s->ring[2 * at];
 
-			for (int c = 0; c < 2; c++) {
-				size_t at = done * channels + (c ? channels - 1 : 0);
-				int32_t v = wide ? in[at] : narrow[at] * 256;
-
-				f[c] = v > MIX_OVER ? MIX_OVER : v < -MIX_OVER ? -MIX_OVER : v;
+			if (wide) {
+				f[0] = over(in[done * channels]);
+				f[1] = over(in[done * channels + channels - 1]);
+			} else {
+				f[0] = narrow[done * channels] * 256;
+				f[1] = narrow[done * channels + channels - 1] * 256;
 			}
+			if (++at == s->size)
+				at = 0;
 		}
 		__atomic_store_n(&s->head, head + n, __ATOMIC_RELEASE);
 		xTaskNotifyGive(mixer);
