@@ -733,6 +733,14 @@ the PC against a stub of the SDK and inject the failures a board rarely
 shows (an allocation, an I2C write, a panel command), under the sanitizers:
 `tools/*_test.c`, each run by its `.py`.
 
+`tools/perfbench.py` measures the decoders without a board: it builds
+the real FLAC, MP3, WAV and JPEG decoders and `play`'s 2:1 filter for
+the S3 (`tools/perfbench/`) and runs them in QEMU with `-icount`, whose
+cycle count is the same on every run. It is not the board's time --
+QEMU has no caches -- but two versions of the code compare exactly, and
+each result carries a CRC-32 of what was decoded, which a change that
+only makes things faster must leave alone.
+
 `tools/video_test.py PORT CLIP` plays a clip on the board and prints the
 frames dropped; `tools/video_lifecycle_test.py` and `tools/nes_device_test.py`
 kill a clip and a game in every way there is and check the terminal and the
