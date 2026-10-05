@@ -783,6 +783,21 @@ PT_COMPLETE(video, ": -v -i <file:.ptv>\n*: <file:.ptv>\n")
  * `listed`: it was picked from the list, which comes back after it -- when
  * it ends or Esc is pressed, not for q -- and *back says which it was.
  */
+/*
+ * The CPU as fast as it goes while frames are decoded, and back to the
+ * policy while the clip is paused or behind another terminal, when only
+ * its sound goes on: the flag the cleanup reads kept in step.
+ */
+static void video_boost(struct video_cleanup *c, bool on)
+{
+	xSemaphoreTake(c->guard, portMAX_DELAY);
+	if (*c->boosted != on) {
+		cpufreq_boost(on);
+		*c->boosted = on;
+	}
+	xSemaphoreGive(c->guard);
+}
+
 static int play_clip(const char *path, bool index_only, bool verbose, bool listed, bool *back)
 {
 	struct canvas page[2] = { { 0 }, { 0 } }, slice0 = { 0 }, *shown = &page[0];
@@ -920,13 +935,11 @@ static int play_clip(const char *path, bool index_only, bool verbose, bool liste
 			goto done;
 		}
 	}
-	/* As fast as the policy lets it, all the time (cpufreq_boost()):
-	 * nothing here is idle long enough for the governor to be right
-	 * about it. Under powersave that is 80 MHz, and frames are dropped. */
-	xSemaphoreTake(cleanup.guard, portMAX_DELAY);
-	cpufreq_boost(true);
-	boosted = true;
-	xSemaphoreGive(cleanup.guard);
+	/* As fast as the policy lets it while frames are decoded
+	 * (cpufreq_boost()): nothing here is idle long enough for the
+	 * governor to be right about it. Under powersave that is 80 MHz,
+	 * and frames are dropped. */
+	video_boost(&cleanup, true);
 
 	vt_hold_screen(true);
 	blit.vt = vt_screen_mine();
@@ -1013,6 +1026,8 @@ static int play_clip(const char *path, bool index_only, bool verbose, bool liste
 			break;
 		f = &slots[i % ahead];
 		hidden = !vt_screen_front();
+		if (boosted == hidden)
+			video_boost(&cleanup, !hidden);
 		/* not ready before half its sound is gone: let it go */
 		late = !step && esp_timer_get_time() + decode_guess > f->play_at + frame_us / 2;
 		/*
@@ -1116,6 +1131,7 @@ static int play_clip(const char *path, bool index_only, bool verbose, bool liste
 				audio_discard();	/* the frames ahead go in again after */
 			if (key == ' ') {		/* paused until the next key */
 				power_keep_screen(false);	/* it may dim while paused */
+				video_boost(&cleanup, false);
 				pause_bar(&clip, i);
 				while ((key = pt_readkey_timeout(PT_STDIN, 200)) == 's' ||
 				       key == PT_KEY_NONE) {
@@ -1127,6 +1143,7 @@ static int play_clip(const char *path, bool index_only, bool verbose, bool liste
 						pause_bar(&clip, i);
 					}
 				}
+				video_boost(&cleanup, true);
 				power_keep_screen(true);
 				repaint(shown);		/* the bar goes */
 				if (key == 'q' || key == PT_KEY_ESC || key == PT_CTRL('c') ||
