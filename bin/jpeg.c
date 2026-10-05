@@ -920,7 +920,8 @@ static void build_rgb(struct jpeg *j)
  * The common case, and the one video is: 4:2:0 at full size. Each chroma
  * sample sets where in the tables its four pixels look, and each pixel is
  * then its luma and three loads, and goes out as a halfword: packing two
- * into a word took more instructions than the second store.
+ * into a word took more instructions than the second store. Only the
+ * first `rows` lines are made, the ones that will be delivered.
  *
  * The four are also the cells of a 2x2 ordered dither. RGB565 keeps five
  * bits of red and blue and six of green, and cutting the rest off makes
@@ -942,13 +943,13 @@ static void build_rgb(struct jpeg *j)
 #define DOT(i)		(r[i] | g[i] | b[i])
 #define DITHER(y, o)	DOT((y) + (o))
 
-static NOINLINE void put_420(const struct jpeg *j, uint8_t *dst, size_t stride)
+static NOINLINE void put_420(const struct jpeg *j, int rows, uint8_t *dst, size_t stride)
 {
 	const struct jpeg_chroma *ch = j->chroma;
 	const uint16_t *tg = j->rgb[1] + 256;
 	const uint8_t *y = j->y, *cb = j->cb, *cr = j->cr;
 
-	for (int cy = 0; cy < 8; cy++, y += 32, cb += 8, cr += 8, dst += 2 * stride) {
+	for (int cy = 0; 2 * cy < rows; cy++, y += 32, cb += 8, cr += 8, dst += 2 * stride) {
 		uint16_t *d0 = (uint16_t *)dst, *d1 = (uint16_t *)(dst + stride);
 
 		for (int cx = 0; cx < 8; cx++) {
@@ -968,14 +969,15 @@ static NOINLINE void put_420(const struct jpeg *j, uint8_t *dst, size_t stride)
 /*
  * Anything else: other samplings, greyscale, and the smaller scales. Every
  * plane is already at the size it is needed at (see set_scale()), so a
- * pixel is one luma sample and the chroma sample that covers it.
+ * pixel is one luma sample and the chroma sample that covers it. Like
+ * put_420(), the first `rows` lines of the MCU, which is `mw` wide.
  */
-static void put_any(const struct jpeg *j, int mw, int mh, uint8_t *dst, size_t stride)
+static void put_any(const struct jpeg *j, int mw, int rows, uint8_t *dst, size_t stride)
 {
 	const uint16_t *tr = j->rgb[0] + 256, *tg = j->rgb[1] + 256, *tb = j->rgb[2] + 256;
 	const struct jpeg_comp *c = &j->comp[1];
 
-	for (int oy = 0; oy < mh; oy++) {
+	for (int oy = 0; oy < rows; oy++) {
 		const uint8_t *lum = j->y + oy * mw;
 		uint16_t *d = (uint16_t *)(dst + oy * stride);
 
@@ -1052,7 +1054,13 @@ static void set_scale(struct jpeg *j, int scale)
 	}
 }
 
-static void decode_mcu(struct jpeg *j)
+/*
+ * One MCU, of which the first `rows` lines are wanted. A block that lies
+ * wholly below them -- the bottom half of the last row of a 4:2:0 clip
+ * slice 120 lines high -- has to be decoded to get to the next, but its
+ * samples are never seen, so it is not transformed.
+ */
+static void decode_mcu(struct jpeg *j, int rows)
 {
 	for (int i = 0; i < j->ncomp; i++) {
 		struct jpeg_comp *c = &j->comp[i];
@@ -1060,11 +1068,15 @@ static void decode_mcu(struct jpeg *j)
 		int bh = 8 >> c->ry;
 
 		for (int by = 0; by < c->v; by++) {
+			int seen = (by * bh) << c->uy < rows;
+
 			for (int bx = 0; bx < c->h; bx++) {
 				int last = decode_block(j, c);
 
-				idct_scaled(j->coef, last, plane + by * bh * c->bw + bx * (8 >> c->rx),
-					    c->bw, c->rx, c->ry);
+				if (seen)
+					idct_scaled(j->coef, last,
+						    plane + by * bh * c->bw + bx * (8 >> c->rx),
+						    c->bw, c->rx, c->ry);
 				clear_block(j->coef, last);
 			}
 		}
@@ -1288,7 +1300,7 @@ int jpeg_decode(struct jpeg *j, int scale, uint8_t *band, jpeg_band_fn fn, void 
 	build_rgb(j);
 	memset(j->coef, 0, sizeof(j->coef));	/* and kept so: clear_block() */
 	for (int my = 0; my < j->mcuy; my++) {
-		int y = my * mh, ret;
+		int y = my * mh, rows = sh - y < mh ? sh - y : mh, ret;
 
 		for (int mx = 0; mx < j->mcux; mx++) {
 			if (j->restart) {
@@ -1298,13 +1310,13 @@ int jpeg_decode(struct jpeg *j, int scale, uint8_t *band, jpeg_band_fn fn, void 
 				}
 				todo--;
 			}
-			decode_mcu(j);
+			decode_mcu(j, rows);
 			if (fast)
-				put_420(j, band + mx * mw * 2, stride);
+				put_420(j, rows, band + mx * mw * 2, stride);
 			else
-				put_any(j, mw, mh, band + mx * mw * 2, stride);
+				put_any(j, mw, rows, band + mx * mw * 2, stride);
 		}
-		if ((ret = fn(ctx, y, sh - y < mh ? sh - y : mh, band, stride)))
+		if ((ret = fn(ctx, y, rows, band, stride)))
 			return ret;
 	}
 	return j->eof ? -EINVAL : 0;		/* it ran out before the end */
