@@ -90,15 +90,25 @@ int write_all(int fd, const char *s, size_t n)
 	return 0;
 }
 
+/*
+ * zlib's CRC-32, four bits at a time: a sixteenth of the table a byte at
+ * a time would take, and a quarter of the steps a bit at a time does --
+ * play -n checks every sample it decodes with it.
+ */
 uint32_t crc32_of(uint32_t crc, const void *data, size_t n)
 {
+	static const uint32_t nibble[16] = {
+		0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac,
+		0x76dc4190, 0x6b6b51f4, 0x4db26158, 0x5005713c,
+		0xedb88320, 0xf00f9344, 0xd6d6a3e8, 0xcb61b38c,
+		0x9b64c2b0, 0x86d3d2d4, 0xa00ae278, 0xbdbdf21c,
+	};
 	const uint8_t *p = data;
 
 	crc = ~crc;
 	for (size_t i = 0; i < n; i++) {
-		crc ^= p[i];
-		for (int b = 0; b < 8; b++)
-			crc = crc & 1 ? (crc >> 1) ^ 0xedb88320u : crc >> 1;
+		crc = crc >> 4 ^ nibble[(crc ^ p[i]) & 15];
+		crc = crc >> 4 ^ nibble[(crc ^ p[i] >> 4) & 15];
 	}
 	return ~crc;
 }
