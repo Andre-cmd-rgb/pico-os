@@ -720,9 +720,12 @@ static void restart(struct jpeg *j)
 		o[3] = clamp8((int32_t)(t3 - t4) >> 5);				\
 	} while (0)
 
+/* A max and a min, which this core has instructions for: written as one
+ * test inside the other it compiled to five instructions, not two. */
 static inline uint8_t clamp8(int v)
 {
-	return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+	v = v > 0 ? v : 0;
+	return (uint8_t)(v < 255 ? v : 255);
 }
 
 /* The one sample a block with nothing but a DC is made of. */
