@@ -24,13 +24,18 @@
 #
 # PORT defaults to the first /dev/ttyUSB* or /dev/ttyACM* found.
 
+empty    :=
+space    := $(empty) $(empty)
 BOARD    ?= freenove-fnk0104b
 BUILD    ?= build/$(BOARD)
 IDF_PATH ?= $(HOME)/esp/esp-idf
 PORT     ?= $(firstword $(wildcard /dev/ttyUSB*) $(wildcard /dev/ttyACM*))
 EXPORT   := . $(IDF_PATH)/export.sh >/dev/null
+# APPS: applications kept outside this tree, each an ESP-IDF component
+# directory (absolute paths); see docs/HACKING.md.
 IDF      := $(EXPORT) && idf.py -B $(BUILD) -D SDKCONFIG=$(BUILD)/sdkconfig \
-	    -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/$(BOARD).defconfig"
+	    -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;boards/$(BOARD).defconfig" \
+	    $(if $(strip $(APPS)),-D "PT_EXTRA_APPS=$(subst $(space),;,$(strip $(APPS)))")
 
 .PHONY: all build defconfig menuconfig flash time term monitor clean distclean size font boards stale-config \
 	test hosttest hwtest progtest scripttest langtest push pull video stress need-port need-board

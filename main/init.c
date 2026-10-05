@@ -260,6 +260,7 @@ void app_main(void)
 	if (root && etc_init() > 0)
 		restart_now();
 	wifi_start_supplicant();	/* now that /etc/wifi can be read */
+	services_start();		/* the applications' own (PT_SERVICE) */
 	alarm_init();			/* and /etc/alarms */
 	idle_init();			/* and /etc/power */
 	netconsole_init();

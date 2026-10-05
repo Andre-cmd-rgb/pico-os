@@ -93,6 +93,22 @@ const struct pt_completion *completion_find(const char *prog)
 	return NULL;
 }
 
+static struct pt_service *services;
+
+void service_register(struct pt_service *s)
+{
+	s->next = services;
+	services = s;
+}
+
+void services_start(void)
+{
+	for (struct pt_service *s = services; s; s = s->next) {
+		klog("init: starting %s", s->name);
+		s->start();
+	}
+}
+
 void loader_register(struct pt_loader *loader)
 {
 	loader->next = loaders;

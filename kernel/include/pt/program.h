@@ -92,6 +92,31 @@ const struct pt_completion *completion_find(const char *prog);
 #define PT_COMPLETE(name_, spec_) PT_COMPLETE_NAMED(name_, #name_, spec_, NULL)
 
 /*
+ * Services: what an application keeps running in the background from boot
+ * (a connection it holds, say). init.c starts each once the filesystems,
+ * /etc and the Wi-Fi's saved networks are there; `start` returns at once,
+ * leaving whatever it started to run. An application built from outside
+ * this tree (make APPS=...) registers its own, as its programs do.
+ */
+struct pt_service {
+	const char		*name;
+	void			(*start)(void);
+	struct pt_service	*next;
+};
+
+void service_register(struct pt_service *s);
+void services_start(void);
+
+#define PT_SERVICE(ident_, start_)						\
+	static struct pt_service pt_svc_##ident_ = {				\
+		.name = #ident_, .start = start_,				\
+	};									\
+	__attribute__((constructor)) static void pt_svcreg_##ident_(void)	\
+	{									\
+		service_register(&pt_svc_##ident_);				\
+	}
+
+/*
  * Executable loaders. A loader claims files by their first bytes and runs
  * them inside the new process. v1 ships the script loader (#! and .sh);
  * a bytecode VM or native-code loader registers here the same way.

@@ -44,6 +44,7 @@ idf_component_register(
 		util.c
 		video.c
 		view.c
+	INCLUDE_DIRS .
 	REQUIRES kernel drivers codec emu
 	PRIV_REQUIRES esp_app_format esp_driver_gpio esp_hw_support esp_netif esp_system esp_timer heap lwip mbedtls esp_http_client esp-tls
 	WHOLE_ARCHIVE

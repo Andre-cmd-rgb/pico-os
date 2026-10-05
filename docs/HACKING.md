@@ -589,6 +589,29 @@ and the shell find it. Use `PT_PROGRAM_STACK(name, kb, help)` if it needs more
 than 8 KB of stack. Full-screen programs use `pt/keys.h`: `pt_tty_raw`,
 `pt_readkey`, `pt_tty_size`.
 
+### An application from outside the tree
+
+One kept elsewhere -- in another repository, say -- is an ESP-IDF
+component directory, built in with `make APPS="/abs/dir ..."` (the build
+directory remembers it; `make -C pico-os APPS=...` works too). It
+`REQUIRES kernel drivers bin` (bin's `util.h` and `json.h`), registers its
+programs with `PT_PROGRAM` and is listed `WHOLE_ARCHIVE` so the linker keeps
+them. Its own menuconfig options go in its `Kconfig.projbuild`. Something
+it runs in the background from boot registers as a service:
+
+```c
+static void hello_start(void)
+{
+	/* create its task and return */
+}
+PT_SERVICE(hello, hello_start)
+```
+
+`init.c` starts the services once the filesystems, `/etc` and Wi-Fi's saved
+networks are there. With applications from outside, the managed components
+they pull in are locked in the build directory, not in this tree's
+`dependencies.lock.*`.
+
 ## The terminal
 
 `drivers/tty/vt.c` understands:
