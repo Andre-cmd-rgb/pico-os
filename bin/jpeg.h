@@ -49,6 +49,15 @@ struct jpeg_comp {
 	int		rx, ry, ux, uy, bw;
 };
 
+/*
+ * What a chroma value adds to a pixel: as Cr, where in the red table to
+ * look and its half of green's offset; as Cb, the same for blue.
+ */
+struct jpeg_chroma {
+	const uint16_t	*red, *blue;
+	int16_t		gcr, gcb;
+};
+
 struct jpeg {
 	/* Where the bytes come from. `refill` is called when p reaches end,
 	 * and sets both again; it returns 0 at the end of the file. */
@@ -83,11 +92,9 @@ struct jpeg {
 	/* Red, green and blue from -256 to 511, clamped and already in their
 	 * places in an RGB565 pixel: a pixel is three loads and two ORs. */
 	uint16_t	rgb[3][768];
-	/* What each chroma value adds, worked out once: for red and blue
-	 * straight to where in those tables to look, for green its two
-	 * halves, Cb's and Cr's. */
-	const uint16_t	*red[256], *blue[256];
-	int16_t		gcb[256], gcr[256];
+	/* What each chroma value adds, worked out once (see struct
+	 * jpeg_chroma): one table, so that colour needs fewer registers. */
+	struct jpeg_chroma chroma[256];
 };
 
 /*

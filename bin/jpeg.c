@@ -44,6 +44,13 @@
 #define HOT
 #endif
 
+/*
+ * A function kept out of its caller, so that its loop has the registers
+ * to itself: inlined into jpeg_decode(), put_420() spilled its tables to
+ * the stack and reloaded them for every pair of chroma samples.
+ */
+#define NOINLINE __attribute__((noinline))
+
 #define M_SOF0		0xc0
 #define M_SOF1		0xc1
 #define M_SOF2		0xc2		/* progressive */
@@ -898,11 +905,11 @@ static void build_rgb(struct jpeg *j)
 		int rv, gv, bv;
 
 		CHROMA(128, i, rv, gv, bv);		/* Cr's part */
-		j->red[i] = j->rgb[0] + 256 + rv;
-		j->gcr[i] = (int16_t)gv;
+		j->chroma[i].red = j->rgb[0] + 256 + rv;
+		j->chroma[i].gcr = (int16_t)gv;
 		CHROMA(i, 128, rv, gv, bv);		/* Cb's */
-		j->blue[i] = j->rgb[2] + 256 + bv;
-		j->gcb[i] = (int16_t)gv;
+		j->chroma[i].blue = j->rgb[2] + 256 + bv;
+		j->chroma[i].gcb = (int16_t)gv;
 	}
 }
 
@@ -911,7 +918,8 @@ static void build_rgb(struct jpeg *j)
 /*
  * The common case, and the one video is: 4:2:0 at full size. Each chroma
  * sample sets where in the tables its four pixels look, and each pixel is
- * then its luma and three loads; two pixels go out as one word.
+ * then its luma and three loads, and goes out as a halfword: packing two
+ * into a word took more instructions than the second store.
  *
  * The four are also the cells of a 2x2 ordered dither. RGB565 keeps five
  * bits of red and blue and six of green, and cutting the rest off makes
@@ -933,21 +941,25 @@ static void build_rgb(struct jpeg *j)
 #define DOT(i)		(r[i] | g[i] | b[i])
 #define DITHER(y, o)	DOT((y) + (o))
 
-static void put_420(const struct jpeg *j, uint8_t *dst, size_t stride)
+static NOINLINE void put_420(const struct jpeg *j, uint8_t *dst, size_t stride)
 {
-	for (int cy = 0; cy < 8; cy++) {
-		const uint8_t *y0 = j->y + cy * 32, *y1 = y0 + 16;
-		const uint8_t *cb = j->cb + cy * 8, *cr = j->cr + cy * 8;
-		uint32_t *d0 = (uint32_t *)(dst + 2 * cy * stride);
-		uint32_t *d1 = (uint32_t *)(dst + (2 * cy + 1) * stride);
+	const struct jpeg_chroma *ch = j->chroma;
+	const uint16_t *tg = j->rgb[1] + 256;
+	const uint8_t *y = j->y, *cb = j->cb, *cr = j->cr;
 
-		for (int cx = 0; cx < 8; cx++, y0 += 2, y1 += 2) {
-			int u = cb[cx], v = cr[cx];
-			const uint16_t *r = j->red[v], *b = j->blue[u];
-			const uint16_t *g = j->rgb[1] + 256 + j->gcb[u] + j->gcr[v];
+	for (int cy = 0; cy < 8; cy++, y += 32, cb += 8, cr += 8, dst += 2 * stride) {
+		uint16_t *d0 = (uint16_t *)dst, *d1 = (uint16_t *)(dst + stride);
 
-			d0[cx] = (uint32_t)DITHER(y0[0], 1) | (uint32_t)DITHER(y0[1], 5) << 16;
-			d1[cx] = (uint32_t)DITHER(y1[0], 7) | (uint32_t)DITHER(y1[1], 3) << 16;
+		for (int cx = 0; cx < 8; cx++) {
+			const struct jpeg_chroma *u = &ch[cb[cx]], *v = &ch[cr[cx]];
+			const uint16_t *r = v->red, *b = u->blue;
+			const uint16_t *g = tg + u->gcb + v->gcr;
+			const uint8_t *l = y + 2 * cx;
+
+			d0[2 * cx] = DITHER(l[0], 1);
+			d0[2 * cx + 1] = DITHER(l[1], 5);
+			d1[2 * cx] = DITHER(l[16], 7);
+			d1[2 * cx + 1] = DITHER(l[17], 3);
 		}
 	}
 }
