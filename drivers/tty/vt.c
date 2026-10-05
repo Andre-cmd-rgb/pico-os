@@ -1131,7 +1131,7 @@ static void render_task(void *arg)
 	if (!pixels || !row) {
 		renderer_dispose(pixels, row);
 		klog("vt: no memory for the renderer");
-		vTaskDelete(NULL);
+		ktask_exit();
 		return;
 	}
 	for (;;) {
@@ -1759,7 +1759,9 @@ void vt_start_display(void)
 	xSemaphoreTake(lock, portMAX_DELAY);
 	mark_all();
 	xSemaphoreGive(lock);
-	if (xTaskCreatePinnedToCore(render_task, "kvt", 4096, NULL, 4, &renderer, 0) != pdPASS) {
+	/* its stack in PSRAM, as the kernel's tasks have: the pixels it
+	 * sends are in their own DMA buffer, never on the stack */
+	if (ktask_create(render_task, "kvt", 4096, NULL, 4, &renderer, 0) != pdPASS) {
 		renderer = NULL;
 		klog("vt: no memory for the renderer task");
 	}

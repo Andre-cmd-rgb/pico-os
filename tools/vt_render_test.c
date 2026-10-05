@@ -253,8 +253,8 @@ static uint8_t *lcd_alloc_buffer(size_t n)
 }
 static void *renderer_malloc(size_t n) { return row_given = row_fail ? NULL : malloc(n); }
 static void klog(const char *fmt, ...) { (void)fmt; }
-static void vTaskDelete(TaskHandle_t task)
-{ assert(!task); task_deleted++; longjmp(delete_point, 1); }
+static void ktask_exit(void)
+{ task_deleted++; longjmp(delete_point, 1); }
 
 #define malloc renderer_malloc
 #include "vt_render_under_test.h"
