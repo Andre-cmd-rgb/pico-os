@@ -254,11 +254,16 @@ static void index_read(struct library *l, const char *path)
 		return;
 	}
 	while ((line = lines_next(&in, &len))) {
-		char *f[FIELDS], *p = line;
+		char buf[PT_PATH_MAX + 6 * TAG_TEXT], *f[FIELDS], *p = buf;
 		struct song *s;
 
+		/* not a string: the line is copied out and ended */
 		if (len && line[len - 1] == '\n')
-			line[len - 1] = '\0';
+			len--;
+		if (len >= sizeof(buf))
+			continue;
+		memcpy(buf, line, len);
+		buf[len] = '\0';
 		for (int i = 0; i < FIELDS; i++)
 			f[i] = field(&p);
 		if (!*f[0] || !(s = new_song(l)))

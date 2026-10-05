@@ -5,8 +5,8 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-play = (ROOT / "bin/audio.c").read_text()
-half = play[play.index("#define HALF_TAPS"):play.index("/*\n * Everything that plays goes")]
+play = (ROOT / "bin/sink.c").read_text()
+half = play[play.index("#define HALF_TAPS"):play.index("int sink_open(")]
 
 with tempfile.TemporaryDirectory(prefix="pico-audio-test-") as tmp:
     exe = str(Path(tmp) / "audio_test")
