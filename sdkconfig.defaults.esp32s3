@@ -8,6 +8,11 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_SPI_FLASH_SUPPORT_MXIC_OPI_CHIP=n
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
+# ESP-IDF's own PSRAM test writes and reads back every eighth word of all
+# of it before the boot log starts, on every start and every wake from
+# suspend: a few hundred milliseconds that main/memtest.c's check, in 40
+# ms, makes up for.
+CONFIG_SPIRAM_MEMTEST=n
 
 # The program runs from PSRAM: its code and constants are copied out of
 # flash at boot, as Linux loads a program into RAM. Then a write to / no
