@@ -50,7 +50,11 @@ make BOARD=devkit-uno-shield build   # another, in its own build/<board>/
 
 `SDKCONFIG_DEFAULTS` is `sdkconfig.defaults` plus the board file, so
 `menuconfig` edits stay in that board's `sdkconfig` and never leak into
-another board. The board file names the chip (`CONFIG_IDF_TARGET`), and
+another board. `FRAGMENTS` adds files from `boards/fragments/` after the
+board file, as the kernel's config fragments do: `make
+BOARD=freenove-fnk0104b FRAGMENTS=ble defconfig` is the Freenove board
+with Bluetooth, which no board file turns on (CI builds it, so it keeps
+building). The board file names the chip (`CONFIG_IDF_TARGET`), and
 ESP-IDF adds that chip's own defaults after the common ones:
 `sdkconfig.defaults.esp32s3` (octal PSRAM, the S3's caches, the ULP core,
 XIP from PSRAM) or `sdkconfig.defaults.esp32p4`. Each chip keeps its own
@@ -393,6 +397,17 @@ an instruction or built-in this firmware lacks is refused). Anything
 missing or refused, and the source is compiled here instead. The index,
 the image list, what is installed and the sources are in `~/.config/pkg`.
 
+`drivers/net/ble.c` is Bluetooth LE, built only with `PT_BLE`
+(`boards/fragments/ble.config`): the controller and NimBLE's host are
+started when something asks (`ble on`, or `pad on`) and stopped again by
+`ble off`, which gives their internal RAM back; when they will not fit
+beside Wi-Fi, Wi-Fi is turned off for them. `ble_scan()` lists what is
+around, everything or only input devices, and keeps the list for a
+connect by number. Whatever uses the radio holds it (`ble_hold()`, a
+recursive lock) for as long as it works on it, so a `ble off` on another
+terminal waits for it. The gamepad, `drivers/input/blepad.c`, is the HID
+host on top; `ble_stop()` lets a connected pad go first.
+
 `drivers/net/modem.c` is a serial modem: an AT command reader and writer,
 SMS in text mode, and a PPP link over lwip's pppos for mobile data. While
 PPP has the port, AT commands return -EBUSY. The module is probed on a
@@ -571,6 +586,17 @@ and take paths relative to the working directory. The same set is exported
 as a function table, `pt_sys`, for loaded programs.
 
 ## Adding a command
+
+First, whether it belongs in the firmware at all. The system is what is
+needed to use, set up and repair the machine -- the shell, the standard
+commands, the editor, the network tools, `pkg`, `picoc` -- and what only
+C can do: drive the hardware, or be fast where pico cannot. Anything else
+is an application, and a new one goes to pico-os-packages, written in
+pico. The applications already in `bin/` are each an option under
+pico-os > Applications (`PT_APP_*` and `PT_NES`), and `bin/CMakeLists.txt`
+compiles their files only when it is on; a driver that only an
+application uses compiles to stubs with it, as `drivers/misc/alarm.c`
+does with the diary.
 
 Put it in `bin/`, or in a new file listed in `bin/CMakeLists.txt`:
 

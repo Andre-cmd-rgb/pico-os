@@ -86,6 +86,17 @@ def main():
         step("[ 2 -gt 3 ] && echo big || echo small", "small", reject="big")
         step("[ -d /tmp ] && [ -f /proc/version ] && echo both", "both")
 
+        # read: a line in one call from a file, never past it
+        step("printf 'one\\ntwo\\nthree\\n' > r.txt; { read a; cat; } < r.txt",
+             ["two", "three"], reject="one")
+        step("while read w; do echo got:$w; done < r.txt", ["got:one", "got:two", "got:three"])
+        step("x=$(seq -s, 1 100); echo $x > long.txt; read l < long.txt; "
+             "[ \"$l\" = \"$x\" ] && echo long-same", "long-same")
+        step("printf 'a\\\\\\nb c\\n' > bs.txt; read p q < bs.txt; echo \"[$p|$q]\"; "
+             "read -r p < bs.txt; echo \"[$p]\"", ["[ab|c]", "[a\\]"])
+        step("read last < /proc/version; echo ${last%% *}", "pico-os")
+        step("rm -f r.txt long.txt bs.txt; echo cleaned", "cleaned")
+
         # break / continue
         step("for i in 1 2 3 4 5; do [ $i -eq 3 ] && break; echo $i; done", ["1", "2"], reject="4")
         step("for i in 1 2 3; do [ $i -eq 2 ] && continue; echo $i; done", ["1", "3"], reject="2")

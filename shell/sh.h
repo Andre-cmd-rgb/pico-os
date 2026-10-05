@@ -16,6 +16,7 @@
 struct history {
 	char	*entry[SH_HISTORY];
 	int	 count;
+	char	*file;		/* ~/.config/sh_history, found once */
 };
 
 struct candidates {

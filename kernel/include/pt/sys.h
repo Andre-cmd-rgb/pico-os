@@ -142,6 +142,18 @@ char	*pt_strdup(const char *s);
 #define PT_TTY_SETSCROLL	0x5406	/* int *: 1 app owns scroll keys, 0 releases */
 #define PT_TTY_TRYSETRAW	0x5407	/* int *: SETRAW, -EAGAIN while input is busy */
 #define PT_PIPE_SETTIMEOUT 0x5410 /* int *: -1 blocks, 0 polls; -EAGAIN on expiry */
+/*
+ * struct pt_readline *: up to and with the next newline, in one call,
+ * from a file that can say where a line ends without reading past it;
+ * the bytes read, 0 at the end. -ENOTTY from a pipe or a terminal, which
+ * are read a byte at a time instead.
+ */
+#define PT_FILE_READLINE 0x5411
+
+struct pt_readline {
+	void	*buf;
+	size_t	 size;
+};
 
 struct pt_winsize {
 	uint16_t cols;

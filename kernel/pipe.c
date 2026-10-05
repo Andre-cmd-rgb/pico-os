@@ -4,6 +4,7 @@
  */
 #include <stdlib.h>
 
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/stream_buffer.h"
 
@@ -14,11 +15,36 @@
 
 struct pipe {
 	StreamBufferHandle_t	sb;
+	StaticStreamBuffer_t	*sb_head;	/* the stream buffer's own memory */
+	uint8_t			*sb_data;
 	SemaphoreHandle_t	rlock, wlock;
 	atomic_int		readers, writers;
 	atomic_int		ends;		/* open ends: the last one frees */
 	atomic_int		timeout_ms;	/* the reader can poll without blocking */
 };
+
+/*
+ * The buffer is in PSRAM, like a process's memory: only tasks touch it,
+ * never an interrupt. It is made by hand rather than with ESP-IDF's
+ * xStreamBufferCreateWithCaps(), whose delete (v6.1) passes the stream
+ * buffer to vSemaphoreDelete() and so frees its memory twice. One byte
+ * more than the size tells full from empty, as a dynamic one has.
+ */
+static void sb_create(struct pipe *p)
+{
+	p->sb_head = heap_caps_malloc(sizeof(*p->sb_head), kmem_caps());
+	p->sb_data = heap_caps_malloc(PIPE_SIZE + 1, kmem_caps());
+	if (p->sb_head && p->sb_data)
+		p->sb = xStreamBufferCreateStatic(PIPE_SIZE + 1, 1, p->sb_data, p->sb_head);
+}
+
+static void sb_delete(struct pipe *p)
+{
+	if (p->sb)
+		vStreamBufferDelete(p->sb);
+	heap_caps_free(p->sb_head);
+	heap_caps_free(p->sb_data);
+}
 
 /* One counter decides who frees: with separate reader and writer counts, two
  * ends closing at once on the two cores could both see zero and free twice. */
@@ -26,7 +52,7 @@ static void pipe_end_closed(struct pipe *p)
 {
 	if (atomic_fetch_sub(&p->ends, 1) != 1)
 		return;
-	vStreamBufferDelete(p->sb);
+	sb_delete(p);
 	vSemaphoreDelete(p->rlock);
 	vSemaphoreDelete(p->wlock);
 	free(p);
@@ -149,7 +175,7 @@ int pipe_create(struct pt_file **rd, struct pt_file **wr)
 
 	if (!p)
 		return -ENOMEM;
-	p->sb = xStreamBufferCreate(PIPE_SIZE, 1);
+	sb_create(p);
 	p->rlock = xSemaphoreCreateMutex();
 	p->wlock = xSemaphoreCreateMutex();
 	atomic_init(&p->readers, 1);
@@ -163,8 +189,7 @@ int pipe_create(struct pt_file **rd, struct pt_file **wr)
 
 	if (*rd)
 		free(*rd);
-	if (p->sb)
-		vStreamBufferDelete(p->sb);
+	sb_delete(p);
 	if (p->rlock)
 		vSemaphoreDelete(p->rlock);
 	if (p->wlock)

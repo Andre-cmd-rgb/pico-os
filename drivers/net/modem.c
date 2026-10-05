@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "driver/uart.h"
+#include "esp_attr.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
 
@@ -61,7 +62,7 @@ static volatile bool	 resetup, heard_start;	/* it restarted; one started up */
 static volatile int	 new_sms = -1;		/* where a message that came was put */
 static int		 reg = -1;		/* +CREG: the network, last heard */
 static bool		 latin1;		/* texts go as ISO 8859-1, not GSM */
-static char		 ussd[256];
+EXT_RAM_BSS_ATTR static char ussd[256];
 static SemaphoreHandle_t ussd_done;
 static int64_t		 last_call_us;
 static int64_t		 started_at[4];		/* its last restarts, for restarts_lately() */
@@ -86,7 +87,7 @@ static volatile bool	 check_sim;		/* a SIM was read: is it one for 2G? */
 static bool		 sim_no_2g;		/* its 2G part lacks what 2G needs */
 
 /* /etc/modem, kept by the driver: `modem apn`, `modem off` */
-static struct {
+EXT_RAM_BSS_ATTR static struct {
 	char	apn[64], user[32], pass[32];
 	bool	radio_off;
 	bool	no_sleep;		/* sleep mode cost the SIM once: never again */
@@ -783,7 +784,7 @@ static void reader_task(void *arg)
 	}
 	free(buf);
 	reader = NULL;
-	vTaskDelete(NULL);
+	ktask_exit();
 }
 
 bool modem_data_up(void)
@@ -1110,7 +1111,7 @@ int modem_data(bool on)
 		return -ENOMEM;
 	data_mode = true;
 	ppp_stop = false;
-	if (xTaskCreatePinnedToCore(reader_task, "kppp", 4096, NULL, 6, &reader, 0) != pdPASS) {
+	if (ktask_create(reader_task, "kppp", 4096, NULL, 6, &reader, 0) != pdPASS) {
 		pppapi_free(ppp);
 		ppp = NULL;
 		data_mode = false;
@@ -1173,7 +1174,7 @@ int modem_init(void)
 	}
 
 	/* 6 KB: reading a message that came is a command and a message's worth */
-	xTaskCreatePinnedToCore(probe_task, "kmodem", 6144, NULL, 3, NULL, 0);
+	ktask_create(probe_task, "kmodem", 6144, NULL, 3, NULL, 0);
 	return 0;
 }
 
@@ -1250,7 +1251,7 @@ static void setup(void)
 static void identify(void)
 {
 	static bool registered;
-	static char reply[REPLY_MAX];		/* on kmodem or a prober: one at a time */
+	EXT_RAM_BSS_ATTR static char reply[REPLY_MAX];	/* on kmodem or a prober: one at a time */
 
 	modem_at("ATE0", NULL, 0, 1000);		/* stop echoing our commands */
 	if (!modem_at("ATI", reply, sizeof(reply), 2000)) {

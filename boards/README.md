@@ -31,6 +31,20 @@ the board file is the newer of the two.
 | `waveshare-esp32-p4-wifi6` | Waveshare ESP32-P4-WIFI6: ESP32-P4, microSD, ES8311 audio, USB OTG, Wi-Fi through an ESP32-C6; no screen. Builds, not yet run |
 | `qemu` | No hardware: for `make test` |
 
+## Fragments
+
+`boards/fragments/` holds pieces of configuration that go on top of any
+board file, like the kernel's config fragments:
+
+```sh
+make BOARD=freenove-fnk0104b FRAGMENTS=ble defconfig   # with Bluetooth LE
+make BOARD=freenove-fnk0104b                           # then as usual
+```
+
+| Fragment | What it adds |
+|---|---|
+| `ble` | Bluetooth LE on a chip with its own radio (the ESP32-S3): `ble`, and `pad` for a gamepad. About 330 KB of the image; the radio only runs when asked |
+
 To add a board, copy the closest file, change the pins, and list it above.
 Each file names its chip (`CONFIG_IDF_TARGET`); the chip's own settings are
 in `sdkconfig.defaults.<chip>`.

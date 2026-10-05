@@ -22,8 +22,6 @@
 #include "jpeg.h"
 #include "util.h"
 
-#if CONFIG_PT_LCD
-
 #define PX_ALIGN	64		/* the largest data cache line */
 #define JPEG_READ	4096		/* a photo is read from the card this much at a time */
 #define MAX_W		480		/* the widest panel a column map is kept for */
@@ -477,5 +475,3 @@ int canvas_jpeg_mem(struct canvas *c, const void *data, size_t len)
 {
 	return jpeg_run(c, -1, data, len);
 }
-
-#endif /* CONFIG_PT_LCD */

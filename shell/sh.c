@@ -173,6 +173,8 @@ static void history_load(struct sh *sh)
 	ssize_t n;
 
 	history_path(path, sizeof(path));
+	if (*path)
+		sh->history.file = pt_strdup(path);
 	int fd = pt_open(path, O_RDONLY);
 	if (fd < 0)
 		return;
@@ -198,12 +200,22 @@ static void history_load(struct sh *sh)
 	}
 }
 
-static void history_append(const char *line)
+/*
+ * After the command has run, so that its output is not kept waiting on
+ * the card. The file's name is found once, at the start: finding it is a
+ * mkdir and a stat, every command, otherwise. Should its folder have gone
+ * meanwhile, it is found -- and made -- again.
+ */
+static void history_append(struct sh *sh, const char *line)
 {
 	char path[PT_PATH_MAX];
+	const char *file = sh->history.file;
+	int fd = file ? pt_open(file, O_WRONLY | O_CREAT | O_APPEND) : -ENOENT;
 
-	history_path(path, sizeof(path));
-	int fd = pt_open(path, O_WRONLY | O_CREAT | O_APPEND);
+	if (fd == -ENOENT) {
+		history_path(path, sizeof(path));
+		fd = *path ? pt_open(path, O_WRONLY | O_CREAT | O_APPEND) : -ENOENT;
+	}
 	if (fd < 0)
 		return;
 	pt_dprintf(fd, "%s\n", line);
@@ -303,11 +315,8 @@ static int interactive(struct sh *sh)
 		}
 		if (len == 0 && !text.len)
 			continue;
-		if (len > 0) {
+		if (len > 0)
 			history_add(&sh->history, line);
-			if (!line_has_secret(line))
-				history_append(line);
-		}
 		sb_add(&text, line, len);
 		sb_putc(&text, '\n');
 		if (text.oom) {
@@ -316,6 +325,8 @@ static int interactive(struct sh *sh)
 			continue;
 		}
 		run_chunk(sh, &text, NULL, &first, false);
+		if (len > 0 && !line_has_secret(line))
+			history_append(sh, line);
 	}
 	sb_free(&text);
 	pt_free(line);

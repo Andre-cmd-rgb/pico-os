@@ -641,6 +641,6 @@ int idle_init(void)
 	activity_record(now_us(), true);
 	if (!vt_has_display())
 		times.dim_s = times.blank_s = 0;	/* nothing to dim */
-	xTaskCreatePinnedToCore(idle_task, "kidle", 3072, NULL, 3, &task, 0);
+	ktask_create(idle_task, "kidle", 3072, NULL, 3, &task, 0);
 	return 0;
 }

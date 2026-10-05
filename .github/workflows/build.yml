@@ -33,12 +33,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        board: [freenove-fnk0104b, devkit-uno-shield, waveshare-esp32-p4-wifi6]
+        include:
+          - board: freenove-fnk0104b
+          # with Bluetooth LE, which no board file turns on, so that it
+          # keeps building
+          - board: freenove-fnk0104b
+            fragments: ble
+          - board: devkit-uno-shield
+          - board: waveshare-esp32-p4-wifi6
+    env:
+      IMAGE: pico-os-${{ matrix.board }}${{ matrix.fragments && format('-{0}', matrix.fragments) || '' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Build
-        run: make BOARD=${{ matrix.board }}
+        run: make BOARD=${{ matrix.board }} FRAGMENTS="${{ matrix.fragments }}"
 
       # One file from 0x0 to the end of the program: the bootloader, the
       # partition table and pico-os. The files on / come after it and stay.
@@ -47,12 +56,12 @@ jobs:
           . $IDF_PATH/export.sh > /dev/null
           cd build/${{ matrix.board }}
           chip=$(sed -n 's/^CONFIG_IDF_TARGET="\(.*\)"/\1/p' sdkconfig)
-          esptool --chip $chip merge-bin -o pico-os-${{ matrix.board }}.bin @flash_args
+          esptool --chip $chip merge-bin -o $IMAGE.bin @flash_args
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pico-os-${{ matrix.board }}
-          path: build/${{ matrix.board }}/pico-os-${{ matrix.board }}.bin
+          name: ${{ env.IMAGE }}
+          path: build/${{ matrix.board }}/${{ env.IMAGE }}.bin
 
   qemu:
     runs-on: ubuntu-24.04

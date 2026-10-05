@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -421,7 +422,7 @@ static void supplicant_task(void *arg)
 
 /* ------------------------------------------------------------ scanning */
 
-static struct wifi_ap last_scan[SCAN_KEEP];
+EXT_RAM_BSS_ATTR static struct wifi_ap last_scan[SCAN_KEEP];
 static int last_scan_count;
 
 /* The nth network from the last scan, so a name full of spaces or
@@ -638,7 +639,7 @@ static void supplicant_start(void)
 	if (supplicant)
 		return;
 	want_connection = true;
-	xTaskCreatePinnedToCore(supplicant_task, "kwifi", 3584, NULL, 4, &supplicant, 0);
+	ktask_create(supplicant_task, "kwifi", 3584, NULL, 4, &supplicant, 0);
 }
 
 /*

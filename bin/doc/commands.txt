@@ -241,7 +241,11 @@ GAMES
   nes ROM.nes       a NES emulator; q quits, p saves
                     a screenshot
   nes -v ROM.nes    then say how fast it ran
-  pad on            the Bluetooth radio
+
+BLUETOOTH (in a build with it: FRAGMENTS=ble)
+  ble on            start the radio
+  ble off           stop it, and give its RAM back
+  ble scan          what is around
   pad scan          look for a gamepad
   pad connect N     join one
   pad watch         see what a pad sends, to map it

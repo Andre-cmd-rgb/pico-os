@@ -1,6 +1,8 @@
 # QEMU: no display, no SD card, no keyboard but the console, and the root
 # filesystem in RAM. QEMU emulates neither the flash filesystems nor octal
-# PSRAM, so those are swapped out here.
+# PSRAM, so those are swapped out here: quad PSRAM instead, 8 MB of it,
+# which tools/board.py gives every run (-m 8M) and the static data kept in
+# PSRAM needs.
 
 CONFIG_IDF_TARGET="esp32s3"
 
@@ -11,5 +13,4 @@ CONFIG_PT_LCD_NONE=y
 CONFIG_PT_SD_NONE=y
 CONFIG_PT_ROOTFS_RAMDISK=y
 CONFIG_SPIRAM_MODE_QUAD=y
-CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 CONFIG_PM_ENABLE=n

@@ -26,14 +26,18 @@
 #include <string.h>
 #include <sys/time.h>
 
+#include "esp_attr.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
 
 #include "drivers/drivers.h"
+
+#if CONFIG_PT_APP_DIARY
 
 #define ALARM_FILE	"/etc/alarms"
 #define PLAUSIBLE	1704067200	/* 2024: before this the clock was never set */
@@ -50,7 +54,7 @@
 
 enum answer { ANSWER_NONE, ANSWER_SNOOZE, ANSWER_STOP };
 
-static struct {
+EXT_RAM_BSS_ATTR static struct {
 	SemaphoreHandle_t lock;
 	TaskHandle_t	 task;
 	struct alarm	 a[ALARMS_MAX];
@@ -320,7 +324,7 @@ int alarm_enable(int i, bool on)
 
 /* ------------------------------------------------------------ ringing */
 
-static int16_t sine[64];
+EXT_RAM_BSS_ATTR static int16_t sine[64];
 
 /*
  * `ms` of a tone at `hz` into buf, faded in and out so it does not click;
@@ -576,9 +580,27 @@ int alarm_init(void)
 		al.checked = time(NULL) - CATCH_UP_S;
 		al.grace = CATCH_UP_S + ON_TIME_S;
 	}
-	if (xTaskCreatePinnedToCore(alarm_task, "kalarm", 4096, NULL, 3, &al.task, 0) != pdPASS)
+	if (ktask_create(alarm_task, "kalarm", 4096, NULL, 3, &al.task, 0) != pdPASS)
 		return -ENOMEM;
 	if (al.n)
 		klog("alarm: %d set", al.n);
 	return 0;
 }
+
+#else /* !CONFIG_PT_APP_DIARY: the diary is left out, and nothing rings */
+
+int	alarm_init(void) { return -ENODEV; }
+int	alarm_list(struct alarm *out, int max) { return 0; }
+int	alarm_add(const struct alarm *a) { return -ENODEV; }
+int	alarm_remove(int i) { return -ENODEV; }
+int	alarm_enable(int i, bool on) { return -ENODEV; }
+time_t	alarm_next(const struct alarm *a, time_t after) { return 0; }
+time_t	alarm_next_any(struct alarm *which) { return 0; }
+uint32_t alarm_seconds_until(void) { return 0; }
+bool	alarm_ringing(struct alarm *which) { return false; }
+void	alarm_answer(bool stop) { }
+int	alarm_test(int kind) { return -ENODEV; }
+bool	alarm_key(const char *s, size_t n) { return false; }
+bool	alarm_button(bool held) { return false; }
+
+#endif

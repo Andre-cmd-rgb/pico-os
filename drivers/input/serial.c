@@ -9,6 +9,7 @@
  *   USB Serial/JTAG	the native USB port; handy with a single cable, but
  *			then there is no USB keyboard
  */
+#include "esp_attr.h"
 #include "sdkconfig.h"
 
 #include "drivers/drivers.h"
@@ -184,7 +185,7 @@ void serial_idle_sleep(bool on)
  */
 static void serial_rx_task(void *arg)
 {
-	static char line[800];
+	EXT_RAM_BSS_ATTR static char line[800];
 	char buf[256];
 	size_t len = 0;
 	bool marked = false;
@@ -241,8 +242,7 @@ int serial_console_init(void)
 		return -EIO;
 	}
 #if CONFIG_PT_KBD_UART
-	if (xTaskCreatePinnedToCore(serial_rx_task, "kserial", 4096,
-				  NULL, 10, &worker, 0) != pdPASS) {
+	if (ktask_create(serial_rx_task, "kserial", 4096, NULL, 10, &worker, 0) != pdPASS) {
 		serial_uninstall();
 		vSemaphoreDelete(out_mutex);
 		out_mutex = NULL;

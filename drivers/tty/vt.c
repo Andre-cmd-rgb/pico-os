@@ -842,9 +842,9 @@ static const struct cell *shown_row(const struct screen *sc, int y)
 	return &sc->hist[(size_t)line * cols];
 }
 
-/* Clearing the panel invalidates every row, including rows a previous
- * pass painted before a terminal switch. Consume the repaint together
- * with that terminal's dirty grid, never halfway through a switch. */
+/* A repaint is every row, including rows a previous pass painted
+ * before a terminal switch. Consume it together with that terminal's
+ * dirty grid, never halfway through a switch. */
 static bool prepare_frame(int which)
 {
 	bool repaint;
@@ -864,6 +864,28 @@ static bool prepare_frame(int which)
 	return repaint;
 }
 
+/*
+ * What the text and the status line leave of the panel, above and below
+ * them, in the background colour: nothing on this one, which the cells
+ * of either font divide exactly, landscape or portrait. Rows and bar are
+ * painted edge to edge, the spare columns too, and place_bar() puts the
+ * bar against the text, so a terminal painted again needs nothing
+ * cleared first: that was a whole screen, 31 ms on the bus.
+ */
+static void fill_margins(void)
+{
+	uint16_t bg = palette[BG_DEFAULT][0] << 8 | palette[BG_DEFAULT][1];
+	int top = text_y, bottom = text_y + rows * CELL_H;
+
+#if CONFIG_PT_STATUS_LINE
+	top = MIN(top, bar_y);
+	bottom = MAX(bottom, bar_y + CELL_H);
+#endif
+	if (top > 0)
+		lcd_fill(0, 0, lcd_width(), top, bg);
+	if (bottom < lcd_height())
+		lcd_fill(0, bottom, lcd_width(), lcd_height() - bottom, bg);
+}
 
 /* Finish a coherent row pass for the terminal it started on. Switching
  * stays quick; its notification and repaint are kept for the next pass. */
@@ -919,6 +941,24 @@ static void render_rows(uint8_t *pixels, struct cell *row, int which,
 	}
 }
 
+/*
+ * Whether more than a key's echo waits to be painted on the terminal in
+ * front: three rows or more, as a burst of output or a scroll (every row)
+ * makes.
+ */
+static bool burst_waiting(void)
+{
+	struct screen *sc;
+	int n = 0;
+
+	xSemaphoreTake(lock, portMAX_DELAY);
+	sc = onscreen();
+	for (int y = 0; sc->cells && y < rows && n < 3; y++)
+		n += sc->dirty_lo[y] <= sc->dirty_hi[y];
+	xSemaphoreGive(lock);
+	return n > 2;
+}
+
 static void renderer_dispose(uint8_t *pixels, struct cell *row)
 {
 	heap_caps_free(pixels);
@@ -943,15 +983,23 @@ static void render_task(void *arg)
 	}
 	for (;;) {
 		int64_t blink_us = blink_ms * 1000LL;
+		uint32_t woken;
 		int frame_vt;
 
 		/* dark: nothing to draw until it is lit again, whatever is written */
-		ulTaskNotifyTake(pdTRUE, blanked ? portMAX_DELAY :
-				 pdMS_TO_TICKS(blink_us ? blink_ms : 1000));
+		woken = ulTaskNotifyTake(pdTRUE, blanked ? portMAX_DELAY :
+					 pdMS_TO_TICKS(blink_us ? blink_ms : 1000));
 		if (blanked)
 			continue;
-		vTaskDelay(pdMS_TO_TICKS(8));	/* let a burst of output land in one frame */
-		ulTaskNotifyTake(pdTRUE, 0);
+		/*
+		 * Let a burst of output land in one frame -- but not when the
+		 * wait ran out, for the cursor's blink or the status line, nor
+		 * for a row or two: a key's echo shows 8 ms sooner.
+		 */
+		if (woken && burst_waiting()) {
+			vTaskDelay(pdMS_TO_TICKS(8));
+			ulTaskNotifyTake(pdTRUE, 0);
+		}
 		for (int i = 0; i < CONFIG_PT_VT_COUNT; i++) {
 			if (!holder[i].held || !holder[i].pid || proc_alive(holder[i].pid))
 				continue;
@@ -997,9 +1045,9 @@ static void render_task(void *arg)
 		struct screen *sc = &screens[frame_vt];
 
 		if (prepare_frame(frame_vt)) {
-			/* a different terminal or new colours: clear once, then draw it */
-			lcd_fill(0, 0, lcd_width(), lcd_height(),
-				 palette[BG_DEFAULT][0] << 8 | palette[BG_DEFAULT][1]);
+			/* a different terminal or new colours: every row and the
+			 * status line again, right across, over what was there */
+			fill_margins();
 			cur_x = cur_y = -1;
 			next_status = 0;
 		}
@@ -1447,10 +1495,9 @@ void vt_redraw(void)
 	if (program_shows(active)) {
 		holder[active].gen++;
 	} else {
-		lcd_fill(0, 0, lcd_width(), lcd_height(),
-			 palette[BG_DEFAULT][0] << 8 | palette[BG_DEFAULT][1]);
 		xSemaphoreTake(lock, portMAX_DELAY);
 		mark_all();
+		repaint_all = true;	/* the renderer paints it all, status line too */
 		xSemaphoreGive(lock);
 	}
 	xSemaphoreGive(panel);
