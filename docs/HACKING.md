@@ -315,7 +315,11 @@ per draw; idle, one pointer test.
 ## Network
 
 `drivers/net/wifi.c` is the radio plus a supplicant task that walks
-`/etc/wifi` until something answers, and `/proc/net`. `wifi off` deinits
+`/etc/wifi` until something answers, and `/proc/net`. The network it
+joined last and its channel are kept in `/var/lib/wifi-last` (no
+password: that stays in `/etc/wifi`), and tried first on that channel
+alone, which skips a scan of every channel: a boot is on the network
+in under 5 s instead of 12. `wifi off` deinits
 the stack rather than merely stopping it, because those buffers are 30 KB
 of internal RAM.
 

@@ -15,6 +15,10 @@
  * saved networks in turn, and when a connection drops, wait a few seconds
  * and try again. Everything it does goes to dmesg.
  *
+ * The network that answered last is tried first, on the channel it was
+ * on (LAST_FILE): a fraction of a second, where walking the list scans
+ * every channel for each network that is not there.
+ *
  * Trying costs: each attempt scans every channel with the receiver on,
  * about 90 mA for a couple of seconds. Carried away from its network the
  * board used to do that every twenty seconds for as long as it was
@@ -31,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "esp_attr.h"
 #include "esp_event.h"
@@ -46,6 +51,7 @@
 #if CONFIG_PT_WIFI
 
 #define CONFIG_FILE	"/etc/wifi"
+#define LAST_FILE	"/var/lib/wifi-last"	/* the network that answered last, and its channel */
 #define RETRY_MS	5000
 #define RETRY_MAX_MS	(10 * 60 * 1000)
 #define CONNECT_MS	15000
@@ -66,6 +72,7 @@ static bool		 sntp_ready;
 
 #define BIT_GOT_IP	BIT0
 #define BIT_FAILED	BIT1
+#define BIT_NOTE	BIT2	/* connected: the supplicant remembers where (LAST_FILE) */
 
 static const char *reason_text(int reason)
 {
@@ -85,6 +92,9 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 	if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
 		const wifi_event_sta_disconnected_t *e = data;
 
+		/* the network tried before, failing late: not this one refusing */
+		if (e->ssid_len && (e->ssid_len != strlen(current) || memcmp(e->ssid, current, e->ssid_len)))
+			return;
 		last_reason = e->reason;
 		xEventGroupClearBits(events, BIT_GOT_IP);
 		xEventGroupSetBits(events, BIT_FAILED);
@@ -93,7 +103,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 
 		klog("wifi: %s, " IPSTR, current, IP2STR(&e->ip_info.ip));
 		xEventGroupClearBits(events, BIT_FAILED);
-		xEventGroupSetBits(events, BIT_GOT_IP);
+		xEventGroupSetBits(events, BIT_GOT_IP | BIT_NOTE);
 #if CONFIG_PT_NTP_AT_BOOT
 		if (sntp_ready)
 			esp_netif_sntp_start();		/* a new network: ask for the time now */
@@ -294,7 +304,8 @@ static int wait_for_ip(int timeout_ms)
 	return -ETIMEDOUT;
 }
 
-int wifi_connect(const char *ssid, const char *pass, int timeout_ms)
+/* With `channel` (1-13), only that channel is scanned; 0 scans them all. */
+static int connect_on(const char *ssid, const char *pass, int channel, int timeout_ms)
 {
 	wifi_config_t cfg = { 0 };
 	bool was_on;
@@ -307,13 +318,17 @@ int wifi_connect(const char *ssid, const char *pass, int timeout_ms)
 	strlcpy((char *)cfg.sta.ssid, ssid, sizeof(cfg.sta.ssid));
 	if (pass && *pass)
 		strlcpy((char *)cfg.sta.password, pass, sizeof(cfg.sta.password));
-	cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;	/* pick the strongest one */
+	if (channel > 0 && channel <= 14) {
+		cfg.sta.scan_method = WIFI_FAST_SCAN;
+		cfg.sta.channel = channel;
+	} else {
+		cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;	/* pick the strongest one */
+	}
 	cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
 	cfg.sta.listen_interval = LISTEN_BEACONS;
 
 	xSemaphoreTake(lock, portMAX_DELAY);
 	rest_locked(false);
-	strlcpy(current, ssid, sizeof(current));
 	want_connection = true;
 	last_reason = 0;
 	/*
@@ -327,6 +342,8 @@ int wifi_connect(const char *ssid, const char *pass, int timeout_ms)
 	if (!esp_wifi_disconnect() && was_on)
 		xEventGroupWaitBits(events, BIT_FAILED, pdFALSE, pdFALSE, pdMS_TO_TICKS(1000));
 	xEventGroupClearBits(events, BIT_GOT_IP | BIT_FAILED);
+	/* named only now: events for the network left are the old one's (on_event) */
+	strlcpy(current, ssid, sizeof(current));
 	if (esp_wifi_set_config(WIFI_IF_STA, &cfg) || esp_wifi_connect()) {
 		xSemaphoreGive(lock);
 		return -EIO;
@@ -334,8 +351,65 @@ int wifi_connect(const char *ssid, const char *pass, int timeout_ms)
 	ret = wait_for_ip(timeout_ms);
 	xSemaphoreGive(lock);
 	if (ret)
-		klog("wifi: %s: %s", ssid, reason_text(last_reason));
+		klog("wifi: %s%s: %s", ssid, channel ? " (where it was last)" : "", reason_text(last_reason));
 	return ret;
+}
+
+int wifi_connect(const char *ssid, const char *pass, int timeout_ms)
+{
+	return connect_on(ssid, pass, 0, timeout_ms);
+}
+
+/* The network that answered last and its channel, from LAST_FILE; false if none. */
+static bool last_read(char ssid[33], int *channel)
+{
+	char path[64], line[64];
+	bool ok = false;
+	FILE *f;
+
+	if (!mount_resolve(LAST_FILE, path, sizeof(path)) || !(f = fopen(path, "r")))
+		return false;
+	if (fgets(line, sizeof(line), f) && sscanf(line, "%d %32[^\n]", channel, ssid) == 2)
+		ok = *channel > 0 && *channel <= 14;
+	fclose(f);
+	return ok;
+}
+
+/* After a connection: written only when the network or its channel changed. */
+static void last_note(void)
+{
+	char path[64], ssid[33];
+	wifi_ap_record_t ap;
+	int channel;
+	FILE *f;
+
+	if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK)
+		return;
+	if (last_read(ssid, &channel) && channel == ap.primary && !strcmp(ssid, (const char *)ap.ssid))
+		return;
+	if (!mount_resolve(LAST_FILE, path, sizeof(path)))
+		return;
+	*strrchr(path, '/') = '\0';
+	mkdir(path, 0755);		/* /var/lib, on a board that never had it */
+	path[strlen(path)] = '/';
+	if (!(f = fopen(path, "w")))
+		return;
+	fprintf(f, "%d %s\n", ap.primary, (const char *)ap.ssid);
+	fclose(f);
+}
+
+/* The network that answered last, on its channel, if it is still a saved one. */
+static bool try_last(void)
+{
+	char ssid[33], pass[65];
+	int channel;
+	bool ok;
+
+	if (!last_read(ssid, &channel) || !wifi_saved(ssid, pass, sizeof(pass)))
+		return false;
+	ok = connect_on(ssid, pass, channel, CONNECT_MS) == 0;
+	memset(pass, 0, sizeof(pass));
+	return ok;
 }
 
 int wifi_disconnect(void)
@@ -351,6 +425,12 @@ int wifi_disconnect(void)
 static bool try_saved(const char *ssid, const char *pass, void *ctx)
 {
 	return wifi_connect(ssid, pass, CONNECT_MS) == 0;
+}
+
+/* The last network first, then the list. */
+static bool try_all(void)
+{
+	return try_last() || each_saved(try_saved, NULL);
 }
 
 /* Try again soon: something changed that makes it worth it. */
@@ -387,9 +467,18 @@ static void supplicant_task(void *arg)
 {
 	int wait = RETRY_MS;
 
-	each_saved(try_saved, NULL);
+	try_all();
 	for (;;) {
-		xEventGroupWaitBits(events, BIT_FAILED, pdFALSE, pdFALSE, portMAX_DELAY);
+		EventBits_t bits = xEventGroupWaitBits(events, BIT_FAILED | BIT_NOTE, pdFALSE, pdFALSE,
+						       portMAX_DELAY);
+
+		if (bits & BIT_NOTE) {
+			/* connected, however it came about: where, for next time */
+			xEventGroupClearBits(events, BIT_NOTE);
+			last_note();
+			if (!(xEventGroupGetBits(events) & BIT_FAILED))
+				continue;
+		}
 		if (paused) {
 			ulTaskNotifyTake(pdTRUE, portMAX_DELAY);	/* until a key */
 			wait = RETRY_MS;
@@ -409,7 +498,7 @@ static void supplicant_task(void *arg)
 			wait = RETRY_MS;
 		if (!want_connection || wifi_up())
 			continue;
-		if (each_saved(try_saved, NULL)) {
+		if (try_all()) {
 			wait = RETRY_MS;
 		} else {
 			wait = wait * 2 > RETRY_MAX_MS ? RETRY_MAX_MS : wait * 2;
