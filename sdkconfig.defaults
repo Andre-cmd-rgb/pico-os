@@ -53,6 +53,10 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # Quiet ROM/bootloader/startup chatter: the kernel prints its own boot log.
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+# Waking from suspend or poweroff is a whole boot, and the bootloader
+# hashed all of the image again first, though nothing writes the flash
+# while the chip sleeps: a power-on or a reset still checks it.
+CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP=y
 CONFIG_LOG_DEFAULT_LEVEL_WARN=y
 CONFIG_LOG_COLORS=n
 
