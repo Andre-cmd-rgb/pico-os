@@ -719,6 +719,13 @@ int audio_init(void)
 	gpio_hold_dis(CONFIG_PT_AUDIO_AMP_EN);	/* held off through a deep sleep */
 	gpio_set_direction(CONFIG_PT_AUDIO_AMP_EN, GPIO_MODE_OUTPUT);
 	amp(false);
+	/*
+	 * And driven through light sleep too, as the panel's pins are: left
+	 * to ESP-IDF, it would be isolated while the screen is dark -- the
+	 * shutdown pin floating, for whatever the board's resistor makes of
+	 * it.
+	 */
+	gpio_sleep_sel_dis(CONFIG_PT_AUDIO_AMP_EN);
 #endif
 	ret = es8311_init(CONFIG_PT_AUDIO_I2C_SDA, CONFIG_PT_AUDIO_I2C_SCL, rate);
 	if (ret)

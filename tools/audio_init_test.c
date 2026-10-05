@@ -187,6 +187,7 @@ static void heap_caps_free(void *p) { release(p); }
 static void esp_log_level_set(const char *name, int level) { (void)name; (void)level; }
 static void gpio_hold_dis(int pin) { (void)pin; }
 static void gpio_set_direction(int pin, int mode) { (void)pin; (void)mode; }
+static void gpio_sleep_sel_dis(int pin) { (void)pin; }
 static void amp(bool on) { assert(!on); }
 static int i2s_new_channel(const i2s_chan_config_t *cfg, void **out_tx, void **out_rx)
 {
