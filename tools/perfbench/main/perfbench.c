@@ -26,6 +26,11 @@
 
 #include "half.h"		/* sink.c's 2:1 filter, cut out by the script */
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "levels.h"		/* the mixer's output stage */
+#include "mixer.h"		/* its walk through a stream, cut out of audio.c */
+
 #define PASS		1024	/* frames asked for at a time, as sink.c does */
 
 enum { AUDIO = 1, JPEG_SLICE = 2, JPEG_DC = 3 };
@@ -155,6 +160,81 @@ static void halving(void)
 	heap_caps_free(pcm);
 }
 
+/*
+ * The same fixed work every time, whatever the decoders do: if its count
+ * moves, the run is not comparable with the others (see perfbench.py).
+ */
+static void calibration(void)
+{
+	struct result *r = result_for("calibration");
+	uint32_t x = 1, t = now();
+
+	for (int i = 0; i < 1000000; i++)
+		x = x * 1664525 + 1013904223 + (x >> 13);
+	r->cycles += now() - t;
+	r->units = 1;
+	r->crc = x;
+}
+
+/*
+ * The mixer, as it runs with one stream at the wire's rate (music on the
+ * speaker or the headphones): a block from the stream's ring in PSRAM,
+ * then the speaker's output stage -- the two sides folded, the limiter,
+ * 16 bits -- or the jack's, 32 bits at its volume. The writer's side,
+ * filling the ring, is not counted.
+ */
+static void mixing(const char *name, bool jack)
+{
+	struct result *r = result_for(name);
+	struct stream s = { .rate = 44100, .size = 44100, .used = true };
+	int32_t *acc = heap_caps_malloc(BLOCK * 2 * sizeof(*acc), MALLOC_CAP_INTERNAL);
+	int16_t *wire = heap_caps_malloc(BLOCK * 2 * sizeof(*wire), MALLOC_CAP_INTERNAL);
+	int32_t gain = 32768, jack_gain = jack_gain_for(40), x = 0;
+
+	s.ring = heap_caps_malloc(s.size * 2 * sizeof(*s.ring), MALLOC_CAP_SPIRAM);
+	for (int block = 0; block < 44100 * 4 / BLOCK; block++) {
+		uint32_t t;
+		int n = 0;
+
+		while (filled(&s) < s.size) {		/* the writer keeps it full */
+			int32_t *f = &s.ring[s.head % s.size * 2];
+
+			x = x * 1103515245 + 12345;
+			f[0] = (x >> 8) % (MIX_FULL / 2);
+			f[1] = -f[0] / 3;
+			s.head++;
+		}
+		t = now();
+		memset(acc, 0, BLOCK * 2 * sizeof(*acc));
+#ifdef HAVE_MIX_STREAM
+		n = mix_stream(&s, ONE, acc, false);
+#else
+		for (int v[2]; n < BLOCK && pull(&s, ONE, v); n++) {
+			acc[2 * n] += v[0];
+			acc[2 * n + 1] += v[1];
+		}
+#endif
+		if (jack) {
+			gain = mix_gain(acc, BLOCK, 2, 44100, gain);
+			for (int k = 0; k < BLOCK * 2; k++)
+				acc[k] = jack_sample(acc[k], gain, jack_gain);
+		} else {
+			for (int k = 0; k < BLOCK; k++)
+				acc[k] = (int32_t)(((int64_t)acc[2 * k] + acc[2 * k + 1]) / 2);
+			gain = mix_gain(acc, BLOCK, 1, 44100, gain);
+			for (int k = 0; k < BLOCK; k++)
+				wire[2 * k] = wire[2 * k + 1] = speaker_sample(acc[k], gain);
+		}
+		r->cycles += now() - t;
+		r->units += n;
+		r->crc = jack ? esp_rom_crc32_le(r->crc, (const uint8_t *)acc, BLOCK * 2 * sizeof(*acc))
+			      : esp_rom_crc32_le(r->crc, (const uint8_t *)wire, BLOCK * 2 * sizeof(*wire));
+	}
+	heap_caps_free(s.ring);
+	heap_caps_free(acc);
+	heap_caps_free(wire);
+}
+
 /* ------------------------------------------------------------ pictures */
 
 struct page {
@@ -219,6 +299,7 @@ void app_main(void)
 {
 	int slice = 0;
 
+	calibration();
 	if (memcmp(media_start, "PBMEDIA1", 8)) {
 		printf("PB-ERROR no media\n");
 		return;
@@ -237,6 +318,8 @@ void app_main(void)
 			picture(e, 0, 3);
 	}
 	halving();
+	mixing("mixer 44.1k speaker", false);
+	mixing("mixer 44.1k jack", true);
 	for (int i = 0; i < nresults; i++)
 		printf("PB %s|%llu|%llu|%08lx\n", results[i].name,
 		       (unsigned long long)results[i].cycles, (unsigned long long)results[i].units,

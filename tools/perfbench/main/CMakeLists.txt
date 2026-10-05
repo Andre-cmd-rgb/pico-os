@@ -7,7 +7,7 @@ idf_component_register(
 		${pico}/third_party/minimp3/decoders.c
 		${pico}/bin/jpeg.c
 	INCLUDE_DIRS . ${PB_GEN} ${pico}/codec ${pico}/third_party/minimp3 ${pico}/kernel/include
-		${pico}/bin
+		${pico}/bin ${pico}/drivers/audio
 	PRIV_REQUIRES esp_psram esp_rom
 	EMBED_FILES ${PB_GEN}/media.bin
 )

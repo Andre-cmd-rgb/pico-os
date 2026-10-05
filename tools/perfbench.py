@@ -14,7 +14,9 @@ things faster leaves alone.
     tools/perfbench.py [--json FILE] [--build DIR]
 
 Prints, for each: millions of QEMU cycles, how much was decoded, the
-cycles a second of sound or a picture costs, and the CRC.
+cycles a second of sound or a picture costs, and the CRC. The first row,
+calibration, is the same fixed work every time: two runs whose
+calibration differs do not compare.
 """
 import argparse
 import glob
@@ -112,6 +114,22 @@ def cut_half(gen):
     (gen / "half.h").write_text("#include <math.h>\n#include <stdbool.h>\n" + half)
 
 
+def cut_mixer(gen):
+    """The mixer's walk through a stream, from drivers/audio/audio.c, as
+    tools/audio_test.py cuts it: the stream, pull() and, where the tree
+    has it, mix_stream()."""
+    audio = (ROOT / "drivers/audio/audio.c").read_text()
+    mixer = "".join(line + "\n" for line in audio.splitlines()
+                    if line.startswith(("#define BLOCK", "#define ONE")))
+    mixer += audio[audio.index("struct stream {"):audio.index("static i2s_chan_handle_t")]
+    mixer += audio[audio.index("static size_t filled("):audio.index("static void drop_queued(")]
+    mixer += audio[audio.index("/*\n * The stream's next frame at the rate"):
+                   audio.index("/* " + "-" * 60 + " the mixer */")]
+    if "static int mix_stream(" in mixer:
+        mixer += "#define HAVE_MIX_STREAM 1\n"
+    (gen / "mixer.h").write_text(mixer)
+
+
 def qemu():
     found = sorted(glob.glob(os.path.expanduser(
         "~/.espressif/tools/qemu-xtensa/*/qemu/bin/qemu-system-xtensa")), reverse=True)
@@ -129,6 +147,7 @@ def main():
     gen.mkdir(parents=True, exist_ok=True)
     sounds = make_media(gen)
     cut_half(gen)
+    cut_mixer(gen)
 
     env = dict(os.environ, IDF_PATH=IDF)
     sh = (f". {IDF}/export.sh >/dev/null 2>&1 && idf.py -C {PROJECT} -B {build / 'idf'} "
@@ -166,9 +185,11 @@ def main():
             continue
         name, cycles, units, crc = line[3:].strip().split("|")
         cycles, units = int(cycles), int(units)
-        if name in sounds or name.startswith("half_run"):
-            rate = 192000 if name.startswith("half_run") else next(
-                r for n, r, *_ in SOUNDS if n == name)
+        if name == "calibration":
+            per, what = cycles, "fixed work"
+        elif name in sounds or name.startswith(("half_run", "mixer")):
+            rate = 192000 if name.startswith("half_run") else 44100 if name.startswith(
+                "mixer") else next(r for n, r, *_ in SOUNDS if n == name)
             seconds = units / rate
             per = cycles / seconds
             what = f"{seconds:.1f} s"
