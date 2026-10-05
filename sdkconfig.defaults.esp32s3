@@ -3,6 +3,9 @@
 
 # ESP32-S3 N16R8: 16 MB quad flash, 8 MB octal PSRAM
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# Quad, as every board here has (sdkconfig.defaults): the driver for
+# Macronix's octal chips can never match, and is 2.5 KB of IRAM and DRAM.
+CONFIG_SPI_FLASH_SUPPORT_MXIC_OPI_CHIP=n
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 
