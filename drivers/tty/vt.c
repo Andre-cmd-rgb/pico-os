@@ -787,7 +787,18 @@ static int to_glyphs(const char *s, uint8_t *out, int max)
 static char note_text[32];
 static volatile int64_t note_until;
 
-static void draw_status(uint8_t *pixels)
+/*
+ * The bar as the panel shows it, so that the second-by-second check sends
+ * nothing when nothing in it changed: the clock moves once a minute, and
+ * a row is 6.4 KB on the bus. The renderer's alone.
+ */
+EXT_RAM_BSS_ATTR static uint8_t shown_bar[128];
+static uint16_t shown_color;
+static bool shown_valid;
+
+/* The status line, unless it is what the panel shows already; `force`
+ * when whatever was there has been painted over. */
+static void draw_status(uint8_t *pixels, bool force)
 {
 	uint8_t bar[128], right[48];
 	char text[96];
@@ -874,6 +885,11 @@ static void draw_status(uint8_t *pixels)
 			memcpy(bar + right_at, right, n);
 	}
 
+	if (!force && shown_valid && color == shown_color && !memcmp(bar, shown_bar, cols))
+		return;
+	memcpy(shown_bar, bar, cols);
+	shown_color = color;
+	shown_valid = true;
 	for (int x = 0; x < cols; x++)
 		draw_cell(pixels, cols * CELL_W, x * CELL_W, bar[x], color, false);
 	lcd_draw(origin_x, bar_y, cols * CELL_W, CELL_H, pixels);
@@ -921,7 +937,7 @@ void vt_bar_line(int y, const char *text)
 }
 
 #else
-static void draw_status(uint8_t *pixels) { }
+static void draw_status(uint8_t *pixels, bool force) { }
 void vt_bar_line(int y, const char *text) { }
 #endif
 
@@ -1190,8 +1206,9 @@ static void render_task(void *arg)
 		}
 
 		struct screen *sc = &screens[frame_vt];
+		bool fresh = prepare_frame(frame_vt);
 
-		if (prepare_frame(frame_vt)) {
+		if (fresh) {
 			/* a different terminal or new colours: every row and the
 			 * status line again, right across, over what was there */
 			fill_margins();
@@ -1199,10 +1216,12 @@ static void render_task(void *arg)
 			next_status = 0;
 		}
 		if (status_now || esp_timer_get_time() >= next_status) {
+			bool force = fresh || status_now;
+
 			status_now = false;
 			next_status = esp_timer_get_time() + 1000000;
 			theme_tick();		/* light by day, if it is asked for */
-			draw_status(pixels);
+			draw_status(pixels, force);
 		}
 		xSemaphoreTake(lock, portMAX_DELAY);
 		bool show = sc->cursor && (blink_on || !blink_us) && !sc->view;
