@@ -46,6 +46,7 @@
 
 #define M_SOF0		0xc0
 #define M_SOF1		0xc1
+#define M_SOF2		0xc2		/* progressive */
 #define M_DHT		0xc4
 #define M_SOI		0xd8
 #define M_EOI		0xd9
@@ -189,9 +190,9 @@ static int read_dht(struct jpeg *j, int len)
 		uint8_t count[16];
 		struct jpeg_huff *h;
 
-		if (tc < 0 || tc >> 4 > 1)
+		if (tc < 0 || tc >> 4 > 1 || t > 3)
 			return -EINVAL;
-		if (t > 1)
+		if (t > 1 && !j->progressive)
 			return -ENOTSUP;	/* baseline has two of each */
 		for (int i = 0; i < 16; i++) {
 			int n = get8(j);
@@ -203,6 +204,12 @@ static int read_dht(struct jpeg *j, int len)
 		}
 		if (total > 256)
 			return -EINVAL;
+		if (t > 1) {			/* a progressive file's extra AC tables: unused here */
+			if (skip(j, total))
+				return -EINVAL;
+			len -= 17 + total;
+			continue;
+		}
 		h = tc >> 4 ? &j->ac[t] : &j->dc[t];
 		memset(h->values, 0, sizeof(h->values));
 		for (int i = 0; i < total; i++) {
@@ -308,9 +315,57 @@ static int read_sos(struct jpeg *j, int len)
 	return 0;
 }
 
+/*
+ * A progressive scan's header. DC scans are what is read, so they must
+ * name tables that exist; the rest are passed over and need nothing.
+ */
+static int read_scan(struct jpeg *j, int len)
+{
+	int n = get8(j), a;
+
+	if (n < 1 || n > j->ncomp || len != 4 + 2 * n)
+		return -EINVAL;
+	for (int i = 0; i < n; i++) {
+		int id = get8(j), t = get8(j), k;
+
+		for (k = 0; k < j->ncomp && j->comp[k].id != id; k++)
+			;
+		if (id < 0 || t < 0 || k == j->ncomp)
+			return -EINVAL;
+		j->scan[i] = (uint8_t)k;
+		j->comp[k].td = t >> 4;
+		j->comp[k].pred = 0;
+	}
+	j->scan_n = n;
+	j->ss = get8(j);
+	j->se = get8(j);
+	a = get8(j);
+	if (j->ss < 0 || j->se < 0 || a < 0)
+		return -EINVAL;
+	j->ah = a >> 4;
+	j->al = a & 15;
+	if (!j->ss) {
+		if (j->se || j->al > 13)
+			return -EINVAL;
+		for (int i = 0; i < n; i++) {
+			const struct jpeg_comp *c = &j->comp[j->scan[i]];
+
+			if (!(j->have_qt >> c->tq & 1) ||
+			    (!j->ah && (c->td > 1 || !(j->have_dc >> c->td & 1))))
+				return -EINVAL;
+		}
+	}
+	j->bits = 0;
+	j->nbits = 0;
+	j->marker = 0;
+	return 0;
+}
+
 int jpeg_open(struct jpeg *j)
 {
 	j->width = j->height = j->ncomp = 0;
+	j->progressive = 0;
+	j->blocks = NULL;
 	j->restart = 0;
 	j->have_dc = j->have_ac = j->have_qt = 0;
 	j->eof = 0;
@@ -334,6 +389,8 @@ int jpeg_open(struct jpeg *j)
 		switch (m) {
 		case M_SOF0:
 		case M_SOF1:
+		case M_SOF2:
+			j->progressive = m == M_SOF2;
 			ret = j->ncomp ? -EINVAL : read_sof(j, len);
 			break;
 		case M_DHT:
@@ -347,7 +404,7 @@ int jpeg_open(struct jpeg *j)
 			ret = len == 2 && j->restart >= 0 ? 0 : -EINVAL;
 			break;
 		case M_SOS:
-			return read_sos(j, len);
+			return j->progressive ? read_scan(j, len) : read_sos(j, len);
 		default:
 			if (m >= 0xc2 && m <= 0xcf && m != 0xc4 && m != 0xc8)
 				return -ENOTSUP;	/* progressive, lossless, arithmetic */
@@ -372,6 +429,17 @@ int jpeg_scaled_h(const struct jpeg *j, int scale)
 size_t jpeg_band_size(const struct jpeg *j, int scale)
 {
 	return (size_t)j->mcux * ((8 * j->hmax) >> scale) * ((8 * j->vmax) >> scale) * 2;
+}
+
+size_t jpeg_dc_size(const struct jpeg *j)
+{
+	size_t n = 0;
+
+	if (!j->progressive)
+		return 0;
+	for (int i = 0; i < j->ncomp; i++)
+		n += (size_t)j->mcux * j->comp[i].h * j->mcuy * j->comp[i].v;
+	return n * sizeof(*j->blocks);
 }
 
 /* ------------------------------------------------------------ entropy */
@@ -912,6 +980,207 @@ static void decode_mcu(struct jpeg *j)
 	}
 }
 
+/* ------------------------------------------------------------ progressive */
+
+/*
+ * The data after a scan, up to the marker that ends it: a scan that is
+ * not read, or the last bits of one that was. Restart markers are a part
+ * of the scan.
+ */
+static void to_marker(struct jpeg *j)
+{
+	for (;;) {
+		int c, m;
+
+		if (j->marker && (j->marker < 0xd0 || j->marker > 0xd7))
+			return;
+		j->marker = 0;
+		if ((c = get8(j)) < 0) {
+			j->marker = M_EOI;
+			return;
+		}
+		if (c != 0xff)
+			continue;
+		while ((m = get8(j)) == 0xff)
+			;
+		if (m < 0)
+			j->marker = M_EOI;
+		else if (m)
+			j->marker = m;		/* 0 is a stuffed 0xff */
+	}
+}
+
+/* The markers between scans, tables among them: 1 for the next scan, 0 at the end. */
+static int next_scan(struct jpeg *j)
+{
+	for (;;) {
+		int m = j->marker, len, ret;
+
+		j->marker = 0;
+		if (m == M_EOI)
+			return 0;
+		if ((len = get16(j)) < 2)
+			return -EINVAL;
+		len -= 2;
+		switch (m) {
+		case M_SOS:
+			return (ret = read_scan(j, len)) ? ret : 1;
+		case M_DHT:
+			ret = read_dht(j, len);
+			break;
+		case M_DQT:
+			ret = read_dqt(j, len);
+			break;
+		case M_DRI:
+			j->restart = get16(j);
+			ret = len == 2 && j->restart >= 0 ? 0 : -EINVAL;
+			break;
+		default:
+			ret = skip(j, len);
+			break;
+		}
+		if (ret)
+			return ret;
+		if (get8(j) != 0xff)
+			return -EINVAL;
+		while ((m = get8(j)) == 0xff)
+			;
+		if (m <= 0)
+			return -EINVAL;
+		j->marker = m;
+	}
+}
+
+/* A block's DC in a DC scan: its first bits, or one more of them. */
+static void dc_bits(struct jpeg *j, struct jpeg_comp *c, int16_t *v)
+{
+	if (!j->ah) {
+		int t = huff_decode(j, &j->dc[c->td]);
+
+		if (t)
+			c->pred = (int16_t)(c->pred + receive(j, t > 16 ? 16 : t));
+		*v = (int16_t)((uint32_t)c->pred * (1u << j->al));
+		return;
+	}
+	if (j->nbits < 1)
+		fill(j);
+	if (j->bits >> 31)
+		*v = (int16_t)(*v | 1 << j->al);
+	consume(j, 1);
+}
+
+/*
+ * A DC scan into the value each block keeps. With one component the scan
+ * goes block by block over that component's own picture; with several,
+ * MCU by MCU like a baseline scan.
+ */
+static void dc_scan(struct jpeg *j, int16_t *const dc[3], const int bw[3])
+{
+	int todo = j->restart;
+
+	if (j->scan_n == 1) {
+		int k = j->scan[0];
+		struct jpeg_comp *c = &j->comp[k];
+		int w = ((j->width * c->h + j->hmax - 1) / j->hmax + 7) / 8;
+		int h = ((j->height * c->v + j->vmax - 1) / j->vmax + 7) / 8;
+
+		for (int by = 0; by < h && !j->eof; by++) {
+			for (int bx = 0; bx < w; bx++) {
+				if (j->restart) {
+					if (!todo) {
+						restart(j);
+						todo = j->restart;
+					}
+					todo--;
+				}
+				dc_bits(j, c, &dc[k][by * bw[k] + bx]);
+			}
+		}
+		return;
+	}
+	for (int my = 0; my < j->mcuy && !j->eof; my++) {
+		for (int mx = 0; mx < j->mcux; mx++) {
+			if (j->restart) {
+				if (!todo) {
+					restart(j);
+					todo = j->restart;
+				}
+				todo--;
+			}
+			for (int s = 0; s < j->scan_n; s++) {
+				int k = j->scan[s];
+				struct jpeg_comp *c = &j->comp[k];
+
+				for (int by = 0; by < c->v; by++)
+					for (int bx = 0; bx < c->h; bx++)
+						dc_bits(j, c, &dc[k][(my * c->v + by) * bw[k] + mx * c->h + bx]);
+			}
+		}
+	}
+}
+
+/*
+ * Every scan in turn: the DC ones read, the rest passed over. Then each
+ * block's one value is its pixel at an eighth, and the colour goes as it
+ * does at any scale (put_any()).
+ */
+static int decode_progressive(struct jpeg *j, uint8_t *band, jpeg_band_fn fn, void *ctx)
+{
+	int mw = j->hmax, mh = j->vmax, sh = jpeg_scaled_h(j, 3), bw[3], ret = 0;
+	size_t stride = (size_t)j->mcux * mw * 2;
+	int16_t *dc[3], *p = j->blocks;
+
+	memset(j->blocks, 0, jpeg_dc_size(j));
+	for (int i = 0; i < j->ncomp; i++) {
+		bw[i] = j->mcux * j->comp[i].h;
+		dc[i] = p;
+		p += (size_t)bw[i] * j->mcuy * j->comp[i].v;
+	}
+	for (int scans = 0; scans < 256; scans++) {
+		int next;
+
+		if (!j->ss)
+			dc_scan(j, dc, bw);
+		if (j->eof && !j->ss) {
+			ret = -EINVAL;		/* cut short in a scan that mattered */
+			break;
+		}
+		to_marker(j);
+		if ((next = next_scan(j)) <= 0) {
+			ret = next;
+			break;
+		}
+	}
+	set_scale(j, 3);
+	scale_tables(j);
+	build_rgb(j);
+	for (int my = 0; my < j->mcuy; my++) {
+		int y = my * mh, err;
+
+		for (int mx = 0; mx < j->mcux; mx++) {
+			for (int i = 0; i < j->ncomp; i++) {
+				struct jpeg_comp *c = &j->comp[i];
+				uint8_t *plane = i == 0 ? j->y : i == 1 ? j->cb : j->cr;
+				int w = 8 >> c->rx, h = 8 >> c->ry;
+
+				for (int by = 0; by < c->v; by++) {
+					for (int bx = 0; bx < c->h; bx++) {
+						int16_t v = dc[i][(my * c->v + by) * bw[i] + mx * c->h + bx];
+						uint8_t px = flat((int16_t)((uint32_t)v * j->qs[c->tq][0]));
+
+						for (int r = 0; r < h; r++)
+							memset(plane + (by * h + r) * c->bw + bx * w, px, (size_t)w);
+					}
+				}
+			}
+			put_any(j, mw, mh, band + mx * mw * 2, stride);
+		}
+		if ((err = fn(ctx, y, sh - y < mh ? sh - y : mh, band, stride)))
+			return err;
+	}
+	return ret;
+}
+
 int jpeg_decode(struct jpeg *j, int scale, uint8_t *band, jpeg_band_fn fn, void *ctx)
 {
 	int mw = (8 * j->hmax) >> scale, mh = (8 * j->vmax) >> scale;
@@ -921,6 +1190,8 @@ int jpeg_decode(struct jpeg *j, int scale, uint8_t *band, jpeg_band_fn fn, void 
 
 	if (scale < 0 || scale > 3 || !j->ncomp)
 		return -EINVAL;
+	if (j->progressive)
+		return scale == 3 && j->blocks ? decode_progressive(j, band, fn, ctx) : -ENOTSUP;
 	set_scale(j, scale);
 	scale_tables(j);
 	build_rgb(j);

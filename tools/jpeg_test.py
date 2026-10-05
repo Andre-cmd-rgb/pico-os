@@ -29,6 +29,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SOURCES = [os.path.join(HERE, "jpeg_test.c"), os.path.join(ROOT, "bin", "jpeg.c")]
 
+PROGRESSIVE = [                 # size, source, cjpeg options (with -progressive)
+    ("1400x1400", "testsrc2", ["-sample", "2x2", "-quality", "90"]),
+    ("600x600", "mandelbrot", ["-sample", "2x2", "-optimize"]),
+    ("321x239", "testsrc2", ["-sample", "2x1", "-restart", "2"]),
+    ("333x77", "mandelbrot", ["-sample", "1x1", "-quality", "100"]),
+    ("97x33", "testsrc2", ["-sample", "1x2"]),
+    ("200x150", "testsrc2", ["-grayscale"]),
+]
+
 SHAPES = [                      # size, source, cjpeg options
     ("320x240", "testsrc2", ["-sample", "2x2"]),
     ("320x240", "mandelbrot", ["-sample", "2x2", "-quality", "95"]),
@@ -121,6 +130,14 @@ def shrink(rgb, w, h, scale):
     return bytes(out)
 
 
+def grey(rgb):
+    """Each pixel's luma, in all three channels: the picture without its colour."""
+    out = bytearray(len(rgb))
+    for i in range(0, len(rgb) - 2, 3):
+        out[i] = out[i + 1] = out[i + 2] = (rgb[i] * 299 + rgb[i + 1] * 587 + rgb[i + 2] * 114) // 1000
+    return bytes(out)
+
+
 def compare(a, b, b2=None):
     """PSNR in dB, and the largest difference in any channel. With b2, each
     pixel is held to whichever of b and b2 it is nearer."""
@@ -168,6 +185,36 @@ def main():
              "-frames:v", "1", "-vf", "format=yuvj420p", "-q:v", "6", clip])
         pictures.append(("320x240 ffmpeg mjpeg -q:v 6", clip))
 
+        # Progressive: an eighth only, from the DC scans; any other scale is refused.
+        progressive = []
+        for n, (size, source, opts) in enumerate(PROGRESSIVE):
+            src = os.path.join(tmp, f"p{n}.ppm")
+            jpg = os.path.join(tmp, f"p{n}.jpg")
+            run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"{source}=size={size}",
+                 "-frames:v", "1", src])
+            run(["cjpeg", "-progressive", *opts, "-outfile", jpg, src])
+            progressive.append((f"{size} {source} progressive {' '.join(opts)}", jpg))
+        for name, jpg in progressive:
+            ref = os.path.join(tmp, "ref.ppm")
+            run(["djpeg", "-dct", "fast", "-nosmooth", "-ppm", "-outfile", ref, jpg])
+            rw, rh, full = ppm(ref)
+            refused = subprocess.run([checked, jpg, "0"], capture_output=True)
+            w, h, got = ours(checked, jpg, 3)
+            want = (-(-rw >> 3), -(-rh >> 3))
+            small = to565(shrink(full, rw, rh, 3), 0)
+            psnr, worst = compare(got, small)
+            light, _ = compare(grey(got), grey(small))
+            # Luma, a block a pixel, is the DC itself: as close as baseline's.
+            # Subsampled colour has a block for every 2x2 or 2x1 pixels, and
+            # where baseline works those out from the block's detail the DC
+            # scans hold one value for them all: colour edges come out soft.
+            tiny = min(rw, rh) < 64
+            ok = (refused.returncode != 0 and (w, h) == want and light >= (20 if tiny else 36)
+                  and psnr >= (18 if "1x1" not in name and "gray" not in name else 36 if not tiny else 20))
+            failed += not ok
+            print(f"{'ok  ' if ok else 'FAIL'} {name} 1/8: {w}x{h}, luma {light:.1f} dB, "
+                  f"colour {psnr:.1f} dB{'' if refused.returncode else ', but full size was not refused'}")
+
         for name, jpg in pictures:
             ref = os.path.join(tmp, "ref.ppm")
             run(["djpeg", "-dct", "fast", "-nosmooth", "-ppm", "-outfile", ref, jpg])
@@ -214,7 +261,7 @@ def main():
         failed += not ok
         print(f"{'ok  ' if ok else 'FAIL'} shadow ramp: black stays black, shades 1-7 survive")
 
-        for name, jpg in pictures[:3] + pictures[6:8]:
+        for name, jpg in pictures[:3] + pictures[6:8] + progressive[:3] + progressive[5:]:
             out = run([checked, "-f", jpg, "400"]).stdout.decode().strip()
             print(f"ok   {name}: {out}")
         print(run([fast, "-t", clip, "500"]).stdout.decode().strip(), "(this PC, 320x240)")

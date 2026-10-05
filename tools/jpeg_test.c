@@ -61,12 +61,16 @@ static int decode(const uint8_t *data, size_t len, int scale, struct image *im)
 	im->h = jpeg_scaled_h(&j, scale);
 	im->rgb = calloc((size_t)im->w * im->h, 3);
 	strip = malloc(jpeg_band_size(&j, scale));
-	if (!im->rgb || !strip) {
+	if (jpeg_dc_size(&j))			/* a progressive one's block values */
+		j.blocks = malloc(jpeg_dc_size(&j));
+	if (!im->rgb || !strip || (jpeg_dc_size(&j) && !j.blocks)) {
 		free(strip);
+		free(j.blocks);
 		return -ENOMEM;
 	}
 	ret = jpeg_decode(&j, scale, strip, band, im);
 	free(strip);
+	free(j.blocks);
 	return ret;
 }
 

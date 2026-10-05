@@ -15,8 +15,14 @@
  * What it takes: baseline and extended sequential Huffman JPEG (SOF0 and
  * SOF1) with 8-bit samples, greyscale or YCbCr, luma sampled 1x1, 2x1,
  * 1x2 or 2x2 with chroma at 1x1 -- which is what cameras, phones, the web
- * and ffmpeg make -- with or without restart markers. Progressive and
- * arithmetic-coded files, CMYK and 12-bit samples are -ENOTSUP.
+ * and ffmpeg make -- with or without restart markers.
+ *
+ * Progressive Huffman JPEG (SOF2), the same shapes, only at an eighth:
+ * that is one sample a block, which its first scans -- the DC ones -- hold
+ * whole, so the rest of the file is passed over. The caller gives it the
+ * memory for one value a block (jpeg_dc_size(), set in `blocks` after
+ * jpeg_open()); a 1400-pixel cover needs under 100 KB. Arithmetic-coded
+ * files, CMYK and 12-bit samples are -ENOTSUP.
  */
 #pragma once
 
@@ -52,6 +58,11 @@ struct jpeg {
 
 	int		width, height;		/* set by jpeg_open() */
 	int		ncomp, hmax, vmax, mcux, mcuy, restart;
+	uint8_t		progressive;
+	int16_t		*blocks;		/* progressive: the caller's, one value a block */
+	/* The scan being read: which components, which coefficients, which bits. */
+	int		scan_n, ss, se, ah, al;
+	uint8_t		scan[3];
 	struct jpeg_comp comp[3];
 	uint16_t	qt[4][64];		/* in natural order */
 	uint32_t	qs[4][64];		/* the same with the IDCT's scaling in */
@@ -96,5 +107,9 @@ int	jpeg_scaled_h(const struct jpeg *j, int scale);
 /* How big the band buffer handed to jpeg_decode() must be. */
 size_t	jpeg_band_size(const struct jpeg *j, int scale);
 
-/* The picture, band by band: 0, a callback's value, or -EINVAL if damaged. */
+/* Bytes for `blocks` that a progressive picture needs; 0 for any other. */
+size_t	jpeg_dc_size(const struct jpeg *j);
+
+/* The picture, band by band: 0, a callback's value, or -EINVAL if damaged;
+ * -ENOTSUP for a progressive one at any scale but 3, or with no `blocks`. */
 int	jpeg_decode(struct jpeg *j, int scale, uint8_t *band, jpeg_band_fn fn, void *ctx);
