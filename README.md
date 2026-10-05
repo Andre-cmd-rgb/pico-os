@@ -280,7 +280,7 @@ standard commands, the editor, the network tools, `pkg` and the pico
 compiler -- everything needed to use, set up and repair the machine, as a
 Linux distribution's base is. The rest are applications: `ai`, `notes`,
 the diary (`alarm`, `todo`, `calendar`), `calc`, `view` and `video`,
-`nes`, `bench` and `picofetch`. Each is a switch in `make menuconfig`
+`music`, `gym`, `nes`, `bench` and `picofetch`. Each is a switch in `make menuconfig`
 (pico-os > Applications), all on in the Freenove build, and a name left
 out is free for a package. New programs go to the packages, below, unless
 they need the hardware or the speed of C.
@@ -381,6 +381,44 @@ make push FILE=hello.pico                # -> ~/hello.pico
 make push FILE=notes.txt DEST=/mnt/sd/notes.txt
 make pull FILE=~/hello.pico DEST=copy.pico
 ```
+
+### Music
+
+`music` is the player: everything in `~/music` (FLAC, MP3, WAV, in folders
+or not) as a library of albums, from the files' own tags, read once and
+kept in `~/.config/music/index` so a start only reads what changed. Enter
+plays a song and the rest of the list after it; `/` searches titles,
+artists and albums. Playing, the cover is beside the song -- the one in
+the file, progressive JPEGs too, or a `cover.jpg` in its folder -- and the
+lyrics move with it: the file's own (a FLAC's LYRICS, an MP3's USLT) or a
+`.lrc` of the same name, the line being sung lit, and a word at a time
+where the file times each word. Space pauses, the arrows seek ten seconds
+and set the volume, `n` and `p` go on and back, `s` shuffles, `r` repeats,
+Tab goes between the list and what plays. It plays on with another
+terminal in front, and the screen may go dark meanwhile. `play FILE` is
+still there for a file on its own, or a script.
+
+### Gym
+
+`gym` is a training log. The program is a plain file, `~/gym/schede.txt`:
+
+```
+[A] chest, shoulders, triceps
+Bench press        4x10   +2.5
+Lateral raise      3x12   +1
+Plank              3x45s
+```
+
+a scheda a block, each exercise with its sets x reps and the smallest
+step its weight moves in (none: only the reps count; `s`: seconds held).
+`gym` offers the next scheda in turn and lists its exercises; Enter on one
+logs a set, kg and reps filled in to start from, and they go into
+`~/gym/log.txt` at once, a session a paragraph (`Bench press: 40x10
+40x10 40x9`). Beside each exercise are last time's sets and what to aim
+for, by double progression: once every set made the top of the reps, the
+weight goes up a step and the reps start again a little lower; well short
+of the range, a step down; otherwise the same weight and a rep more.
+`gym plan` prints that for the next scheda, `gym last` the last sessions.
 
 ### Clips
 

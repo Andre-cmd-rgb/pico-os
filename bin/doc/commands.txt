@@ -56,6 +56,17 @@ DIARY
                     every mo,we ... / yearly 2/10
   cal [-3] [year]   print a month, or a year
 
+GYM
+  gym               today's session: enter logs a
+                    set, kg and reps filled in from
+                    the aim; d takes the last off,
+                    a adds an exercise, h history
+  gym plan [S]      scheda S (or the next): each
+                    exercise's last sets and aim
+  gym last [N]      the last N sessions
+                    The program is ~/gym/schede.txt,
+                    what was done ~/gym/log.txt
+
 SCRIPTS
   echo printf seq expr test basename dirname
   true false sleep yes env
@@ -136,6 +147,13 @@ POWER
   charger is charging the cell).
 
 SOUND
+  music       the music player: ~/music by album,
+              the cover, the lyrics as they are
+              sung. enter plays, / searches,
+              space pauses, the arrows seek and
+              set the volume, n/p next and back,
+              s shuffle, r repeat, tab what plays
+  music F...  these files or folders, played
   play FILE   WAV, FLAC, MP3, or raw 16-bit mono;
               headphones get all 24 bits, at the
               file's rate up to 96 kHz; plays on

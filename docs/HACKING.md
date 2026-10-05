@@ -170,6 +170,27 @@ core (`PT_PROGRAM_ANYCORE`): decoding is a sixth of a core, and on the
 programs' core it slowed a game on another terminal from 60 frames a
 second to 57.
 
+`codec_seek()` moves to a frame: WAV and FLAC exactly (FLAC finds the
+frame holding it by interpolating between frames whose headers say where
+they lie, both check sums agreeing, then decodes forward the last two
+seconds); MP3, whose frames carry no numbers, by its Xing table of
+contents or its bitrate (`tools/seek_test.py` measures where it lands:
+within a tenth of a second). The way from a decoder to the speaker is
+`bin/sink.c`, shared by `play` and `music`.
+
+`music` reads tags with `bin/tags.c` (FLAC's comments and pictures, ID3v2
+and v1, the length), which only finds the cover and the lyrics, a few
+small reads a file, and parses lyrics with `bin/lrc.c`; both are plain C,
+checked on the PC by `tools/tags_test.py`. Covers are JPEG, and most in
+downloaded FLACs are progressive: `bin/jpeg.c` reads those at an eighth,
+from their DC scans alone (one value a block, which a 1400-pixel cover
+holds in under 100 KB), and passes the other scans over. The cover goes
+over the text in a terminal inset (`vt_inset_open()`), which is how it
+stays out of the way of the other terminals. Pausing, seeking and the
+next song throw away what is queued (`audio_discard()`) and start again
+from where the song is heard to be (`audio_queued_us()`), so a key acts at
+once rather than after the second of sound waiting to be played.
+
 ## The speaker is shared
 
 `drivers/audio/audio.c` is a mixer. Every task that writes gets a stream,

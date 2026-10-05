@@ -70,7 +70,8 @@ WHERE THINGS ARE
 
   ~/agenda     the calendar and the to-do list
   ~/bin        your scripts, on PATH
-  ~/music      .wav .flac .mp3
+  ~/gym        the training program and log
+  ~/music      .wav .flac .mp3, for music
   ~/notes      text
   ~/photos     .bmp .jpg, and screenshots/
   ~/recordings what rec records
