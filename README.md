@@ -28,7 +28,7 @@ drawn in amber CRT colors on an ILI9341 screen.
 [0.50] rootfs: / is littlefs on flash:storage, 13160 KB free of 13248 KB
 [0.56] battery: 3.86 V, 58%; a 2500 mAh cell, 90 mohm (a guess), 0.0 cycles
 [0.56] tmpfs: /tmp holds up to 2048 KB, taken from RAM as it is used
-[0.63] sd: AGGCE 60906 MB on 4-bit sdmmc, mounted on /mnt/sd and /home/user
+[0.63] sd: AGGCE 60906 MB on 4-bit sdmmc at 40000 kHz, mounted on /mnt/sd and /home/user
 [0.63] wifi: radio off, no saved network; `wifi on` starts it
 [0.63] init: 124 programs, starting shell
 ```
@@ -498,6 +498,7 @@ from 1970.
 | `/` create / delete a small file | 104 ms / 11 ms |
 | `/` write, a line at a time | 1,290 lines/s |
 | `/tmp` write, a line at a time | 49,300 lines/s |
+| `/mnt/sd` read / write, 1 MB in 4 KB blocks | 4.9 MB/s / 2.0 MB/s |
 | display bus, full frames | 30 fps (4.4 MB/s) on the Freenove panel at 40 MHz |
 
 The NES runs at full speed, 60 frames a second, and draws every other
@@ -509,6 +510,11 @@ The `/` numbers are what the flash sustains once its blocks have been used:
 every 4 KB must be erased before it is written again. Freshly formatted flash
 writes about four times faster (500 KB/s, 9,300 lines/s) until it has been
 filled once. Keep big or busy files on the SD card or in `/tmp`.
+
+`bench disk DIR` is a disk benchmark like a PC's: sequential writes and
+reads from 512-byte to 128 KB blocks, random 4 KB reads and writes, then
+small files. The SD card runs its 4-bit bus at 40 MHz (high speed), and
+at 20 MHz if a card will not take that.
 
 The root filesystem was chosen by measurement: FAT on the same flash wrote at
 91 KB/s (fresh) and took 215 ms to create and 148 ms to delete a 1 KB file.

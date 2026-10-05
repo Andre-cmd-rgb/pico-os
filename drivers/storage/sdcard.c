@@ -180,7 +180,22 @@ static int sd_mount_common(bool format)
 		     CONFIG_PT_SD_MMC_D3 >= 0 ? 4 : 1;
 	slot.flags = SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
 
+	/*
+	 * 40 MHz, the high-speed mode nearly every card has (one without it
+	 * stays at 20): twice what the four lines carry at the default. Every
+	 * block goes with a CRC, so a bus that cannot keep up fails rather
+	 * than corrupts, and then it is the default speed again. Never when
+	 * formatting: a failed mount there is what formats the card.
+	 */
+	host.max_freq_khz = format ? SDMMC_FREQ_DEFAULT : SDMMC_FREQ_HIGHSPEED;
 	esp_err_t err = esp_vfs_fat_sdmmc_mount(SD_BASE, &host, &slot, &cfg, &card);
+	if (err && err != ESP_ERR_TIMEOUT && err != ESP_ERR_NOT_FOUND && host.max_freq_khz != SDMMC_FREQ_DEFAULT) {
+		klog("sd: not at %d kHz (%s): at %d kHz instead", host.max_freq_khz, esp_err_to_name(err),
+		     SDMMC_FREQ_DEFAULT);
+		card = NULL;
+		host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+		err = esp_vfs_fat_sdmmc_mount(SD_BASE, &host, &slot, &cfg, &card);
+	}
 	if (err) {
 		card = NULL;
 		klog("sd: no usable card (%s)", esp_err_to_name(err));
@@ -189,8 +204,8 @@ static int sd_mount_common(bool format)
 	char desc[80];
 	sd_describe(desc, sizeof(desc));
 	home_layout();
-	klog("sd: %s on %d-bit sdmmc, mounted on %s and %s", desc, slot.width,
-	     SD_PATH, user_home());
+	klog("sd: %s on %d-bit sdmmc at %d kHz, mounted on %s and %s", desc, slot.width,
+	     card->real_freq_khz, SD_PATH, user_home());
 	return 0;
 }
 

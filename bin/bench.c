@@ -263,6 +263,162 @@ static int bench_files(const char *dir)
 	return 0;
 }
 
+/*
+ * One small record written again and again -- keys, a program's state:
+ * over itself, and as a new file renamed over it. On LittleFS what is
+ * written to a file is committed only when it is closed, so the first is
+ * as safe as the second there; on FAT only the rename is.
+ */
+static int bench_rewrite(const char *dir)
+{
+	static const size_t sizes[] = { 256, 1024, 2048, 4096 };
+	const int count = 10;
+	char path[PT_PATH_MAX], tmp[PT_PATH_MAX];
+	char *data = pt_malloc(4096);
+	int err = 0;
+
+	if (!data)
+		return fail("bench", NULL, -ENOMEM);
+	memset(data, 'r', 4096);
+	if (!join_path(dir, ".bench.rec", path, sizeof(path)) || !join_path(dir, ".bench.new", tmp, sizeof(tmp))) {
+		pt_free(data);
+		return fail("bench", dir, -ENAMETOOLONG);
+	}
+	for (size_t s = 0; s < sizeof(sizes) / sizeof(*sizes) && !err && !pt_interrupted(); s++) {
+		int64_t t[3];
+
+		t[0] = now();
+		for (int i = 0; i <= count && !err; i++) {
+			int fd = pt_open(path, O_WRONLY | O_CREAT | O_TRUNC);
+
+			if (fd < 0) {
+				err = fd;
+				break;
+			}
+			err = write_all(fd, data, sizes[s]);
+			pt_close(fd);
+			if (!i)
+				t[0] = now();	/* the first made it: what follows rewrites */
+		}
+		t[1] = now();
+		for (int i = 0; i < count && !err; i++) {
+			int fd = pt_open(tmp, O_WRONLY | O_CREAT | O_TRUNC);
+
+			if (fd < 0) {
+				err = fd;
+				break;
+			}
+			err = write_all(fd, data, sizes[s]);
+			pt_close(fd);
+			if (!err)
+				err = pt_rename(tmp, path);
+		}
+		t[2] = now();
+		if (!err)
+			pt_printf("rewrite %-6s %4zu B  in place %6.1f ms  renamed over %6.1f ms  (each)\n", dir,
+				  sizes[s], (t[1] - t[0]) / 1e3 / count, (t[2] - t[1]) / 1e3 / count);
+	}
+	pt_unlink(path);
+	pt_unlink(tmp);
+	pt_free(data);
+	return err ? fail("bench", path, err) : 0;
+}
+
+/*
+ * A disk benchmark for one filesystem, as on a PC: sequential writing and
+ * reading in blocks of 512 bytes to 128 KB, random 4 KB reads and writes
+ * in a file already there, then small files made, read and removed. A
+ * megabyte a test: the flash takes some 15 s to write one. The random
+ * ones stop after RANDOM_US, the rate taken from what was done: LittleFS
+ * writes the rest of a file again after a write into the middle of it,
+ * and 64 of them on the flash took over a quarter of an hour.
+ */
+#define RANDOM_US	10000000
+static int bench_disk(const char *dir)
+{
+	static const size_t blocks[] = { 512, 4096, 32768, 131072 };
+	const size_t total = 1024 * 1024, block_max = 131072;
+	char path[PT_PATH_MAX];
+	uint8_t *buf = pt_malloc(block_max);
+	uint32_t seed = 12345;
+	int err = 0;
+
+	if (!buf)
+		return fail("bench", NULL, -ENOMEM);
+	if (!join_path(dir, ".bench.disk", path, sizeof(path))) {
+		pt_free(buf);
+		return fail("bench", dir, -ENAMETOOLONG);
+	}
+	for (size_t i = 0; i < block_max; i++)
+		buf[i] = i * 31 + 7;
+	pt_printf("disk   %s, 1 MB a test\n       block    write KB/s    read KB/s\n", dir);
+	for (size_t b = 0; b < sizeof(blocks) / sizeof(*blocks) && !err && !pt_interrupted(); b++) {
+		int64_t t0, t1, t2;
+		size_t got = 0;
+		ssize_t n;
+		int fd = pt_open(path, O_WRONLY | O_CREAT | O_TRUNC);
+
+		if (fd < 0) {
+			err = fd;
+			break;
+		}
+		t0 = now();
+		for (size_t done = 0; done < total && !err; done += blocks[b])
+			err = write_all(fd, (const char *)buf, blocks[b]);
+		pt_close(fd);			/* what is written is on the disk once closed */
+		t1 = now();
+		fd = err ? -1 : pt_open(path, O_RDONLY);
+		while (fd >= 0 && (n = pt_read(fd, buf, blocks[b])) > 0)
+			got += n;
+		t2 = now();
+		if (fd >= 0)
+			pt_close(fd);
+		if (!err && got != total)
+			err = -EIO;
+		if (!err)
+			pt_printf("       %6zu   %10.0f   %10.0f\n", blocks[b], total / 1024.0 / ((t1 - t0) / 1e6),
+				  total / 1024.0 / ((t2 - t1) / 1e6));
+	}
+	/* random 4 KB pieces of the megabyte the last pass left */
+	if (!err && !pt_interrupted()) {
+		int64_t t0, t1, t2;
+		int reads = 0, writes = 0, fd = pt_open(path, O_RDWR);
+
+		if (fd < 0)
+			err = fd;
+		t0 = now();
+		for (; reads < 256 && !err && now() - t0 < RANDOM_US && !pt_interrupted(); reads++) {
+			seed = seed * 1103515245 + 12345;
+			if (pt_lseek(fd, (off_t)(seed >> 8) % (total / 4096) * 4096, SEEK_SET) < 0 ||
+			    pt_read(fd, buf, 4096) != 4096)
+				err = -EIO;
+		}
+		t1 = now();
+		for (; writes < 64 && !err && now() - t1 < RANDOM_US && !pt_interrupted(); writes++) {
+			seed = seed * 1103515245 + 12345;
+			if (pt_lseek(fd, (off_t)(seed >> 8) % (total / 4096) * 4096, SEEK_SET) < 0)
+				err = -EIO;
+			else
+				err = write_all(fd, (const char *)buf, 4096);
+		}
+		if (fd >= 0)
+			pt_close(fd);
+		t2 = now();
+		if (!err && reads && writes) {
+			double r = reads / ((t1 - t0) / 1e6), w = writes / ((t2 - t1) / 1e6);
+
+			/* a rate under 10 with its tenths: the flash's writes may be 0.1 a second */
+			pt_printf("       random 4 KB: read %5.*f a second (%4.*f KB/s), write %5.*f a second (%4.*f KB/s)\n",
+				  r < 10, r, r * 4 < 10, r * 4, w < 10, w, w * 4 < 10, w * 4);
+		}
+	}
+	pt_unlink(path);
+	pt_free(buf);
+	if (err)
+		return fail("bench", path, err);
+	return bench_files(dir);
+}
+
 static int bench_lcd(void)
 {
 	if (!vt_has_display()) {
@@ -305,11 +461,14 @@ static int bench_hog(void)
 	return 0;
 }
 
-PT_COMPLETE(bench, ": all cpu fpu mem spawn lcd fs lines files hog\nfs: <dir>\nlines: <dir>\nfiles: <dir>\n")
+PT_COMPLETE(bench, ": all cpu fpu mem spawn lcd fs lines files rewrite disk hog\nfs: <dir>\nlines: <dir>\nfiles: <dir>\nrewrite: <dir>\ndisk: <dir>\n")
 
 PT_PROGRAM_STACK(bench, 12, "measure speed\n"
 		 "usage: bench [all | cpu | fpu | mem | spawn | lcd |\n"
-		 "              fs [dir] | lines [dir] | files [dir] | hog]\n"
+		 "              fs [dir] | lines [dir] | files [dir] |\n"
+		 "              rewrite [dir] | disk [dir] | hog]\n"
+		 "  disk: a disk benchmark -- sequential and random\n"
+		 "  4 KB reads and writes, then small files\n"
 		 "  fs writes and reads a 512 KB file in dir (default /; try /tmp and /mnt/sd)\n"
 		 "  hog spins forever without system calls, to test kill -9")
 {
@@ -333,6 +492,10 @@ PT_PROGRAM_STACK(bench, 12, "measure speed\n"
 		status |= bench_lines(argc > 2 ? argv[2] : "/");
 	if (!strcmp(what, "all") || !strcmp(what, "files"))
 		status |= bench_files(argc > 2 ? argv[2] : "/");
+	if (!strcmp(what, "disk"))
+		status |= bench_disk(argc > 2 ? argv[2] : "/");
+	if (!strcmp(what, "all") || !strcmp(what, "rewrite"))
+		status |= bench_rewrite(argc > 2 ? argv[2] : "/");
 	if (!strcmp(what, "all") || !strcmp(what, "lcd"))
 		status |= bench_lcd();
 	return status;
