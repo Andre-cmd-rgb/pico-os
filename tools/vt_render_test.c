@@ -30,7 +30,7 @@ enum esc_state { ESC_NONE, ESC_START, ESC_CSI };
 enum vt_cursor { VT_CURSOR_BLOCK, VT_CURSOR_UNDERLINE, VT_CURSOR_BAR };
 typedef void *SemaphoreHandle_t;
 typedef void *TaskHandle_t;
-struct cell { uint8_t glyph; uint16_t color; };
+struct cell { uint16_t glyph; uint16_t color; };
 
 #include "vt_screen_under_test.h"
 

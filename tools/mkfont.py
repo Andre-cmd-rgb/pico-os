@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """Generate drivers/tty/font5x8.h, the console font.
 
@@ -215,6 +216,51 @@ def cell_bars(bars):
 for n in range(1, 5):
     EXTRA[chr(0xe006 + 2 * n)], EXTRA[chr(0xe007 + 2 * n)] = cell_bars(n)
 
+# Small monochrome emoji, one terminal cell each. Aliases below share a
+# recognisable symbol at this resolution; the UTF-8 message remains intact.
+EXTRA.update({
+    '✓': '00000 00001 00010 10100 01000 00000 00000 00000',
+    '❤': '00000 01010 11111 11111 01110 00100 00000 00000',
+    '💔': '01010 11101 11011 11101 01110 00100 00000 00000',
+    '😀': '01110 10001 11011 10001 11111 10101 01110 00000',
+    '🙂': '01110 10001 11011 10001 10001 10101 01110 00000',
+    '😊': '01110 10001 10101 10001 11011 10101 01110 00000',
+    '😂': '01110 10101 10001 11111 10101 01110 10001 00000',
+    '😭': '01110 10101 11011 11011 10101 10101 01110 00000',
+    '😢': '01110 11001 10001 10001 10111 10001 01110 00000',
+    '😉': '01110 10001 11001 10001 10001 10101 01110 00000',
+    '😍': '01010 11111 11011 10001 11111 10101 01110 00000',
+    '😘': '01110 10001 11011 10001 10110 10011 01100 00000',
+    '😎': '01110 11111 11011 10001 10001 10101 01110 00000',
+    '😅': '01110 10101 10001 11111 10101 01110 00001 00000',
+    '😡': '01110 10001 10101 11011 10001 11111 01110 00000',
+    '🤔': '01110 11001 10001 10011 10100 10100 01110 00000',
+    '🥺': '01110 11111 11011 10001 10101 10001 01110 00000',
+    '😮': '01110 10001 11011 10001 10101 10101 01110 00000',
+    '🙃': '01110 10101 10001 10001 11011 10001 01110 00000',
+    '👍': '00100 00100 00110 11101 10101 10101 11110 00000',
+    '👎': '11110 10101 10101 11101 00110 00100 00100 00000',
+    '🙏': '00100 01110 01110 11111 10101 10101 10001 00000',
+    '👏': '10100 01101 01110 11110 01111 00110 10001 00000',
+    '👋': '00101 10101 10111 10111 11111 01110 00100 00000',
+    '💪': '01100 01100 00100 00110 10011 11111 01110 00000',
+    '👀': '01010 10101 11111 11111 10101 01010 00000 00000',
+    '💀': '01110 11111 10101 11111 01110 01010 01110 00000',
+    '🔥': '00100 00110 01010 11101 10101 11011 01110 00000',
+    '🎉': '10001 00100 00101 01010 01100 11100 10000 00000',
+    '✅': '11111 10001 10011 10101 11001 10001 11111 00000',
+    '❌': '10001 01010 00100 01010 10001 00000 00000 00000',
+    '⭐': '00100 00100 11111 01110 01010 10001 00000 00000',
+    '🚀': '00010 00111 00110 01110 11100 01100 10100 00000',
+    '☕': '00000 11110 10011 10011 10010 01100 11111 00000',
+    '🏠': '00100 01010 10001 11111 11011 11011 11111 00000',
+    '🐱': '10001 11011 11111 10101 11111 10101 01110 00000',
+    '🐶': '01010 11111 10101 10101 01110 00100 01110 00000',
+    '🤝': '00000 10001 11111 11011 01010 00100 00000 00000',
+    '🌙': '00110 01100 11000 11000 11001 01111 00110 00000',
+})
+
+
 ACCENTS = {
     'grave': '01000 00100',
     'acute': '00010 00100',
@@ -265,6 +311,17 @@ ALIASES = {'\u00a0': ' ', '−': '–', 'µ': 'μ', '\u2126': 'Ω', '∆': 'Δ',
            '\u2010': '-', '\u2011': '-', '\u2007': ' ', '\u2009': ' ', '\u200a': ' ',
            '\u202f': ' ', '【': '[', '】': ']'}
 
+# Colour/family variants cannot be distinguished by a monochrome 5x8 font.
+for chars, base in {
+    '💗💖💕💓💞💘💝♥🧡💛💚💙💜🖤🤍🤎🩷🩵🩶🫶': '❤',
+    '😁😃😄🤗🥰': '😀', '🤣': '😂', '🥲😥😓😰': '😢', '😞😔☹🙁': '😢',
+    '🤩': '😍', '😗😙😚': '😘', '😇': '😊', '😠🤬': '😡', '😯😲😱': '😮',
+    '💯✔☑': '✓', '🙌🎊🥳': '🎉', '✨🌟💫': '⭐', '🍵': '☕', '🤞👌✌': '👍',
+    '🏡': '🏠', '😺😸😻': '🐱', '🐕': '🐶', '🐈': '🐱', '💥': '🔥',
+}.items():
+    for char in chars:
+        ALIASES[char] = base
+
 
 def rows(bitmap):
     """Five columns to a row, bit 4 the leftmost; an icon's sixth, the gap
@@ -306,9 +363,48 @@ def main():
         print(f"\t{{ {', '.join(f'0x{v:02x}' for v in r)} }},\t/* {label} */")
     print("};\n")
     print("/* sorted by code point, for a binary search */")
-    print("static const struct {\n\tuint16_t cp;\n\tuint8_t glyph;\n} font_extra[] = {")
+    print("static const struct {\n\tuint32_t cp;\n\tuint8_t glyph;\n} font_extra[] = {")
     for c, g in mapped:
         print(f"\t{{ 0x{ord(c):04x}, {g} }},\t/* {'no-break space' if c == chr(0xa0) else c} */")
+    print("};")
+    emoji()
+
+
+def emoji():
+    """The emoji tools/mkemoji.py drew: two cells wide, ten rows of eleven
+    pixels (bit 10 the leftmost), each in a colour of its own."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "emoji.txt")
+    table = []
+    for line in open(path, encoding="utf-8"):
+        line = line.split("#")[0].split()
+        if not line:
+            continue
+        cp, colour, rows = int(line[0], 16), int(line[1]), line[2:]
+        assert len(rows) == 10 and all(len(r) == 11 for r in rows), line
+        table.append((cp, colour, [int(r, 2) for r in rows]))
+    order = []
+    for cp, _, _ in table:	# as the file has them: the most used first
+        if cp not in order:
+            order.append(cp)
+    table.sort()
+    print("\n/* Emoji two cells wide: a cell's glyph is FONT_EMOJI + 2 * index (+ 1 for its")
+    print(" * right half). Ten rows of eleven pixels, bit 10 the leftmost; a colour of the")
+    print(" * sixteen. Generated from tools/emoji.txt (tools/mkemoji.py). */")
+    print(f"#define FONT_EMOJI\t0x100\n#define FONT_EMOJIS\t{len(table)}\n")
+    print("static const struct {\n\tuint16_t rows[10];\n\tuint8_t colour;\n} font_emoji[FONT_EMOJIS] = {")
+    for cp, colour, rows in table:
+        print(f"\t{{ {{ {', '.join(f'0x{r:03x}' for r in rows)} }}, {colour} }},\t/* {chr(cp)} */")
+    print("};\n")
+    print("/* sorted by code point, for a binary search */")
+    print("static const uint32_t font_emoji_cp[FONT_EMOJIS] = {")
+    for i in range(0, len(table), 8):
+        print("\t" + " ".join(f"0x{cp:05x}," for cp, _, _ in table[i:i + 8]))
+    print("};")
+    index = {cp: i for i, (cp, _, _) in enumerate(table)}
+    print("\n/* the most used first (an emoji menu's order): indexes into the above */")
+    print("static const uint16_t font_emoji_order[FONT_EMOJIS] = {")
+    for i in range(0, len(order), 12):
+        print("\t" + " ".join(f"{index[cp]}," for cp in order[i:i + 12]))
     print("};")
 
 

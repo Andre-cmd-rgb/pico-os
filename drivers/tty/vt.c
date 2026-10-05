@@ -55,7 +55,7 @@
 #define CLAMP(v, lo, hi) MIN(MAX(v, lo), hi)
 
 struct cell {
-	uint8_t  glyph;
+	uint16_t glyph;		/* font5x8's, or FONT_EMOJI + 2 * an emoji (+ 1: its right half) */
 	uint16_t color;		/* COLOR(fg, bg) */
 };
 
@@ -158,7 +158,7 @@ static uint16_t pen_color(void)
 	return cur->inverse ? COLOR(cur->bg, fg) : COLOR(fg, cur->bg);
 }
 
-static void set_cell(int x, int y, uint8_t glyph, uint16_t color)
+static void set_cell(int x, int y, uint16_t glyph, uint16_t color)
 {
 	struct cell *c = &cur->cells[y * cols + x];
 
@@ -243,7 +243,7 @@ static void newline(void)
 		cur->y++;
 }
 
-static void put_glyph(uint8_t glyph)
+static void put_glyph(uint16_t glyph)
 {
 	if (cur->wrap)
 		newline();
@@ -254,7 +254,8 @@ static void put_glyph(uint8_t glyph)
 		cur->x++;
 }
 
-static uint8_t glyph_of(uint32_t cp)
+/* The glyph for `cp`, or -1 if the font has none. */
+static int find_glyph(uint32_t cp)
 {
 	if (cp >= FONT_FIRST && cp < FONT_FIRST + FONT_ASCII)
 		return cp - FONT_FIRST;
@@ -271,12 +272,67 @@ static uint8_t glyph_of(uint32_t cp)
 		else
 			hi = mid;
 	}
-	return FONT_UNKNOWN;
+	return -1;
+}
+
+static uint8_t glyph_of(uint32_t cp)
+{
+	int glyph = find_glyph(cp);
+
+	return glyph < 0 ? FONT_UNKNOWN : glyph;
+}
+
+/* The emoji `cp` is, two cells wide; -1 if it is none. */
+static int find_emoji(uint32_t cp)
+{
+	size_t lo = 0, hi = FONT_EMOJIS;
+
+	if (cp < 0x2000)
+		return -1;
+	while (lo < hi) {
+		size_t mid = (lo + hi) / 2;
+
+		if (font_emoji_cp[mid] == cp)
+			return mid;
+		if (font_emoji_cp[mid] < cp)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return -1;
+}
+
+/* The emoji the font has, the most used first (an emoji menu); 0 past the last. */
+uint32_t vt_emoji(unsigned i)
+{
+	return i < FONT_EMOJIS ? font_emoji_cp[font_emoji_order[i]] : 0;
+}
+
+/* Whether the screen can draw `cp`: what the font lacks comes out as '?'. */
+bool vt_can_draw(uint32_t cp)
+{
+	return find_emoji(cp) >= 0 || find_glyph(cp) >= 0;
+}
+
+/* How many cells `cp` takes: 2 for an emoji, 1, or 0 if the font lacks it. */
+int vt_char_width(uint32_t cp)
+{
+	return find_emoji(cp) >= 0 ? 2 : find_glyph(cp) >= 0 ? 1 : 0;
 }
 
 static void put_codepoint(uint32_t cp)
 {
-	put_glyph(glyph_of(cp));
+	int e = find_emoji(cp);
+
+	if (e < 0) {
+		put_glyph(glyph_of(cp));
+		return;
+	}
+	/* two cells: on the next line if only one is left on this one */
+	if (!cur->wrap && cur->x == cols - 1)
+		put_glyph(' ' - FONT_FIRST);
+	put_glyph(FONT_EMOJI + 2 * e);
+	put_glyph(FONT_EMOJI + 2 * e + 1);
 }
 
 static void reset_pen(void)
@@ -556,13 +612,21 @@ bool vt_has_display(void)
  * cell in the cursor's colour with the glyph cut out of it; an underline
  * or a bar is a stroke of the cursor's colour over the cell as it is.
  */
-static void draw_cell(uint8_t *px, int span_w, int cell_x, uint8_t glyph, uint16_t color,
+static void draw_emoji(uint8_t *px, int span_w, int cell_x, uint16_t glyph, uint16_t color);
+
+static void draw_cell(uint8_t *px, int span_w, int cell_x, uint16_t glyph, uint16_t color,
 		      bool cursor)
 {
 	const uint8_t *fg = palette[FG_OF(color) < VT_COLORS ? FG_OF(color) : FG_DEFAULT];
 	const uint8_t *bg = palette[BG_OF(color) < VT_COLORS ? BG_OF(color) : BG_DEFAULT];
 	const uint8_t *mark = palette[VT_CURSOR];
-	const uint8_t *bits = font5x8[glyph < FONT_GLYPHS ? glyph : FONT_UNKNOWN];
+	const uint8_t *bits;
+
+	if (glyph >= FONT_EMOJI && glyph < FONT_EMOJI + 2 * FONT_EMOJIS) {
+		draw_emoji(px, span_w, cell_x, glyph, color);
+		return;
+	}
+	bits = font5x8[glyph < FONT_GLYPHS ? glyph : FONT_UNKNOWN];
 	/* Every caller supplies DMA or 64-byte-aligned storage. Pixel offsets
 	 * keep the word stores aligned; may_alias also permits byte buffers. */
 	typedef uint16_t pixel_t __attribute__((may_alias));
@@ -615,6 +679,35 @@ static void draw_cell(uint8_t *px, int span_w, int cell_x, uint8_t glyph, uint16
 }
 
 /*
+ * Half an emoji: six of its eleven columns (the right half has five and
+ * the gap), all ten rows of the cell, in the emoji's own colour on the
+ * cell's background.
+ */
+static void draw_emoji(uint8_t *px, int span_w, int cell_x, uint16_t glyph, uint16_t color)
+{
+	typedef uint16_t pixel_t __attribute__((may_alias));
+	unsigned e = (glyph - FONT_EMOJI) / 2, shift = glyph & 1 ? 0 : 6;
+	const uint8_t *bg = palette[BG_OF(color) < VT_COLORS ? BG_OF(color) : BG_DEFAULT];
+	const uint8_t *fg = palette[font_emoji[e].colour < VT_COLORS ? font_emoji[e].colour : FG_DEFAULT];
+	uint16_t ink, paper;
+
+	memcpy(&ink, fg, sizeof(ink));
+	memcpy(&paper, bg, sizeof(paper));
+	for (int y = 0; y < 10; y++) {
+		/* this half's columns, leftmost first: bits 10..5, or 4..0 and the gap */
+		unsigned bits = font_emoji[e].rows[y] << 1 >> shift;
+
+		for (int dy = 0; dy < SCALE; dy++) {
+			pixel_t *o = (pixel_t *)px + (y * SCALE + dy) * span_w + cell_x;
+
+			for (int x = 0; x < 6; x++)
+				for (int dx = 0; dx < SCALE; dx++)
+					o[x * SCALE + dx] = bits & 0x20 >> x ? ink : paper;
+		}
+	}
+}
+
+/*
  * A program that draws on the panel itself holds the screen, but only for
  * its own terminal: switch to another and the renderer paints that one as
  * usual, while the program draws nothing until its terminal is back in
@@ -631,6 +724,20 @@ static struct {
 	volatile unsigned gen;		/* its terminal's returns to the front */
 } holder[CONFIG_PT_VT_COUNT];
 static bool was_owned;			/* the renderer's: a program had the screen */
+
+/*
+ * A picture a program sets over part of its terminal's text (vt_inset_open):
+ * the renderer paints it after the text whenever that terminal is showing.
+ * The buffer is the terminal's, not the program's, so it outlives a
+ * program killed with it set; the renderer drops it then.
+ */
+static struct {
+	uint8_t		*px;		/* RGB565 high byte first, on a cache line for the DMA */
+	int		 x, y, w, h;	/* in the text area, in pixels */
+	int		 pid;
+	volatile bool	 shown;
+	volatile bool	 dirty;		/* to be painted at the next frame */
+} insets[CONFIG_PT_VT_COUNT];
 static int owned_vt;			/* on that terminal */
 
 /*
@@ -866,11 +973,13 @@ static bool prepare_frame(int which)
 
 
 /* Finish a coherent row pass for the terminal it started on. Switching
- * stays quick; its notification and repaint are kept for the next pass. */
-static void render_rows(uint8_t *pixels, struct cell *row, int which,
+ * stays quick; its notification and repaint are kept for the next pass.
+ * True if it drew where the terminal's inset goes, which is then due again. */
+static bool render_rows(uint8_t *pixels, struct cell *row, int which,
 			bool cur_shown, int cur_x, int cur_y)
 {
 	struct screen *sc = &screens[which];
+	bool under = false;
 
 	for (int y = 0; y < rows; y++) {
 		int lo, hi, n, left, right, span_w;
@@ -916,6 +1025,33 @@ static void render_rows(uint8_t *pixels, struct cell *row, int which,
 		}
 		lcd_draw(origin_x + lo * CELL_W - left, text_y + y * CELL_H,
 			 span_w, CELL_H, pixels);
+		if (insets[which].shown && y * CELL_H < insets[which].y + insets[which].h &&
+		    (y + 1) * CELL_H > insets[which].y && lo * CELL_W < insets[which].x + insets[which].w &&
+		    (hi + 1) * CELL_W > insets[which].x)
+			under = true;
+	}
+	return under;
+}
+
+/* The inset over the text, if it is due: the renderer's, with the panel held. */
+static void paint_inset(int which, bool due)
+{
+	if (!insets[which].px || !insets[which].shown || screens[which].view ||
+	    !(due || insets[which].dirty))
+		return;
+	insets[which].dirty = false;
+	lcd_draw(origin_x + insets[which].x, text_y + insets[which].y, insets[which].w,
+		 insets[which].h, insets[which].px);
+}
+
+/* The rows an inset covered, to be painted again now that it is gone. Locked. */
+static void uncover(int which, int y, int h)
+{
+	struct screen *sc = &screens[which];
+
+	for (int r = y / CELL_H; sc->cells && r < rows && r * CELL_H < y + h; r++) {
+		sc->dirty_lo[r] = 0;
+		sc->dirty_hi[r] = cols - 1;
 	}
 }
 
@@ -965,6 +1101,16 @@ static void render_task(void *arg)
 				repaint_all = true;
 				xSemaphoreGive(lock);
 			}
+		}
+		for (int i = 0; i < CONFIG_PT_VT_COUNT; i++) {
+			if (!insets[i].px || proc_alive(insets[i].pid))
+				continue;
+			insets[i].shown = false;	/* its program ended with it set */
+			heap_caps_free(insets[i].px);
+			insets[i].px = NULL;
+			xSemaphoreTake(lock, portMAX_DELAY);
+			uncover(i, insets[i].y, insets[i].h);
+			xSemaphoreGive(lock);
 		}
 		/* taken from the program or given back: program_shows() */
 		bool owned = program_shows(active);
@@ -1021,7 +1167,7 @@ static void render_task(void *arg)
 		}
 		xSemaphoreGive(lock);
 
-		render_rows(pixels, row, frame_vt, cur_shown, cur_x, cur_y);
+		paint_inset(frame_vt, render_rows(pixels, row, frame_vt, cur_shown, cur_x, cur_y));
 		xSemaphoreGive(panel);
 	}
 }
@@ -1418,6 +1564,86 @@ void vt_screen_end(void)
 {
 	if (display)
 		xSemaphoreGive(panel);
+}
+
+/* ------------------------------------------------------------ insets */
+
+/*
+ * A picture over part of the calling program's terminal -- a code to
+ * scan to link an account, say -- with the terminal's colours and status line
+ * left around it. The terminal paints it after its text whenever that
+ * terminal is in front, so a repaint, a switch away and back or the
+ * screen waking cannot wipe it, and it never lands on another terminal.
+ * The program keeps the text under it blank. One a terminal.
+ *
+ * x, y, w, h are pixels from the text area's top left (vt_text_size()).
+ * Returns the buffer to fill, w * h RGB565 pixels high byte first, then
+ * vt_inset_show(); NULL with no screen, or if it does not fit.
+ */
+uint8_t *vt_inset_open(int x, int y, int w, int h)
+{
+	int vt = tty_of_current();
+	struct proc *p = proc_current();
+	uint8_t *px;
+
+	if (!display || vt < 0 || vt >= CONFIG_PT_VT_COUNT || !p || w <= 0 || h <= 0 || x < 0 ||
+	    y < 0 || x + w > cols * CELL_W || y + h > rows * CELL_H)
+		return NULL;
+	vt_inset_close();
+	px = heap_caps_aligned_alloc(64, (size_t)w * h * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+	if (!px)
+		return NULL;
+	xSemaphoreTake(panel, portMAX_DELAY);
+	insets[vt].px = px;
+	insets[vt].x = x;
+	insets[vt].y = y;
+	insets[vt].w = w;
+	insets[vt].h = h;
+	insets[vt].pid = p->pid;
+	insets[vt].shown = false;
+	xSemaphoreGive(panel);
+	return px;
+}
+
+/* What is in the buffer now goes on the screen, and stays. */
+void vt_inset_show(void)
+{
+	int vt = tty_of_current();
+
+	if (vt < 0 || vt >= CONFIG_PT_VT_COUNT || !insets[vt].px)
+		return;
+	insets[vt].shown = true;
+	insets[vt].dirty = true;
+	if (renderer)
+		xTaskNotifyGive(renderer);
+}
+
+/* Gone, and the text under it painted again. */
+void vt_inset_close(void)
+{
+	int vt = tty_of_current();
+	uint8_t *px;
+
+	if (!display || vt < 0 || vt >= CONFIG_PT_VT_COUNT || !insets[vt].px)
+		return;
+	xSemaphoreTake(panel, portMAX_DELAY);	/* not while the renderer paints it */
+	px = insets[vt].px;
+	insets[vt].px = NULL;
+	insets[vt].shown = false;
+	xSemaphoreGive(panel);
+	heap_caps_free(px);
+	xSemaphoreTake(lock, portMAX_DELAY);
+	uncover(vt, insets[vt].y, insets[vt].h);
+	xSemaphoreGive(lock);
+	if (renderer)
+		xTaskNotifyGive(renderer);
+}
+
+/* The terminal's text area, in pixels. */
+void vt_text_size(int *w, int *h)
+{
+	*w = display ? cols * CELL_W : 0;
+	*h = display ? rows * CELL_H : 0;
 }
 
 unsigned vt_screen_gen_on(int vt)

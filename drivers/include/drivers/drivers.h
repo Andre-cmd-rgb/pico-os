@@ -84,8 +84,20 @@ void	vt_scroll_end(void);	/* the screen as it is again */
 void	vt_note(const char *text);	/* on the status line for two seconds */
 void	vt_size(int *cols, int *rows);
 bool	vt_has_display(void);
+bool	vt_can_draw(uint32_t cp);	/* the font has it; else it shows as '?' */
+int	vt_char_width(uint32_t cp);	/* cells it takes: 2 for an emoji, 0 if the font lacks it */
+uint32_t vt_emoji(unsigned i);		/* the font's emoji, the most used first; 0 past the last */
 void	vt_redraw(void);	/* repaint everything, after drawing behind the terminal's back */
 void	vt_hold_screen(bool held);	/* stop repainting: a program owns the panel */
+/*
+ * A picture over part of the caller's terminal, painted by the terminal
+ * over its text whenever it shows (vt.c): open gives the buffer to fill,
+ * w * h RGB565 pixels high byte first, at x, y pixels in the text area.
+ */
+uint8_t	*vt_inset_open(int x, int y, int w, int h);
+void	vt_inset_show(void);
+void	vt_inset_close(void);
+void	vt_text_size(int *w, int *h);	/* the text area, in pixels */
 /*
  * The holder draws only between vt_screen_begin() and _end(), and only if
  * begin says its terminal is in front. vt_screen_gen() changes each time
