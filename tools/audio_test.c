@@ -4,11 +4,77 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "../codec/codec.h"
 #include "../drivers/audio/levels.h"
 
 #include "half_under_test.h"	/* play's 2:1 filter, cut out of bin/sink.c */
+
+typedef void *TaskHandle_t;
+typedef void *SemaphoreHandle_t;
+#include "mixer_under_test.h"	/* pull() and mix_stream(), from audio.c */
+
+static uint32_t seed = 1;
+
+static uint32_t rnd(void)
+{
+	seed = seed * 1103515245 + 12345;
+	return seed >> 8;
+}
+
+/*
+ * mix_stream() against pull() a frame at a time, which it stands in for:
+ * two copies of one stream fed the same frames -- in bursts, a trickle, or
+ * none at all, at the wire's rate and away from it, muted or not -- must
+ * give the same blocks and be left in the same state.
+ */
+static void mixer_matches_pull(void)
+{
+	static int32_t ring_a[2 * 997], ring_b[2 * 997];
+	static int32_t acc_a[2 * BLOCK], acc_b[2 * BLOCK];
+	static const uint32_t steps[] = { ONE, ONE, ONE, ONE, ONE / 2, 48000ull * ONE / 44100,
+					  44100ull * ONE / 48000, 3 * ONE };
+
+	for (int run = 0; run < 400; run++) {
+		struct stream a = { 0 }, b;
+		size_t size = 1 + rnd() % 997;
+		int32_t value = 0;
+
+		a.ring = ring_a;
+		a.size = size;
+		a.used = true;
+		b = a;
+		b.ring = ring_b;
+		for (int block = 0; block < 300; block++) {
+			size_t room = size - filled(&a), add = rnd() % 4 ? rnd() % (2 * BLOCK) : 0;
+			uint32_t step = steps[rnd() % 8];
+			bool muted = rnd() % 16 == 0;
+			int n = 0, k;
+
+			for (; add && room; add--, room--) {
+				size_t at = a.head % size * 2;
+
+				ring_a[at] = ring_b[at] = value += rnd() % 2001 - 1000;
+				ring_a[at + 1] = ring_b[at + 1] = -value / 2;
+				a.head++;
+				b.head++;
+			}
+			for (int i = 0; i < 2 * BLOCK; i++)
+				acc_a[i] = acc_b[i] = (int32_t)(rnd() % 100);
+			for (int v[2]; n < BLOCK && pull(&a, step, v); n++) {
+				if (!muted) {
+					acc_a[2 * n] += v[0];
+					acc_a[2 * n + 1] += v[1];
+				}
+			}
+			k = mix_stream(&b, step, acc_b, muted);
+			assert(k == n && !memcmp(acc_a, acc_b, sizeof(acc_a)));
+			assert(a.tail == b.tail && a.phase == b.phase && a.primed == b.primed);
+			assert(!memcmp(a.a, b.a, sizeof(a.a)) && !memcmp(a.b, b.b, sizeof(a.b)));
+		}
+	}
+}
 
 /* A sine's level through half_run(), in dB, after the filter has filled. */
 static double through_half(double hz)
@@ -105,11 +171,13 @@ int main(void)
 	assert(speaker_sample(MIX_FULL, 32768) == 32767);
 	assert(speaker_sample(MIX_OVER, 32768) == 32767 && speaker_sample(-MIX_OVER, 32768) == -32768);
 
+	mixer_matches_pull();
+
 	/* 192 kHz to 96: flat where it is heard, and nothing folded back into it. */
 	assert(fabs(through_half(1000)) < 0.01 && fabs(through_half(20000)) < 0.01);
 	assert(through_half(76000) < -100 && through_half(90000) < -100);
 
 	puts("audio: full speaker range, unclipped mix, gain recovery, headphone curve, "
-	     "24 bits to 32, rounding to 16 and the 2:1 filter passed");
+	     "24 bits to 32, rounding to 16, the mixer's block walk and the 2:1 filter passed");
 	return 0;
 }

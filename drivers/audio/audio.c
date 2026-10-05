@@ -527,6 +527,58 @@ static bool pull(struct stream *s, uint32_t step, int out[2])
 	return true;
 }
 
+/*
+ * A block of the stream's frames, added into acc (unless muted): pull()
+ * BLOCK times, but at the wire's own rate -- the usual case -- without
+ * its arithmetic. There the walk from frame to frame never stops between
+ * two, so each output is simply the frame before (b) and the next comes
+ * in behind it, with the ring's place kept here rather than worked out
+ * by a division each frame. Returns the frames given, as pull()'s loop
+ * counted them.
+ */
+static int mix_stream(struct stream *s, uint32_t step, int32_t *acc, bool muted)
+{
+	int k = 0, v[2];
+
+	if (step == ONE && s->primed && s->phase == ONE) {
+		size_t tail = __atomic_load_n(&s->tail, __ATOMIC_RELAXED);
+		size_t head = __atomic_load_n(&s->head, __ATOMIC_ACQUIRE);
+		size_t at = tail % s->size;
+		const int32_t *ring = s->ring;
+		int32_t a0 = s->a[0], a1 = s->a[1], b0 = s->b[0], b1 = s->b[1];
+
+		for (; k < BLOCK; k++) {
+			/* what the writer adds meanwhile is seen, as pull() sees it */
+			if (tail == head && (head = __atomic_load_n(&s->head, __ATOMIC_ACQUIRE)) == tail)
+				break;
+			if (!muted) {
+				acc[2 * k] += b0;
+				acc[2 * k + 1] += b1;
+			}
+			a0 = b0;
+			a1 = b1;
+			b0 = ring[2 * at];
+			b1 = ring[2 * at + 1];
+			tail++;
+			if (++at == s->size)
+				at = 0;
+		}
+		s->a[0] = a0;
+		s->a[1] = a1;
+		s->b[0] = b0;
+		s->b[1] = b1;
+		__atomic_store_n(&s->tail, tail, __ATOMIC_RELEASE);
+		return k;
+	}
+	for (; k < BLOCK && pull(s, step, v); k++) {
+		if (!muted) {
+			acc[2 * k] += v[0];
+			acc[2 * k + 1] += v[1];
+		}
+	}
+	return k;
+}
+
 /* ------------------------------------------------------------ the mixer */
 
 /* The rate on the wire: the highest a stream with something queued wants. */
@@ -638,18 +690,12 @@ static void mixer_task(void *arg)
 			struct stream *s = &streams[i];
 			bool muted = owner && s->task != owner;
 			uint32_t step;
-			int v[2];
 
 			if (!s->used)
 				continue;
 			step = (uint32_t)((uint64_t)s->rate * ONE / rate);
-			for (int k = 0; k < BLOCK && pull(s, step, v); k++) {
-				if (!muted) {
-					acc[2 * k] += v[0];
-					acc[2 * k + 1] += v[1];
-				}
+			if (mix_stream(s, step, acc, muted))
 				sound = true;
-			}
 			xSemaphoreGive(s->space);
 		}
 		xSemaphoreGive(lock);
