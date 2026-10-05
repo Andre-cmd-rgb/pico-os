@@ -1,0 +1,69 @@
+// readline and read on lines shorter than, as long as and longer than the
+// read buffer, across its edges, and a last line with no newline.
+str line_of(int n, int seed) {
+    str s = "";
+    for (int i = 0; i < n; i++) { s += chr(97 + (i * 7 + seed) % 26); }
+    return s;
+}
+
+int sum(str s) {
+    int h = 0;
+    for (int i = 0; i < len(s); i++) { h = (h * 31 + s[i]) % 1000003; }
+    return h;
+}
+
+int main() {
+    str path = getenv("PICO_TMP") + "/readlines.txt";
+    int[] sizes = [0, 1, 510, 511, 512, 513, 3, 1023, 1500, 0, 5000, 2, 700];
+    File f = open(path, "w");
+    str all = "";
+    for (int i = 0; i < len(sizes); i++) {
+        str l = line_of(sizes[i], i) + "\n";
+        write(f, l);
+        all += l;
+    }
+    write(f, "no newline at the end");
+    all += "no newline at the end";
+    close(f);
+
+    f = open(path, "r");
+    str got = "";
+    int n = 0;
+    str l = readline(f);
+    while (l != "") {
+        print(len(l), " ");
+        got += l;
+        n++;
+        l = readline(f);
+    }
+    println();
+    println(n, " lines, the same: ", got == all, " ", sum(got));
+    println("after the end: [", readline(f), "] [", read(f), "]");
+    close(f);
+
+    f = open(path, "r");
+    str whole = read(f);
+    close(f);
+    println(len(whole), " ", whole == all);
+
+    f = open(path, "r");
+    str pieces = "";
+    int k = 1;
+    str p = read(f, k);
+    while (p != "") {
+        pieces += p;
+        k = k * 3 % 997 + 1;
+        p = read(f, k);
+    }
+    close(f);
+    println(len(pieces), " ", pieces == all);
+
+    f = open(path, "r");
+    str first = readline(f);
+    str rest = read(f, 600);
+    str next = readline(f);
+    close(f);
+    println(len(first), " ", len(rest), " ", len(next), " [", read(open(path, "r"), 0), "]");
+    remove(path);
+    return 0;
+}

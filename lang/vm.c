@@ -336,7 +336,7 @@ dispatch:
 		if (!OK(s, OT_STR) || !OK(t, OT_STR))
 			THROW(s && t ? "not a string (damaged executable)" : "null string");
 		if (s->h.refs == 1) {
-			r = pico_str_append(vm, s, t, true);
+			r = pico_str_add(vm, s, t->data, t->len, true);
 		} else {
 			r = pico_str_concat(vm, s, t);
 			if (r)
@@ -469,7 +469,7 @@ dispatch:
 				var = NULL;
 		}
 		if ((a->h.refs == 1 || var) && a != b) {
-			if (!(r = pico_str_append(vm, a, b, var != NULL)))
+			if (!(r = pico_str_add(vm, a, b->data, b->len, var != NULL)))
 				THROW("out of memory");
 			if (var) {
 				var->o = NULL;

@@ -174,13 +174,14 @@ struct pico_str *pico_str_concat(struct pico_vm *vm, struct pico_str *a, struct 
 }
 
 /*
- * Append b to a, which nobody else references. May move a. When a must
- * grow, room doubles it, for a string built a piece at a time; without
- * room it gets just what it needs, as a new string would.
+ * Append n bytes at p, which is not inside a, to a, which nobody else
+ * references. May move a. When a must grow, room doubles it, for a string
+ * built a piece at a time; without room it gets just what it needs, as a
+ * new string would.
  */
-struct pico_str *pico_str_append(struct pico_vm *vm, struct pico_str *a, struct pico_str *b, bool room)
+struct pico_str *pico_str_add(struct pico_vm *vm, struct pico_str *a, const char *p, size_t n, bool room)
 {
-	size_t need = (size_t)a->len + b->len;
+	size_t need = (size_t)a->len + n;
 
 	if (need > 0x7ffffff0u)
 		return NULL;
@@ -194,10 +195,26 @@ struct pico_str *pico_str_append(struct pico_vm *vm, struct pico_str *a, struct 
 		s->cap = cap;
 		a = s;
 	}
-	memmove(a->data + a->len, b->data, b->len);
+	memcpy(a->data + a->len, p, n);
 	a->len = need;
 	a->data[need] = '\0';
 	return a;
+}
+
+/*
+ * Give back the room a string built a piece at a time has left over, once
+ * it is whole: it may be kept for a long time. If that fails, the string
+ * keeps its room.
+ */
+struct pico_str *pico_str_fit(struct pico_vm *vm, struct pico_str *s)
+{
+	if (s->cap - s->len <= s->len / 8 || str_size(s->cap) <= POOL_MAX)
+		return s;
+	struct pico_str *r = pico_grow(vm, s, str_size(s->cap), str_size(s->len));
+	if (!r)
+		return s;
+	r->cap = r->len;
+	return r;
 }
 
 int pico_str_cmp(const struct pico_str *a, const struct pico_str *b)

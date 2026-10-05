@@ -1205,57 +1205,95 @@ static bool fill(struct pico_vm *vm, struct pico_file *f)
 	return true;
 }
 
+/*
+ * Add n bytes at p to *s, a string being made that nobody else holds yet:
+ * the first piece makes it. False when out of memory, with *s as it was.
+ */
+static bool build(struct pico_vm *vm, struct pico_str **s, const char *p, size_t n)
+{
+	struct pico_str *r = *s ? pico_str_add(vm, *s, p, n, true) : pico_str_new(vm, p, n);
+
+	if (!r)
+		return false;
+	*s = r;
+	return true;
+}
+
+/* Return a string made by build(), or "" when it had nothing. */
+static int ret_built(struct pico_vm *vm, union pico_val *a, struct pico_str *s)
+{
+	if (!s) {
+		vm->empty->h.refs++;
+		s = vm->empty;
+	} else {
+		s = pico_str_fit(vm, s);
+	}
+	a[0].o = &s->h;
+	return 1;
+}
+
 static int bi_read(struct pico_vm *vm, union pico_val *a, int argc)
 {
 	struct pico_file *f = file_arg(vm, a[0], "read");
 	int64_t want = argc > 1 ? a[1].i : INT64_MAX;
-	struct pico_fmt out = { 0 };
+	struct pico_str *s = NULL;
+	bool ok = true;
 
 	if (!f)
 		return -1;
-	while (want > 0 && !out.oom && fill(vm, f)) {
+	while (want > 0 && ok && fill(vm, f)) {
 		uint32_t n = f->rlen - f->rpos;
 		if (n > want)
 			n = want;
-		pico_fmt_puts(vm, &out, f->rbuf + f->rpos, n);
+		ok = build(vm, &s, f->rbuf + f->rpos, n);
 		f->rpos += n;
 		want -= n;
 		if (interrupted(vm)) {
-			port_free(out.buf);
+			pico_decref(vm, s ? &s->h : NULL);
 			return -1;
 		}
 	}
 	if (interrupted(vm)) {
-		port_free(out.buf);
+		pico_decref(vm, s ? &s->h : NULL);
 		return -1;
 	}
+	if (!ok) {
+		pico_decref(vm, s ? &s->h : NULL);
+		return oom(vm);
+	}
 	rel(vm, a[0]);
-	return ret_fmt(vm, a, &out);
+	return ret_built(vm, a, s);
 }
 
+/* A line that is whole in the read buffer, as most are, is copied once. */
 static int bi_readline(struct pico_vm *vm, union pico_val *a, int argc)
 {
 	struct pico_file *f = file_arg(vm, a[0], "readline");
-	struct pico_fmt out = { 0 };
+	struct pico_str *s = NULL;
+	bool ok = true;
 
 	if (!f)
 		return -1;
-	while (!out.oom && fill(vm, f)) {
+	while (ok && fill(vm, f)) {
 		char *start = f->rbuf + f->rpos;
 		size_t avail = f->rlen - f->rpos;
 		char *nl = memchr(start, '\n', avail);
 		size_t n = nl ? (size_t)(nl - start) + 1 : avail;
-		pico_fmt_puts(vm, &out, start, n);
+		ok = build(vm, &s, start, n);
 		f->rpos += n;
 		if (nl)
 			break;
 	}
 	if (interrupted(vm)) {
-		port_free(out.buf);
+		pico_decref(vm, s ? &s->h : NULL);
 		return -1;
 	}
+	if (!ok) {
+		pico_decref(vm, s ? &s->h : NULL);
+		return oom(vm);
+	}
 	rel(vm, a[0]);
-	return ret_fmt(vm, a, &out);
+	return ret_built(vm, a, s);
 }
 
 static int bi_write(struct pico_vm *vm, union pico_val *a, int argc)
