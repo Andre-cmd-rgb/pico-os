@@ -93,5 +93,47 @@ int main() {
     str m = "m";
     for (int i = 0; i < 4; i++) { m = i % 2 == 0 ? m + "0" : "n" + m; }
     println(m);
+
+    // more after the variable, before it is stored again
+    str[] names = ["ann", "bob", "cy"];
+    Box who = Box{s: "dee"};
+    str out = "";
+    for (int i = 0; i < 6; i++) {
+        out = out + names[i % 3] + ": " + str(i * 7) + "/" + str(float(i) / 2.0) + who.s + "\n";
+    }
+    print(out);
+    str keep2 = out;
+    out = out + piece(1) + "!";
+    println(len(out), " ", len(keep2));
+
+    // ... reading the variable itself before the store
+    str r = "r";
+    for (int i = 0; i < 3; i++) { r = r + str(len(r)) + ","; }
+    r = r + bang(r) + ".";
+    r = r + str(len(r) * 2) + substr(r, 0, 1) + chr(r[1]);
+    println(r);
+
+    // ... where a built-in takes the joined string
+    str sub = "abc";
+    sub = substr(sub + "def", 2);
+    sub = trim(sub + "  ") + "|";
+    println(sub);
+
+    // ... a global, with a function that reads it, or without
+    for (int i = 0; i < 3; i++) { g = g + glen() + ";"; }
+    for (int i = 0; i < 3; i++) { g = g + str(len(g)) + piece(i); }
+    println(g);
+    h = "";
+    for (int i = 0; i < 4; i++) { h = h + chr(65 + i) + str(i); }
+    println(h, " ", hold);
+
+    // ... the result stored in another variable
+    str src = "src";
+    str dst = "";
+    dst = src + "-" + "x";
+    dst = src + str(1) + "y";
+    println(src, " ", dst);
     return 0;
 }
+
+str glen() { return "(" + str(len(g)) + ")"; }

@@ -62,9 +62,12 @@ enum pico_kind {
 struct pico_obj {
 	uint32_t	refs;
 	uint8_t		type;		/* enum pico_otype */
-	uint8_t		kind;		/* arrays: element kind */
+	uint8_t		kind;		/* arrays: element kind; strings: PICO_CONST or 0 */
 	uint16_t	sid;		/* structs: index into the struct table */
 };
+
+/* The kind of a string from the program's string table, which holds it. */
+#define PICO_CONST	1
 
 struct pico_str {
 	struct pico_obj	h;
@@ -538,6 +541,7 @@ void	pico_disasm(struct pico_vm *vm);	/* before pico_quicken */
 
 /* quicken.c: fuse common sequences, once pico_load has verified the program */
 void	pico_quicken(struct pico_vm *vm);
+int	pico_unfused(int op);	/* the opcode a fused one replaced */
 
 /* vm.c */
 struct pico_vm *pico_vm_new(void);

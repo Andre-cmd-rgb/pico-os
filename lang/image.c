@@ -470,6 +470,7 @@ int pico_load(struct pico_vm *vm, const uint8_t *data, size_t len, char *err, si
 		p->strings[i] = pico_str_new(vm, (const char *)s, n);
 		if (!p->strings[i])
 			return fail(err, errlen, "out of memory");
+		p->strings[i]->h.kind = PICO_CONST;
 	}
 
 	uint32_t first = 0;

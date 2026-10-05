@@ -117,6 +117,27 @@ static int fuse(const uint8_t *op, int i, int n)
 	return o1 >= 0 ? load_then(o1) : -1;
 }
 
+/*
+ * The opcode that op, fused or not, replaced: what is at its place in the
+ * code before quickening, for the VM when it reads ahead. fuse() puts a
+ * fused opcode only on an INCL (the I compares), on the arithmetic of
+ * "op; STORE c", and on a LOAD for everything else.
+ */
+int pico_unfused(int op)
+{
+	if (op < OP_COUNT)
+		return op;
+	if (op >= Q_ILEQ && op <= Q_INGE)
+		return OP_INCL;
+	for (int i = 0; i < 3; i++) {
+		if (op == int_fused[i][4])
+			return i == 0 ? OP_ADD : i == 1 ? OP_SUB : OP_MUL;
+		if (op == float_fused[i][2])
+			return i == 0 ? OP_ADDF : i == 1 ? OP_SUBF : OP_MULF;
+	}
+	return OP_LOAD;
+}
+
 void pico_quicken(struct pico_vm *vm)
 {
 	const struct pico_prog *p = &vm->prog;

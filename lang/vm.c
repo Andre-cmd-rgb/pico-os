@@ -129,6 +129,101 @@ static const char *qlen_error(const struct pico_obj *o)
 	return o ? "damaged executable (len)" : "len() of a null array";
 }
 
+/*
+ * What an instruction does that may come between a CONCAT and the store of
+ * the string it makes, as concat_target needs to know: its size, the local
+ * or global it reads (-1 for none) and whether it calls a function of the
+ * program. 0 for any other instruction. None of these jumps or reads a
+ * variable but its operand; a built-in sees only its arguments, and a
+ * function cannot see its caller's locals. Quickened code is read as what
+ * it was.
+ */
+static int concat_step(const uint8_t *ip, int *local, int *global, bool *call)
+{
+	*local = *global = -1;
+	switch (pico_unfused(*ip)) {
+	case OP_CONCAT:
+	case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_MOD:
+	case OP_BAND: case OP_BOR: case OP_BXOR: case OP_SHL: case OP_SHR: case OP_NEG:
+	case OP_ADDF: case OP_SUBF: case OP_MULF: case OP_DIVF: case OP_MODF: case OP_NEGF:
+	case OP_I2F: case OP_I2F2: case OP_F2I:
+	case OP_IDX: case OP_IDXR: case OP_STRIDX: case OP_LENA: case OP_LENS:
+		return 1;
+	case OP_CONST8:
+	case OP_TOSTR:
+	case OP_TOSTR2:
+	case OP_GETF:
+	case OP_GETFR:
+		return 2;
+	case OP_CONSTS:
+	case OP_TOSTRX:
+	case OP_CALLB:
+		return 3;
+	case OP_CONST32:
+	case OP_CONSTF:
+		return 5;
+	case OP_LOAD:
+	case OP_LOADR:
+	case OP_IDXL:
+	case OP_IDXLR:
+	case OP_LENL:
+		*local = ip[1];
+		return 2;
+	case OP_GETFL:
+	case OP_GETFLR:
+		*local = ip[1];
+		return 3;
+	case OP_GLOAD:
+	case OP_GLOADR:
+		*global = pico_u16(ip + 1);
+		return 3;
+	case OP_CALL:
+		*call = true;
+		return 3;
+	}
+	return 0;
+}
+
+#define CONCAT_LOOKAHEAD	24	/* instructions */
+
+/*
+ * The variable that the string a CONCAT at ip makes, or one made from it,
+ * is surely stored in next, with nothing reading the variable before:
+ * STORER or GSTORER after a few of the instructions concat_step allows, as
+ * in s = s + x or s = s + str(n) + "\n". A call may come before the store
+ * of a local, not of a global. NULL if there is none.
+ */
+static __attribute__((noinline)) union pico_val *concat_target(struct pico_vm *vm, const uint8_t *ip,
+								union pico_val *bp)
+{
+	const uint8_t *p = ip + 1, *end;
+	int local = -1, global = -1, l, g, size;
+	bool call = false;
+
+	for (int i = 0; i < CONCAT_LOOKAHEAD; i++) {
+		if (*p == OP_STORER) {
+			local = p[1];
+			break;
+		}
+		if (*p == OP_GSTORER) {
+			global = pico_u16(p + 1);
+			break;
+		}
+		if (!(size = concat_step(p, &l, &g, &call)))
+			return NULL;
+		p += size;
+	}
+	if ((local < 0 && global < 0) || (global >= 0 && call))
+		return NULL;
+	end = p;
+	for (p = ip + 1; p < end; p += size) {
+		size = concat_step(p, &l, &g, &call);
+		if ((local >= 0 && l == local) || (global >= 0 && g == global))
+			return NULL;
+	}
+	return local >= 0 ? &bp[local] : &vm->globals[global];
+}
+
 #define INCREF(o)	do { struct pico_obj *o_ = (o); if (o_) o_->refs++; } while (0)
 #define DECREF(o)	do { struct pico_obj *o_ = (o); if (o_ && --o_->refs == 0) pico_obj_free(vm, o_); } while (0)
 #define STR(v)		((struct pico_str *)(v).o)
@@ -449,8 +544,8 @@ dispatch:
 	 * When nobody can see the left string change, b is appended to it
 	 * where it is, as CATL does, instead of copying both: when the stack
 	 * holds its only reference (the result of a concatenation or a call),
-	 * or when the one other is the variable the next instruction
-	 * overwrites with the result, as in s = s + x, which would otherwise
+	 * or when the one other is the variable that the result is about to
+	 * be stored in (concat_target), as in s = s + x, which would otherwise
 	 * copy all of s each time round a loop. That variable's reference
 	 * passes to the result and the store finds it empty, so no one ever
 	 * holds a string whose length changed under it.
@@ -460,14 +555,9 @@ dispatch:
 		union pico_val *var = NULL;
 		if (!OK(a, OT_STR) || !OK(b, OT_STR))
 			THROW(a && b ? "not a string (damaged executable)" : "null string");
-		if (a->h.refs == 2 && a != b) {
-			if (ip[1] == OP_STORER)
-				var = &bp[ip[2]];
-			else if (ip[1] == OP_GSTORER)
-				var = &globals[pico_u16(ip + 2)];
-			if (var && var->o != &a->h)
-				var = NULL;
-		}
+		if (a->h.refs == 2 && a->h.kind != PICO_CONST && a != b &&
+		    (var = concat_target(vm, ip, bp)) && var->o != &a->h)
+			var = NULL;
 		if ((a->h.refs == 1 || var) && a != b) {
 			if (!(r = pico_str_add(vm, a, b->data, b->len, var != NULL)))
 				THROW("out of memory");
