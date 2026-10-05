@@ -1011,9 +1011,11 @@ void proc_init(void)
 {
 	table_lock = xSemaphoreCreateMutex();
 	finished = xQueueCreate(CONFIG_PT_MAX_PROCS, sizeof(TaskHandle_t));
+	/* in PSRAM with the slots: only tasks give and take them, and they
+	 * last as long as the system */
 	for (int i = 0; i < CONFIG_PT_MAX_PROCS; i++) {
-		procs[i].exited = xSemaphoreCreateBinary();
-		procs[i].cont = xSemaphoreCreateBinary();
+		procs[i].exited = xSemaphoreCreateBinaryWithCaps(kmem_caps());
+		procs[i].cont = xSemaphoreCreateBinaryWithCaps(kmem_caps());
 	}
 	/* 4 KB: after a forced kill the reaper closes the program's files
 	 * itself, and one with unwritten data is a write down through FAT

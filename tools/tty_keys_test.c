@@ -10,6 +10,7 @@
 #define TTY_LINE_MAX 256
 #define portMAX_DELAY 0
 typedef void *StreamBufferHandle_t;
+typedef struct { int unused; } StaticStreamBuffer_t;
 typedef void *SemaphoreHandle_t;
 struct pt_file { void *priv; };
 struct proc { int pid, pgid; };

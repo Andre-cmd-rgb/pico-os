@@ -18,7 +18,9 @@
 #include <string.h>
 
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/stream_buffer.h"
 
 #include "drivers/drivers.h"
@@ -28,6 +30,8 @@
 
 struct tty {
 	StreamBufferHandle_t input;
+	StaticStreamBuffer_t *input_head;	/* its memory, in PSRAM */
+	uint8_t		    *input_data;
 	SemaphoreHandle_t    in_lock, read_lock;
 	struct pt_file	    *file;
 	char		     line[TTY_LINE_MAX];
@@ -541,9 +545,19 @@ struct pt_file *tty_console(int which)
 	tty = &ttys[which];
 	if (tty->file)
 		return tty->file;
-	tty->input = xStreamBufferCreate(INPUT_SIZE, 1);
-	tty->in_lock = xSemaphoreCreateMutex();
-	tty->read_lock = xSemaphoreCreateMutex();
+	/*
+	 * In PSRAM, made by hand as a pipe's is (pipe.c says why): only
+	 * tasks write keys into it, never an interrupt, and like the locks
+	 * it lasts as long as the system. One byte more than the size tells
+	 * full from empty, as a dynamic one has.
+	 */
+	tty->input_head = heap_caps_malloc(sizeof(*tty->input_head), kmem_caps());
+	tty->input_data = heap_caps_malloc(INPUT_SIZE + 1, kmem_caps());
+	if (tty->input_head && tty->input_data)
+		tty->input = xStreamBufferCreateStatic(INPUT_SIZE + 1, 1, tty->input_data,
+						       tty->input_head);
+	tty->in_lock = xSemaphoreCreateMutexWithCaps(kmem_caps());
+	tty->read_lock = xSemaphoreCreateMutexWithCaps(kmem_caps());
 	tty->read_timeout_ms = -1;
 	if (!tty->input || !tty->in_lock || !tty->read_lock)
 		return NULL;
