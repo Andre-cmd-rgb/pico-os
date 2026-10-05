@@ -441,9 +441,13 @@ static bool restore_lpc(int32_t *s, int block, int order, const int32_t *coeff, 
  * fit. A run of zeros longer than the cache, a parameter too large for
  * it, or the end of the buffer stops the loop, and read_rice() takes that
  * code the slow way. Returns how many codes it took.
+ *
+ * The zeros are put above the low bits by a multiply with step, which is
+ * 1 << param but comes from the caller so that the compiler cannot see
+ * it: a shift by a variable is two instructions here, the multiply one.
  */
 static __attribute__((noinline)) int rice_fast(struct bits *b, int32_t *out, int n,
-					       unsigned param)
+					       unsigned param, uint32_t step)
 {
 	const uint8_t *p = b->buf + b->pos, *last = b->buf + b->len - 3;
 	int32_t *o = out, *end = out + n;
@@ -469,7 +473,7 @@ static __attribute__((noinline)) int rice_fast(struct bits *b, int32_t *out, int
 		v = cache >> (top - lead);	/* the 1, then the low bits */
 		cache <<= bits;
 		count -= bits;
-		v += (uint32_t)(lead - 1) << param;	/* the zeros above them */
+		v += (uint32_t)(lead - 1) * step;	/* the zeros above them */
 		*o = (int32_t)(v >> 1) ^ -(int32_t)(v & 1);	/* zig-zag */
 		o++;
 	}
@@ -483,7 +487,7 @@ static __attribute__((noinline)) int rice_fast(struct bits *b, int32_t *out, int
 static bool read_rice(struct bits *b, int32_t *out, int n, unsigned param)
 {
 	for (;;) {
-		int done = rice_fast(b, out, n, param), zeros;
+		int done = rice_fast(b, out, n, param, 1u << param), zeros;
 		uint32_t v;
 
 		out += done;
