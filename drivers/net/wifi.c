@@ -83,7 +83,7 @@ static const char *reason_text(int reason)
 	case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT: return "wrong password";
 	case WIFI_REASON_ASSOC_LEAVE:		return "disconnected";
 	case WIFI_REASON_BEACON_TIMEOUT:	return "out of range";
-	default:				return "connection failed";
+	default:				return NULL;	/* the log gives its number */
 	}
 }
 
@@ -307,6 +307,7 @@ static int wait_for_ip(int timeout_ms)
 /* With `channel` (1-13), only that channel is scanned; 0 scans them all. */
 static int connect_on(const char *ssid, const char *pass, int channel, int timeout_ms)
 {
+	const char *where = channel ? " (where it was last)" : "";
 	wifi_config_t cfg = { 0 };
 	bool was_on;
 	int ret;
@@ -350,8 +351,17 @@ static int connect_on(const char *ssid, const char *pass, int channel, int timeo
 	}
 	ret = wait_for_ip(timeout_ms);
 	xSemaphoreGive(lock);
-	if (ret)
-		klog("wifi: %s%s: %s", ssid, channel ? " (where it was last)" : "", reason_text(last_reason));
+	/*
+	 * A reason with no words of its own keeps its number (2: the network
+	 * never answered), and a try that ran out of time says so: both used
+	 * to read "connection failed", which hid what went wrong.
+	 */
+	if (ret == -ETIMEDOUT)
+		klog("wifi: %s%s: no address after %d s", ssid, where, timeout_ms / 1000);
+	else if (ret && reason_text(last_reason))
+		klog("wifi: %s%s: %s", ssid, where, reason_text(last_reason));
+	else if (ret)
+		klog("wifi: %s%s: connection failed (reason %d)", ssid, where, last_reason);
 	return ret;
 }
 
