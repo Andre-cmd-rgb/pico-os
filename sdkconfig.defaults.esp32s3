@@ -80,3 +80,10 @@ CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y
 # work -- but with the trace facility and event groups linked in, the
 # timer task is made anyway: its 2 KB stack and queue are internal RAM.
 CONFIG_FREERTOS_USE_TIMERS=n
+
+# The default event loop (Wi-Fi's and the network's events) with its task,
+# queue and handlers in PSRAM: about 3 KB of internal RAM. Nothing posts
+# an event from an IRAM interrupt, which is what would need the queue
+# internal. Its task touches no flash and never sleeps.
+CONFIG_ESP_EVENT_LOOP_IN_EXT_RAM=y
+CONFIG_ESP_EVENT_POST_FROM_IRAM_ISR=n
