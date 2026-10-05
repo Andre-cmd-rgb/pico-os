@@ -848,16 +848,17 @@ static HOT void idct(const int16_t *in, int last, uint8_t *out, int stride)
 		AAN_1D(c[0], c[8], c[16], c[24], c[32], c[40], c[48], c[56], 0);
 		COLUMN_OUT(w, 8);
 	}
+	/*
+	 * No row is looked at to see if it is flat, as the columns are: a
+	 * block that gets here has something outside its top-left 4x4, and
+	 * then nearly every row has detail -- one in thirty, in a test
+	 * pattern, and almost none in video, was flat. The full transform
+	 * of a flat row gives the same eight samples anyway.
+	 */
 	for (int y = 0; y < 8; y++) {
 		const uint32_t *r = ws + y * 8;
 		uint8_t *o = out + y * stride;
 
-		if (!(r[1] | r[2] | r[3] | r[4] | r[5] | r[6] | r[7])) {
-			uint32_t v = clamp8((int32_t)(r[0] + ROUND) >> 5) * 0x01010101u;
-
-			((uint32_t *)o)[0] = ((uint32_t *)o)[1] = v;
-			continue;
-		}
 		AAN_1D(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], ROUND);
 		ROW_OUT(o);
 	}
