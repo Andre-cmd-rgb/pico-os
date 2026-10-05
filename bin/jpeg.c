@@ -518,9 +518,10 @@ static inline int receive(struct jpeg *j, int s)
 }
 
 /*
- * One block's coefficients, dequantised, in natural order. Returns 0 when
- * there is nothing but the DC, otherwise one past the zigzag position of
- * the last coefficient.
+ * One block's coefficients, dequantised, in natural order, into j->coef,
+ * which is all zeros before (see clear_block()). Returns 0 when there is
+ * nothing but the DC, otherwise one past the zigzag position of the last
+ * coefficient.
  */
 static int decode_block(struct jpeg *j, struct jpeg_comp *c)
 {
@@ -530,8 +531,6 @@ static int decode_block(struct jpeg *j, struct jpeg_comp *c)
 	int16_t *out = j->coef;
 	int t, k = 1, last = 0;
 
-	for (int i = 0; i < 32; i++)
-		((uint32_t *)out)[i] = 0;
 	/* Kept to 16 bits, as the coefficients are: real data never needs
 	 * more, and damaged data then cannot overflow anything. */
 	t = huff_decode(j, &j->dc[c->td]);
@@ -566,6 +565,36 @@ static int decode_block(struct jpeg *j, struct jpeg_comp *c)
 		}
 	} while (k < 64);
 	return last;
+}
+
+#define CLEAR_WALK	8	/* zigzag positions put back one at a time, at most */
+#define CLEAR4(w, i)	(w[i] = w[i + 1] = w[i + 2] = w[i + 3] = 0)
+
+/*
+ * A block's coefficients back to zeros once the IDCT has them, ready for
+ * the next. A block that stopped early has only the places it reached put
+ * back; any other is cleared a word at a time, written out because as a
+ * loop the compiler makes it a memset() and, the builtin being off in the
+ * firmware, a loop of bytes, four times the work.
+ */
+static inline void clear_block(int16_t *coef, int last)
+{
+	uint32_t *w = (uint32_t *)coef;
+
+	if (last <= CLEAR_WALK) {
+		w[0] = 0;			/* the first two places */
+		for (int k = 2; k < last; k++)
+			coef[dezigzag[k]] = 0;
+		return;
+	}
+	CLEAR4(w, 0);
+	CLEAR4(w, 4);
+	CLEAR4(w, 8);
+	CLEAR4(w, 12);
+	CLEAR4(w, 16);
+	CLEAR4(w, 20);
+	CLEAR4(w, 24);
+	CLEAR4(w, 28);
 }
 
 /*
@@ -975,6 +1004,7 @@ static void decode_mcu(struct jpeg *j)
 
 				idct_scaled(j->coef, last, plane + by * bh * c->bw + bx * (8 >> c->rx),
 					    c->bw, c->rx, c->ry);
+				clear_block(j->coef, last);
 			}
 		}
 	}
@@ -1195,6 +1225,7 @@ int jpeg_decode(struct jpeg *j, int scale, uint8_t *band, jpeg_band_fn fn, void 
 	set_scale(j, scale);
 	scale_tables(j);
 	build_rgb(j);
+	memset(j->coef, 0, sizeof(j->coef));	/* and kept so: clear_block() */
 	for (int my = 0; my < j->mcuy; my++) {
 		int y = my * mh, ret;
 
