@@ -17,6 +17,7 @@
  */
 #include <string.h>
 
+#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/stream_buffer.h"
 
@@ -39,7 +40,8 @@ struct tty {
 	int		     app_scroll_pgid;
 };
 
-static struct tty	 ttys[CONFIG_PT_VT_COUNT];
+/* in PSRAM, as is everything here only tasks touch: the line is most of it */
+EXT_RAM_BSS_ATTR static struct tty ttys[CONFIG_PT_VT_COUNT];
 static int		 front;		/* the terminal the keyboard talks to */
 static SemaphoreHandle_t out_lock;
 static void		(*mirror)(const char *s, size_t n);

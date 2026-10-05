@@ -26,6 +26,7 @@
 #define MADCTL_MY	0x80
 #define MADCTL_BGR	0x08
 #define pdMS_TO_TICKS(ms) (ms)
+#define EXT_RAM_BSS_ATTR
 
 struct lcd_io_step {
 	uint8_t		 cmd;

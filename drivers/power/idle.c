@@ -41,6 +41,7 @@
 #include <string.h>
 
 #include "driver/usb_serial_jtag.h"
+#include "esp_attr.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -88,7 +89,7 @@ static int		 unmuted;
  * working away with nobody watching (a download, a script) from one
  * waiting for a key.
  */
-static struct {
+EXT_RAM_BSS_ATTR static struct {
 	int	 pid;
 	uint64_t cpu_us;
 } seen[MAX_PROCS];

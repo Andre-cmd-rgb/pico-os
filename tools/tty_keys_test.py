@@ -12,7 +12,7 @@ def section(start, end):
     return start + source.split(start, 1)[1].split(end, 1)[0]
 
 
-types = section("struct tty {", "static struct tty")
+types = section("struct tty {", "EXT_RAM_BSS_ATTR static struct tty")
 functions = section("static bool switch_key(", "int tty_switch(")
 functions += section("static int tty_ioctl(", "static const struct pt_file_ops")
 

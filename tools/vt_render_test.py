@@ -14,7 +14,7 @@ def section(start, end):
 
 
 parts = {
-    "screen": section("struct screen {", "static struct screen\t screens"),
+    "screen": section("struct screen {", "EXT_RAM_BSS_ATTR static struct screen screens"),
     "grid": section("static void mark_on(", "\n/*\n * One cell into a row of pixels"),
     # from the emoji painter's declaration: draw_cell() calls it
     "cell": section("static void draw_emoji(uint8_t *px", "\n/*\n * A program"),

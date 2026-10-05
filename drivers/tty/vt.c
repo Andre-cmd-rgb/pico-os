@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
@@ -110,7 +111,7 @@ struct screen {
 	int		 view;
 };
 
-static struct screen	 screens[CONFIG_PT_VT_COUNT];
+EXT_RAM_BSS_ATTR static struct screen screens[CONFIG_PT_VT_COUNT];	/* tasks only: PSRAM */
 static struct screen	*cur = &screens[0];	/* what vt_write() writes to */
 static int		 active;		/* what the renderer paints */
 
@@ -718,7 +719,7 @@ static void draw_emoji(uint8_t *px, int span_w, int cell_x, uint16_t glyph, uint
  * other's claim: the game drew over the clip, the first terminal showed
  * an empty console, and when the clip ended the game never drew again.
  */
-static struct {
+EXT_RAM_BSS_ATTR static struct {
 	volatile bool	  held;
 	volatile int	  pid;		/* the program holding it */
 	volatile unsigned gen;		/* its terminal's returns to the front */
@@ -731,7 +732,7 @@ static bool was_owned;			/* the renderer's: a program had the screen */
  * The buffer is the terminal's, not the program's, so it outlives a
  * program killed with it set; the renderer drops it then.
  */
-static struct {
+EXT_RAM_BSS_ATTR static struct {
 	uint8_t		*px;		/* RGB565 high byte first, on a cache line for the DMA */
 	int		 x, y, w, h;	/* in the text area, in pixels */
 	int		 pid;

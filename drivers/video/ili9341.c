@@ -7,6 +7,7 @@
  */
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_rom_sys.h"
@@ -798,10 +799,14 @@ int lcd_draw_native(const uint8_t *rgb565be, int c0, int cw, int p0, int ph)
 {
 	const uint8_t col[4] = { c0 >> 8, c0, (c0 + cw - 1) >> 8, c0 + cw - 1 };
 	uint8_t back = ili9341_madctl(), mode = back & (MADCTL_MY | MADCTL_BGR);
-	/* one frame at a time, under the bus lock: off the caller's small stack */
-	static struct scanout_band band[SCANOUT_MAX_BANDS];
-	static struct lcd_io_step step[3 + 2 * SCANOUT_MAX_BANDS];
-	static uint8_t rows[SCANOUT_MAX_BANDS][4];
+	/*
+	 * One frame at a time, under the bus lock: off the caller's small
+	 * stack, and in PSRAM, since only this task reads them -- a row
+	 * command's four bytes go into the transaction itself.
+	 */
+	EXT_RAM_BSS_ATTR static struct scanout_band band[SCANOUT_MAX_BANDS];
+	EXT_RAM_BSS_ATTR static struct lcd_io_step step[3 + 2 * SCANOUT_MAX_BANDS];
+	EXT_RAM_BSS_ATTR static uint8_t rows[SCANOUT_MAX_BANDS][4];
 	struct scanout_pace fast, slow;
 	int nb, ns = 0, line, ret = 0, nw, err;
 	UBaseType_t prio;

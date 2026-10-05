@@ -24,6 +24,7 @@
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define CLAMP(v, lo, hi) MIN(MAX(v, lo), hi)
 #define MALLOC_CAP_SPIRAM 1
+#define EXT_RAM_BSS_ATTR
 #define MALLOC_CAP_8BIT 2
 #define portMAX_DELAY 0xffffffffu
 #define pdTRUE 1

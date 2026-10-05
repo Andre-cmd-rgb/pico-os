@@ -53,6 +53,7 @@
 
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
@@ -93,7 +94,7 @@ struct stream {
 
 static i2s_chan_handle_t	tx, rx;
 static SemaphoreHandle_t	lock;		/* the table, and the hardware */
-static struct stream		streams[MAX_STREAMS];
+EXT_RAM_BSS_ATTR static struct stream streams[MAX_STREAMS];	/* tasks only */
 static TaskHandle_t		mixer;
 static int32_t			*mixer_acc;
 static int16_t			*mixer_wire;

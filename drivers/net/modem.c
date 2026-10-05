@@ -99,7 +99,7 @@ static int read_sms(int index, struct sms *out, bool peek);
 static void put(const void *data, size_t n);
 static char		 model[48], imei[20];
 static ppp_pcb		*ppp;
-static struct netif	 ppp_netif;
+EXT_RAM_BSS_ATTR static struct netif ppp_netif;
 static volatile bool	 ppp_up, ppp_stop;
 /* The signal as last read (dBm, 0 unknown), for the status line: with
  * the data link up the port carries PPP and cannot be asked. */
@@ -1413,7 +1413,7 @@ int modem_diagnose(int seconds, bool radio_off)
  */
 static void after_news(void)
 {
-	static struct sms m;			/* kmodem's only */
+	EXT_RAM_BSS_ATTR static struct sms m;	/* kmodem's only */
 	char note[64];
 	int index;
 
