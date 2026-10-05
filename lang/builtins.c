@@ -51,10 +51,7 @@ static int ret_str(struct pico_vm *vm, union pico_val *a, struct pico_str *s)
 
 static int ret_fmt(struct pico_vm *vm, union pico_val *a, struct pico_fmt *f)
 {
-	struct pico_str *s = f->oom ? NULL : pico_str_new(vm, f->buf ? f->buf : "", f->len);
-
-	port_free(f->buf);
-	return ret_str(vm, a, s);
+	return ret_str(vm, a, pico_fmt_take(vm, f));
 }
 
 /* A signal arrived while we were blocked: end like the VM does. */
@@ -277,13 +274,13 @@ static bool format_args(struct pico_vm *vm, struct pico_fmt *out, union pico_val
 				pico_fmt_puts(vm, &tmp, STR(v)->data, STR(v)->len);
 			else
 				pico_fmt_value(vm, &tmp, v, &sub, 0, false);
-			if (sl == 1 || !tmp.buf || strlen(tmp.buf) != tmp.len)
-				pico_fmt_puts(vm, out, tmp.buf ? tmp.buf : "", tmp.len);
+			if (sl == 1 || !tmp.str || strlen(tmp.str->data) != tmp.str->len)
+				pico_fmt_puts(vm, out, pico_fmt_data(&tmp), pico_fmt_len(&tmp));
 			else
-				fmt_printf(vm, out, sp, tmp.buf);
+				fmt_printf(vm, out, sp, tmp.str->data);
 			if (tmp.oom)
 				out->oom = true;
-			port_free(tmp.buf);
+			pico_fmt_free(vm, &tmp);
 			break;
 		}
 		}
@@ -312,11 +309,11 @@ static int bi_printf(struct pico_vm *vm, union pico_val *a, int argc)
 	if (!str_args(vm, a, argc, true))
 		return -1;
 	if (!format_args(vm, &out, a, argc)) {
-		port_free(out.buf);
+		pico_fmt_free(vm, &out);
 		return -1;
 	}
-	pico_out(vm, 1, out.buf ? out.buf : "", out.len);
-	port_free(out.buf);
+	pico_out(vm, 1, pico_fmt_data(&out), pico_fmt_len(&out));
+	pico_fmt_free(vm, &out);
 	release_desc(vm, a, 1, argc - 1, STR(a[argc - 1]));
 	rel(vm, a[0]);
 	rel(vm, a[argc - 1]);
@@ -330,7 +327,7 @@ static int bi_format(struct pico_vm *vm, union pico_val *a, int argc)
 	if (!str_args(vm, a, argc, true))
 		return -1;
 	if (!format_args(vm, &out, a, argc)) {
-		port_free(out.buf);
+		pico_fmt_free(vm, &out);
 		return -1;
 	}
 	release_desc(vm, a, 1, argc - 1, STR(a[argc - 1]));
@@ -359,11 +356,11 @@ static int print_values(struct pico_vm *vm, union pico_val *a, int argc, bool ne
 	if (newline)
 		pico_fmt_puts(vm, &out, "\n", 1);
 	if (out.oom) {
-		port_free(out.buf);
+		pico_fmt_free(vm, &out);
 		return oom(vm);
 	}
-	pico_out(vm, 1, out.buf ? out.buf : "", out.len);
-	port_free(out.buf);
+	pico_out(vm, 1, pico_fmt_data(&out), pico_fmt_len(&out));
+	pico_fmt_free(vm, &out);
 	release_desc(vm, a, 0, argc - 1, desc);
 	rel(vm, a[argc - 1]);
 	return 0;
@@ -1231,13 +1228,17 @@ static bool build(struct pico_vm *vm, struct pico_str **s, const char *p, size_t
 	return true;
 }
 
-/* Return a string made by build(), or "" when it had nothing. */
-static int ret_built(struct pico_vm *vm, union pico_val *a, struct pico_str *s)
+/*
+ * Return a string made by build(), or "" when it had nothing. One made
+ * of several pieces gives back the room it has to spare; one piece is
+ * already no bigger than it needs.
+ */
+static int ret_built(struct pico_vm *vm, union pico_val *a, struct pico_str *s, bool pieces)
 {
 	if (!s) {
 		vm->empty->h.refs++;
 		s = vm->empty;
-	} else {
+	} else if (pieces) {
 		s = pico_str_fit(vm, s);
 	}
 	a[0].o = &s->h;
@@ -1249,7 +1250,7 @@ static int bi_read(struct pico_vm *vm, union pico_val *a, int argc)
 	struct pico_file *f = file_arg(vm, a[0], "read");
 	int64_t want = argc > 1 ? a[1].i : INT64_MAX;
 	struct pico_str *s = NULL;
-	bool ok = true;
+	bool ok = true, pieces = false;
 
 	if (!f)
 		return -1;
@@ -1257,6 +1258,7 @@ static int bi_read(struct pico_vm *vm, union pico_val *a, int argc)
 		uint32_t n = f->rlen - f->rpos;
 		if (n > want)
 			n = want;
+		pieces |= s != NULL;
 		ok = build(vm, &s, f->rbuf + f->rpos, n);
 		f->rpos += n;
 		want -= n;
@@ -1274,7 +1276,7 @@ static int bi_read(struct pico_vm *vm, union pico_val *a, int argc)
 		return oom(vm);
 	}
 	rel(vm, a[0]);
-	return ret_built(vm, a, s);
+	return ret_built(vm, a, s, pieces);
 }
 
 /* A line that is whole in the read buffer, as most are, is copied once. */
@@ -1282,7 +1284,7 @@ static int bi_readline(struct pico_vm *vm, union pico_val *a, int argc)
 {
 	struct pico_file *f = file_arg(vm, a[0], "readline");
 	struct pico_str *s = NULL;
-	bool ok = true;
+	bool ok = true, pieces = false;
 
 	if (!f)
 		return -1;
@@ -1291,6 +1293,7 @@ static int bi_readline(struct pico_vm *vm, union pico_val *a, int argc)
 		size_t avail = f->rlen - f->rpos;
 		char *nl = memchr(start, '\n', avail);
 		size_t n = nl ? (size_t)(nl - start) + 1 : avail;
+		pieces |= s != NULL;
 		ok = build(vm, &s, start, n);
 		f->rpos += n;
 		if (nl)
@@ -1305,7 +1308,7 @@ static int bi_readline(struct pico_vm *vm, union pico_val *a, int argc)
 		return oom(vm);
 	}
 	rel(vm, a[0]);
-	return ret_built(vm, a, s);
+	return ret_built(vm, a, s, pieces);
 }
 
 static int bi_write(struct pico_vm *vm, union pico_val *a, int argc)

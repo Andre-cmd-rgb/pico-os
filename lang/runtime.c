@@ -134,16 +134,20 @@ static size_t str_size(uint32_t cap)
 	return sizeof(struct pico_str) + cap + 1;
 }
 
+/* The room a string of len bytes gets: all its size class has, if pooled. */
+static size_t str_room(size_t len)
+{
+	int cls = size_class(str_size(len));
+
+	return cls >= 0 ? class_size[cls] - sizeof(struct pico_str) - 1 : len;
+}
+
 struct pico_str *pico_str_alloc(struct pico_vm *vm, size_t len)
 {
 	if (len > 0x7ffffff0u)
 		return NULL;
-	size_t cap = len;
-	int cls = size_class(str_size(len));
-
 	/* keep the slack of the size class as room to append */
-	if (cls >= 0)
-		cap = class_size[cls] - sizeof(struct pico_str) - 1;
+	size_t cap = str_room(len);
 	struct pico_str *s = pico_alloc(vm, str_size(cap));
 	if (!s)
 		return NULL;
@@ -196,6 +200,7 @@ struct pico_str *pico_str_add(struct pico_vm *vm, struct pico_str *a, const char
 		size_t cap = room && a->cap * 2 > need ? a->cap * 2 : need;
 		if (cap > 0x7ffffff0u)
 			cap = need;
+		cap = str_room(cap);
 		struct pico_str *s = pico_grow(vm, a, str_size(a->cap), str_size(cap));
 		if (!s)
 			return NULL;
@@ -210,17 +215,20 @@ struct pico_str *pico_str_add(struct pico_vm *vm, struct pico_str *a, const char
 
 /*
  * Give back the room a string built a piece at a time has left over, once
- * it is whole: it may be kept for a long time. If that fails, the string
- * keeps its room.
+ * it is whole: it may be kept for a long time. It moves when more than an
+ * eighth of it is spare, to the smallest size class it fits or a block of
+ * its size. If that fails, the string keeps its room.
  */
 struct pico_str *pico_str_fit(struct pico_vm *vm, struct pico_str *s)
 {
-	if (s->cap - s->len <= s->len / 8 || str_size(s->cap) <= POOL_MAX)
+	size_t room;
+
+	if (s->cap - s->len <= s->len / 8 || (room = str_room(s->len)) >= s->cap)
 		return s;
-	struct pico_str *r = pico_grow(vm, s, str_size(s->cap), str_size(s->len));
+	struct pico_str *r = pico_grow(vm, s, str_size(s->cap), str_size(room));
 	if (!r)
 		return s;
-	r->cap = r->len;
+	r->cap = room;
 	return r;
 }
 
@@ -385,29 +393,58 @@ void pico_obj_free(struct pico_vm *vm, struct pico_obj *o)
 
 /* ------------------------------------------------------------ formatting */
 
+#define FMT_START	64	/* bytes of room a pico_fmt starts with */
+
+/*
+ * Text is made in a string of the program's own heap, so that what is
+ * printed or formatted, mostly short, comes from the pools and not from
+ * the system allocator, and a result is that string, not a copy of it.
+ * It starts with room for most lines, so that a line is not moved from
+ * class to class as it grows; pico_fmt_take gives back what is left.
+ */
 void pico_fmt_puts(struct pico_vm *vm, struct pico_fmt *f, const char *s, size_t n)
 {
+	struct pico_str *r;
+
 	if (f->oom)
 		return;
-	if (f->len + n + 1 > f->cap) {
-		size_t cap = f->cap ? f->cap : 64;
-		while (cap < f->len + n + 1)
-			cap *= 2;
-		if (cap > 0x7ffffff0u) {
+	if (!f->str) {
+		if (!(f->str = pico_str_alloc(vm, n > FMT_START ? n : FMT_START))) {
 			f->oom = true;
 			return;
 		}
-		char *b = port_realloc(f->buf, cap);
-		if (!b) {
-			f->oom = true;
-			return;
-		}
-		f->buf = b;
-		f->cap = cap;
+		f->str->len = 0;
+		f->str->data[0] = '\0';
 	}
-	memcpy(f->buf + f->len, s, n);
-	f->len += n;
-	f->buf[f->len] = '\0';
+	if ((r = pico_str_add(vm, f->str, s, n, true)))
+		f->str = r;
+	else
+		f->oom = true;
+}
+
+/* The text made, which f no longer holds; "" if none, NULL if out of memory. */
+struct pico_str *pico_fmt_take(struct pico_vm *vm, struct pico_fmt *f)
+{
+	struct pico_str *s = f->str;
+
+	f->str = NULL;
+	if (f->oom) {
+		if (s)
+			pico_decref(vm, &s->h);
+		return NULL;
+	}
+	if (!s) {
+		vm->empty->h.refs++;
+		return vm->empty;
+	}
+	return pico_str_fit(vm, s);
+}
+
+void pico_fmt_free(struct pico_vm *vm, struct pico_fmt *f)
+{
+	if (f->str)
+		pico_decref(vm, &f->str->h);
+	f->str = NULL;
 }
 
 /* Out-of-range and not-a-number values saturate rather than trap. */
@@ -593,9 +630,7 @@ struct pico_str *pico_tostr_desc(struct pico_vm *vm, union pico_val v, const str
 	const char *d = desc->data;
 
 	pico_fmt_value(vm, &f, v, &d, 0, false);
-	struct pico_str *s = f.oom ? NULL : pico_str_new(vm, f.buf ? f.buf : "", f.len);
-	port_free(f.buf);
-	return s;
+	return pico_fmt_take(vm, &f);
 }
 
 /*

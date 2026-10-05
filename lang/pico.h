@@ -576,15 +576,26 @@ int	 pico_out(struct pico_vm *vm, int fd, const char *s, size_t n);
 int	 pico_eprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 int	 pico_line_of(const struct pico_prog *p, uint16_t fn, const uint8_t *ip);
 
+/* Text being made, in a string of the program's heap: { 0 } to start. */
 struct pico_fmt {
-	char	*buf;
-	size_t	 len;
-	size_t	 cap;
-	bool	 oom;
+	struct pico_str	*str;	/* NULL until something is put */
+	bool		 oom;
 };
+
+static inline const char *pico_fmt_data(const struct pico_fmt *f)
+{
+	return f->str ? f->str->data : "";
+}
+
+static inline size_t pico_fmt_len(const struct pico_fmt *f)
+{
+	return f->str ? f->str->len : 0;
+}
 
 int	 pico_fmt_next(const char **f, const char *end, const char **spec);
 void	 pico_fmt_puts(struct pico_vm *vm, struct pico_fmt *f, const char *s, size_t n);
+struct pico_str *pico_fmt_take(struct pico_vm *vm, struct pico_fmt *f);	/* NULL: out of memory */
+void	 pico_fmt_free(struct pico_vm *vm, struct pico_fmt *f);
 void	 pico_fmt_value(struct pico_vm *vm, struct pico_fmt *f, union pico_val v, const char **desc, int depth, bool quote);
 
 /* builtins.c */
