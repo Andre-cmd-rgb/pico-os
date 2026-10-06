@@ -219,12 +219,15 @@ static int concat_step(const uint8_t *ip, int *local, int *global, bool *call)
  * is surely stored in next, with nothing reading the variable before:
  * STORER or GSTORER after a few of the instructions concat_step allows, as
  * in s = s + x or s = s + str(n) + "\n". A call may come before the store
- * of a local, not of a global. NULL if there is none.
+ * of a local, not of a global. What is stored must come from a CONCAT, so
+ * that the variable is a string's, and the CONCAT's look at what it holds
+ * compares a pointer with a pointer, never with a number that a variable
+ * of another type, n = len(s + x), happens to hold. NULL if there is none.
  */
 static __attribute__((noinline)) union pico_val *concat_target(struct pico_vm *vm, const uint8_t *ip,
 								union pico_val *bp)
 {
-	const uint8_t *p = ip + 1, *end;
+	const uint8_t *p = ip + 1, *prev = ip, *end;
 	int local = -1, global = -1, l, g, size;
 	bool call = false;
 
@@ -239,9 +242,11 @@ static __attribute__((noinline)) union pico_val *concat_target(struct pico_vm *v
 		}
 		if (!(size = concat_step(p, &l, &g, &call)))
 			return NULL;
+		prev = p;
 		p += size;
 	}
-	if ((local < 0 && global < 0) || (global >= 0 && call))
+	if ((local < 0 && global < 0) || (global >= 0 && call) ||
+	    pico_unfused(*prev) != OP_CONCAT)
 		return NULL;
 	end = p;
 	for (p = ip + 1; p < end; p += size) {
