@@ -180,6 +180,16 @@ const struct pt_loader *loader_find(const char *path)
 
 /* ------------------------------------------------------------ environment */
 
+/*
+ * A process's arguments and environment: only its own task reads them, so
+ * they go to PSRAM, not to the internal RAM that malloc gives anything
+ * under a kilobyte.
+ */
+static void *proc_block(size_t n)
+{
+	return heap_caps_malloc_prefer(n, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_DEFAULT);
+}
+
 static const char *env_find(const char *env, const char *name)
 {
 	size_t len = strlen(name);
@@ -195,7 +205,7 @@ static int env_update(struct proc *p, const char *name, const char *value)
 {
 	size_t nlen = strlen(name);
 	size_t vlen = value ? strlen(value) : 0;
-	char *env = malloc(p->env_len + nlen + vlen + 3);
+	char *env = proc_block(p->env_len + nlen + vlen + 3);
 	char *o = env;
 
 	if (!env)
@@ -606,8 +616,8 @@ static int spawn(struct proc *parent, const char *cmd, int argc, char *const *ar
 	size_t size = (argc + 1) * sizeof(char *) + strlen(path) + 1;
 	for (int i = 0; i < argc; i++)
 		size += strlen(argv[i]) + 1;
-	char *args = malloc(size);
-	char *envcopy = malloc(env_len);
+	char *args = proc_block(size);
+	char *envcopy = proc_block(env_len);
 	if (!args || !envcopy) {
 		free(args);
 		free(envcopy);
