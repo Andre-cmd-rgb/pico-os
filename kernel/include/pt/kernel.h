@@ -13,7 +13,7 @@
 #include "pt/sys.h"
 
 #define PT_OS_NAME	"pico-os"
-#define PT_VERSION	"1.0-beta4"
+#define PT_VERSION	"1.0-beta5"
 #define PT_MAX_FDS	16
 
 /* ------------------------------------------------------------ klog */
