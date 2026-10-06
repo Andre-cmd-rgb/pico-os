@@ -200,12 +200,37 @@ static const char *env_find(const char *env, const char *name)
 	return NULL;
 }
 
-/* Rebuild the block without `name`, then append name=value if given. */
+/*
+ * Rebuild the block without `name`, then append name=value if given. When
+ * `name` is the last variable already -- a loop's counter after its first
+ * assignment -- and the new value fits, it is written over the old one
+ * instead: the block comes out the same either way.
+ */
 static int env_update(struct proc *p, const char *name, const char *value)
 {
 	size_t nlen = strlen(name);
 	size_t vlen = value ? strlen(value) : 0;
-	char *env = proc_block(p->env_len + nlen + vlen + 3);
+
+	if (value && p->env_len > 1) {
+		/* the block ends "NAME=VALUE\0\0" */
+		char *last = p->env + p->env_len - 2;
+		size_t at;
+
+		while (last > p->env && last[-1])
+			last--;
+		at = last - p->env;
+		if (at + nlen + vlen + 3 <= p->env_cap && !strncmp(last, name, nlen) &&
+		    last[nlen] == '=') {
+			memmove(last + nlen + 1, value, vlen + 1);
+			last[nlen + vlen + 2] = '\0';
+			p->env_len = at + nlen + vlen + 3;
+			return 0;
+		}
+	}
+
+	/* with room for the variable to grow in place a little */
+	size_t cap = (p->env_len + nlen + vlen + 3 + 63) & ~(size_t)63;
+	char *env = proc_block(cap);
 	char *o = env;
 
 	if (!env)
@@ -228,6 +253,7 @@ static int env_update(struct proc *p, const char *name, const char *value)
 	free(p->env);
 	p->env = env;
 	p->env_len = o - env;
+	p->env_cap = cap;
 	return 0;
 }
 
@@ -662,7 +688,7 @@ static int spawn(struct proc *parent, const char *cmd, int argc, char *const *ar
 	p->argv = av;
 	p->exec_path = s;
 	p->env = envcopy;
-	p->env_len = env_len;
+	p->env_len = p->env_cap = env_len;
 	p->prog = prog;
 	p->loader = loader;
 	p->start_us = esp_timer_get_time();

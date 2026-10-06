@@ -83,6 +83,7 @@ struct proc {
 	char			 cwd[PT_PATH_MAX];
 	char			*env;		/* "A=1\0B=2\0\0" */
 	size_t			 env_len;
+	size_t			 env_cap;	/* the block's size */
 	char			*args;		/* argv block */
 	struct alloc_hdr	*allocs;
 	struct pt_dir		*dirs;		/* open, closed at exit if the program did not */
