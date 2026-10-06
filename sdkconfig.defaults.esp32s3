@@ -39,6 +39,13 @@ CONFIG_ESP_WIFI_IRAM_OPT=n
 CONFIG_ESP_WIFI_RX_IRAM_OPT=n
 CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
 
+# Only ever a station: nothing here starts an access point, so the
+# driver's SoftAP half goes, 52 KB of program. The program is copied to
+# PSRAM in 64 KB pages at every boot and wake; on the Freenove board this
+# is a page fewer. (Enterprise networks stay: 0.4 KB, and a failure to
+# join one would read differently without them.)
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+
 # With the program running from PSRAM, writing the flash no longer turns
 # the cache off, so code kept in IRAM only to run while it is off can go
 # back to PSRAM with the rest: the LED's RMT driver, the timers' interrupt
