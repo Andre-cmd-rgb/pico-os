@@ -150,6 +150,7 @@ int lcd_io_open(esp_lcd_panel_io_handle_t *io, esp_lcd_panel_io_color_trans_done
 
 	if (bus_open || reader || *io)
 		return -EBUSY;
+	lcd_io_hold(false);		/* as the last deep sleep left them */
 	err = spi_bus_initialize(HOST, &bus, SPI_DMA_CH_AUTO);
 
 	if (err) {
@@ -317,6 +318,22 @@ int lcd_io_read_long(uint8_t cmd, uint8_t *out, size_t n)
 	cs_give();
 	spi_device_release_bus(reader);
 	return err ? -EIO : 0;
+}
+
+void lcd_io_hold(bool on)
+{
+	static const int pins[] = {
+		CONFIG_PT_LCD_SPI_CS, CONFIG_PT_LCD_SPI_DC, CONFIG_PT_LCD_SCLK, CONFIG_PT_LCD_MOSI,
+	};
+
+	for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
+		if (pins[i] < 0)
+			continue;
+		if (on)
+			gpio_hold_en(pins[i]);
+		else
+			gpio_hold_dis(pins[i]);
+	}
 }
 
 static int stream_fill(spi_transaction_t *t, const uint8_t *data, size_t len, bool dc)

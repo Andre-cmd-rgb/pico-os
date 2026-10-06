@@ -203,6 +203,7 @@ static void backlight_init(void)
 		.sleep_mode = LEDC_SLEEP_MODE_KEEP_ALIVE,
 	};
 
+	gpio_hold_dis(CONFIG_PT_LCD_BACKLIGHT);	/* off through the last deep sleep */
 	ledc_timer_config(&timer);
 	ledc_channel_config(&channel);
 	lcd_backlight_set(CONFIG_PT_LCD_BRIGHTNESS);
@@ -251,6 +252,7 @@ static void backlight_sleep(void)
 #endif
 	lamp = 0;
 	ledc_stop(LEDC_LOW_SPEED_MODE, BL_CHANNEL, off);
+	gpio_hold_en(CONFIG_PT_LCD_BACKLIGHT);
 }
 
 #else
@@ -264,7 +266,12 @@ void lcd_light(int percent) { dimmer = percent; }
 
 /*
  * Ready for deep sleep: lamp out, panel in its own sleep mode, and the
- * pin states pinned so they survive the cores stopping.
+ * pin states pinned so they survive the cores stopping. ESP-IDF holds a
+ * digital pin through deep sleep only if that pin's own hold is on as
+ * well as the deep-sleep hold (gpio_deep_sleep_hold_en()): with the
+ * second alone, the lamp's pin and the bus's were let float, and the
+ * lamp was off only if the board's resistors made it so. The holds are
+ * let go of at the next boot, before the pins are set up again.
  */
 void lcd_sleep(void)
 {
@@ -278,6 +285,7 @@ void lcd_sleep(void)
 			klog("lcd: sleep command failed (%s)", esp_err_to_name(err));
 		else
 			panel_awake = false;
+		lcd_io_hold(true);
 		lcd_bus_lock(false);
 	}
 	gpio_deep_sleep_hold_en();

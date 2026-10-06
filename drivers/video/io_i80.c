@@ -57,6 +57,7 @@ int lcd_io_open(esp_lcd_panel_io_handle_t *io, esp_lcd_panel_io_color_trans_done
 	};
 	esp_err_t err;
 
+	lcd_io_hold(false);		/* as the last deep sleep left them */
 	if (bus || bus_io || *io)
 		return -EBUSY;
 	err = esp_lcd_new_i80_bus(&bus_cfg, &bus);
@@ -122,6 +123,24 @@ uint8_t *lcd_io_alloc(size_t bytes)
 size_t lcd_io_max_transfer(void)
 {
 	return MAX_TRANSFER;
+}
+
+void lcd_io_hold(bool on)
+{
+	static const int pins[] = {
+		CONFIG_PT_LCD_CS, CONFIG_PT_LCD_RS, CONFIG_PT_LCD_WR,
+		CONFIG_PT_LCD_D0, CONFIG_PT_LCD_D1, CONFIG_PT_LCD_D2, CONFIG_PT_LCD_D3,
+		CONFIG_PT_LCD_D4, CONFIG_PT_LCD_D5, CONFIG_PT_LCD_D6, CONFIG_PT_LCD_D7,
+	};
+
+	for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
+		if (pins[i] < 0)
+			continue;
+		if (on)
+			gpio_hold_en(pins[i]);
+		else
+			gpio_hold_dis(pins[i]);
+	}
 }
 
 int lcd_io_reset_gpio(void)

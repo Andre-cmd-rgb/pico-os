@@ -19,6 +19,13 @@ uint8_t *lcd_io_alloc(size_t bytes);
 /* The most pixel bytes one transfer may carry. */
 size_t	lcd_io_max_transfer(void);
 
+/*
+ * The bus's output pins kept at their levels through deep sleep (true),
+ * or let go again (false): a pad's hold outlives the sleep, so a boot
+ * lets go of them before the bus takes them back.
+ */
+void	lcd_io_hold(bool on);
+
 /* The panel's reset pin, or -1 when it follows the board's own reset. */
 int	lcd_io_reset_gpio(void);
 

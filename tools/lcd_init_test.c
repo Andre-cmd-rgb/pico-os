@@ -134,6 +134,7 @@ static int esp_lcd_del_i80_bus(void *handle)
 	return 0;
 }
 static int gpio_reset_pin(int gpio) { assert(gpio >= 0); return fails() ? 1 : 0; }
+static void lcd_io_hold(bool on) { assert(!on); }
 #include "i80_under_test.h"
 static int lcd_io_reset_gpio(void) { return 41; }
 static int lcd_io_set_clock(void **panel, int hz) { (void)panel; (void)hz; return -ENOTSUP; }
@@ -222,6 +223,7 @@ static int spi_bus_remove_device(void *handle)
 /* lcd_io_stream()'s device is optional and not exercised here. */
 static spi_device_handle_t streamer;
 static void __attribute__((unused)) stream_add(void) { }
+static void lcd_io_hold(bool on) { assert(!on); }
 #include "spi_under_test.h"
 static int lcd_io_reset_gpio(void) { return CONFIG_PT_LCD_SPI_RST; }
 static int lcd_io_set_clock(void **panel, int hz) { assert(panel && hz); return 0; }
