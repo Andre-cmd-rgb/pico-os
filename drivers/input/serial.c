@@ -93,8 +93,9 @@ static void serial_out(const char *s, size_t n)
 static int serial_read(char *buf, size_t n)
 {
 	/* it returns as soon as anything arrives: the wait is only for how
-	 * often the task wakes with nothing, which in light sleep is a cost */
-	return usb_serial_jtag_read_bytes(buf, n, pdMS_TO_TICKS(1000));
+	 * often the task wakes with nothing, which in light sleep is a cost,
+	 * and nothing needs it to wake at all */
+	return usb_serial_jtag_read_bytes(buf, n, portMAX_DELAY);
 }
 
 static int serial_install(void)
