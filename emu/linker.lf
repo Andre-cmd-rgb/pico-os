@@ -1,0 +1,7 @@
+# The port's static data -- the palette and which rows changed -- goes to
+# PSRAM like the emulator's own: only the nes program's task touches it.
+[mapping:emu]
+archive: libemu.a
+entries:
+    if ESP_ALLOW_BSS_SEG_EXTERNAL_MEMORY = y:
+        * (extram_bss)

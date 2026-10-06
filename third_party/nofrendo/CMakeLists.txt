@@ -5,7 +5,9 @@
 # component always registers: CONFIG_ values do not exist during CMake's
 # first pass, so the include paths have to be unconditional.
 set(srcs "")
+set(fragments "")
 if(CONFIG_PT_NES)
+	set(fragments linker.lf)	# its static data in PSRAM
 	file(GLOB mappers mappers/*.c)
 	set(srcs
 		nofrendo.c
@@ -22,7 +24,7 @@ if(CONFIG_PT_NES)
 		${mappers})
 endif()
 
-idf_component_register(SRCS ${srcs} INCLUDE_DIRS . port)
+idf_component_register(SRCS ${srcs} INCLUDE_DIRS . port LDFRAGMENTS ${fragments})
 
 if(srcs)
 	# RETRO_GO selects the hooks in port/. Its

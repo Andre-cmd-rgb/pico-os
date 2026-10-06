@@ -1,0 +1,8 @@
+# The emulator's static data (the NES's memory map, APU and PPU state)
+# goes to PSRAM with the rest of the game's: only the nes program's task
+# touches it, and internal RAM is scarce. The sources stay as they came.
+[mapping:nofrendo]
+archive: libnofrendo.a
+entries:
+    if ESP_ALLOW_BSS_SEG_EXTERNAL_MEMORY = y:
+        * (extram_bss)
