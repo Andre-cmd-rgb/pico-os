@@ -85,6 +85,7 @@ struct stream {
 	size_t		  size;		/* frames the ring holds */
 	size_t		  head, tail;	/* written and read, counting up for ever */
 	SemaphoreHandle_t space;	/* given as the mixer makes room */
+	size_t		  want;		/* the room its writer waits for, SIZE_MAX if none */
 	uint32_t	  phase;	/* between frames a and b, in 1/65536ths */
 	int32_t		  a[2], b[2];
 	bool		  primed;	/* a and b hold samples */
@@ -494,6 +495,7 @@ static struct stream *mine(void)
 	}
 	s->task = self;
 	s->pid = p ? p->pid : 0;
+	s->want = SIZE_MAX;
 	s->used = true;
 	return s;
 }
@@ -580,6 +582,23 @@ static int mix_stream(struct stream *s, uint32_t step, int32_t *acc, bool muted)
 }
 
 /* ------------------------------------------------------------ the mixer */
+
+/*
+ * Waits until the ring has room for `need` frames, or for 50 ms (a signal
+ * is looked for after). The mixer gives the semaphore only once there is
+ * that much room, rather than after every block it takes, which woke a
+ * writer such as play some 275 times a second to add 160 frames at a
+ * time. Each side stores, then fences, then reads what the other stored,
+ * so that the room and the wish cannot pass each other by.
+ */
+static void wait_room(struct stream *s, size_t need)
+{
+	__atomic_store_n(&s->want, need, __ATOMIC_RELAXED);
+	__atomic_thread_fence(__ATOMIC_SEQ_CST);
+	if (s->size - filled(s) < need)
+		xSemaphoreTake(s->space, pdMS_TO_TICKS(50));
+	__atomic_store_n(&s->want, SIZE_MAX, __ATOMIC_RELAXED);
+}
 
 /* The rate on the wire: the highest a stream with something queued wants. */
 static int wanted_rate(void)
@@ -696,7 +715,10 @@ static void mixer_task(void *arg)
 			step = (uint32_t)((uint64_t)s->rate * ONE / rate);
 			if (mix_stream(s, step, acc, muted))
 				sound = true;
-			xSemaphoreGive(s->space);
+			/* its writer woken once what it waits for fits (wait_room) */
+			__atomic_thread_fence(__ATOMIC_SEQ_CST);
+			if (s->size - filled(s) >= __atomic_load_n(&s->want, __ATOMIC_RELAXED))
+				xSemaphoreGive(s->space);
 		}
 		xSemaphoreGive(lock);
 		quiet = sound ? 0 : quiet + 1;
@@ -911,7 +933,7 @@ void audio_stop(void)
 	s = find(xTaskGetCurrentTaskHandle());
 	xSemaphoreGive(lock);
 	while (s && filled(s) && !(proc && pt_interrupted()))
-		xSemaphoreTake(s->space, pdMS_TO_TICKS(50));
+		wait_room(s, s->size);
 	xSemaphoreTake(lock, portMAX_DELAY);
 	if (s && s->used && s->task == xTaskGetCurrentTaskHandle()) {
 		drop_queued(s);
@@ -1122,7 +1144,8 @@ static ssize_t put(const void *pcm, size_t frames, int channels, bool wide)
 			if (proc && pt_interrupted())
 				break;		/* Ctrl-C: the program is going */
 			xTaskNotifyGive(mixer);
-			xSemaphoreTake(s->space, pdMS_TO_TICKS(50));
+			/* what is left of this write, or a whole ring of it */
+			wait_room(s, frames - done < s->size ? frames - done : s->size);
 			continue;
 		}
 		/* the ring's place counted, not divided out, frame by frame;
