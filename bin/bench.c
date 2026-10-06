@@ -27,10 +27,10 @@ static void header(void)
 
 static volatile uint32_t crc_result;	/* read by nobody; stops the loop being optimised away */
 
-/* table-driven CRC-32 over a buffer in internal RAM: integer work */
+/* table-driven CRC-32 over a buffer on the stack: integer work */
 static int bench_cpu(void)
 {
-	static uint32_t table[256];
+	uint32_t table[256];		/* on the stack with buf, not in static RAM */
 	uint8_t buf[4096];
 	uint64_t bytes = 0;
 	uint32_t crc = 0xffffffff;
