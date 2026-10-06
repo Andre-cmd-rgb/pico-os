@@ -35,9 +35,9 @@ size_t strlcpy(char *out, const char *src, size_t n)
 	return len;
 }
 
-void program_register(struct pt_program *p) { (void)p; }
-void completion_register(struct pt_completion *p) { (void)p; }
-const struct pt_program *program_first(void) { return NULL; }
+void program_register(const struct pt_program *p) { (void)p; }
+void completion_register(const struct pt_completion *p) { (void)p; }
+const struct pt_program *program_find(const char *name) { (void)name; return NULL; }
 void *pt_calloc(size_t n, size_t size) { return calloc(n, size); }
 void pt_free(void *p) { free(p); }
 void pt_sigcatch(bool on) { (void)on; }

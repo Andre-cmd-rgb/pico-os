@@ -34,31 +34,33 @@ extern char **environ;
 
 /* ------------------------------------------------------------ programs */
 
-static struct pt_program *programs;
+static const struct pt_program *programs[256];
+static int nprograms;
 static const char *self;
 
-void program_register(struct pt_program *prog)
+/* In the order registered: nothing here lists them. */
+void program_register(const struct pt_program *prog)
 {
-	prog->next = programs;
-	programs = prog;
+	if (nprograms < (int)(sizeof(programs) / sizeof(*programs)))
+		programs[nprograms++] = prog;
 }
 
 /* What Tab completes is the shell's business, and there is none here. */
-void completion_register(struct pt_completion *c)
+void completion_register(const struct pt_completion *c)
 {
 }
 
 const struct pt_program *program_find(const char *name)
 {
-	for (struct pt_program *p = programs; p; p = p->next)
-		if (!strcmp(p->name, name))
-			return p;
+	for (int i = nprograms - 1; i >= 0; i--)
+		if (!strcmp(programs[i]->name, name))
+			return programs[i];
 	return NULL;
 }
 
-const struct pt_program *program_first(void)
+const struct pt_program *program_at(int i)
 {
-	return programs;
+	return i >= 0 && i < nprograms ? programs[i] : NULL;
 }
 
 int main(int argc, char **argv)

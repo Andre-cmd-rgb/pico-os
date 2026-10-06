@@ -57,7 +57,6 @@
 EXT_RAM_BSS_ATTR static struct proc procs[CONFIG_PT_MAX_PROCS];
 static SemaphoreHandle_t table_lock;
 static int		 next_pid = 1;
-static struct pt_program *programs;
 static struct pt_loader	 *loaders;
 static QueueHandle_t	 finished;	/* tasks that have exited, to be deleted */
 
@@ -66,48 +65,75 @@ static QueueHandle_t	 finished;	/* tasks that have exited, to be deleted */
 
 /* ------------------------------------------------------------ registries */
 
-void program_register(struct pt_program *prog)
-{
-	struct pt_program **pp = &programs;
+/*
+ * The registries are pointers to const programs and completions, so those
+ * stay in flash; the arrays are filled by constructors, before app_main,
+ * and only read after.
+ */
+#define MAX_PROGRAMS	256
+#define MAX_COMPLETIONS	128
 
-	while (*pp && strcmp((*pp)->name, prog->name) < 0)
-		pp = &(*pp)->next;
-	prog->next = *pp;
-	*pp = prog;
+EXT_RAM_BSS_ATTR static const struct pt_program *programs[MAX_PROGRAMS];
+EXT_RAM_BSS_ATTR static const struct pt_completion *completions[MAX_COMPLETIONS];
+static int nprograms, ncompletions, left_out;
+
+/* The first program whose name is not before `name`. */
+static int program_index(const char *name)
+{
+	int lo = 0, hi = nprograms;
+
+	while (lo < hi) {
+		int mid = (lo + hi) / 2;
+
+		if (strcmp(programs[mid]->name, name) < 0)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
+/* Sorted by name; one registered later goes before one of the same name. */
+void program_register(const struct pt_program *prog)
+{
+	int i = program_index(prog->name);
+
+	if (nprograms == MAX_PROGRAMS) {
+		left_out++;
+		return;
+	}
+	memmove(&programs[i + 1], &programs[i], (nprograms - i) * sizeof(*programs));
+	programs[i] = prog;
+	nprograms++;
 }
 
 const struct pt_program *program_find(const char *name)
 {
-	/* sorted by name: past where it would be, it is not there */
-	for (struct pt_program *p = programs; p; p = p->next) {
-		int order = strcmp(p->name, name);
+	int i = program_index(name);
 
-		if (!order)
-			return p;
-		if (order > 0)
-			break;
+	return i < nprograms && !strcmp(programs[i]->name, name) ? programs[i] : NULL;
+}
+
+const struct pt_program *program_at(int i)
+{
+	return i >= 0 && i < nprograms ? programs[i] : NULL;
+}
+
+void completion_register(const struct pt_completion *c)
+{
+	if (ncompletions == MAX_COMPLETIONS) {
+		left_out++;
+		return;
 	}
-	return NULL;
+	completions[ncompletions++] = c;
 }
 
-const struct pt_program *program_first(void)
-{
-	return programs;
-}
-
-static struct pt_completion *completions;
-
-void completion_register(struct pt_completion *c)
-{
-	c->next = completions;
-	completions = c;
-}
-
+/* The last registered for a program wins. */
 const struct pt_completion *completion_find(const char *prog)
 {
-	for (struct pt_completion *c = completions; c; c = c->next)
-		if (!strcmp(c->prog, prog))
-			return c;
+	for (int i = ncompletions - 1; i >= 0; i--)
+		if (!strcmp(completions[i]->prog, prog))
+			return completions[i];
 	return NULL;
 }
 
@@ -1024,4 +1050,6 @@ void proc_init(void)
 	ktask_create(reaper, "kreaper", 4096, NULL, 5, NULL, 0);
 	klog("proc: %d process slots, programs on core %d, stacks in %s", CONFIG_PT_MAX_PROCS,
 	     PROC_CORE, (kmem_caps() & MALLOC_CAP_SPIRAM) ? "PSRAM" : "internal RAM");
+	if (left_out)
+		klog("proc: %d programs or completions left out: raise MAX_PROGRAMS", left_out);
 }

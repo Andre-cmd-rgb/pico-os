@@ -258,7 +258,7 @@ static int bracket_main(int argc, char **argv)
 	return sh_test(argc, argv);
 }
 
-static struct pt_program bracket = {
+static const struct pt_program bracket = {
 	.name = "[",
 	.main = bracket_main,
 	.help = TEST_HELP,

@@ -95,30 +95,22 @@ PT_PROGRAM(help, "list commands, or explain one\nusage: help [command]")
 
 	int cols, rows, width = 0, n = 0;
 	pt_tty_size(PT_STDOUT, &cols, &rows);
-	for (const struct pt_program *p = program_first(); p; p = p->next, n++)
+	for (const struct pt_program *p; (p = program_at(n)); n++)
 		if ((int)strlen(p->name) > width)
 			width = strlen(p->name);
 	width += 2;
 	int per_row = cols / width > 0 ? cols / width : 1;
 	int lines = (n + per_row - 1) / per_row;
 
-	const struct pt_program **list = pt_malloc(n * sizeof(*list));
-	int count = 0;
-
-	if (!list)
-		return fail("help", NULL, -ENOMEM);
-	for (const struct pt_program *p = program_first(); p; p = p->next)
-		list[count++] = p;
 	pt_printf("\x1b[1mCommands\x1b[0m (help <command> for details)\n");
 	for (int r = 0; r < lines; r++) {
 		for (int c = 0; c < per_row; c++) {
 			int i = c * lines + r;
-			if (i < count)
-				pt_printf("%-*s", c + 1 < per_row ? width : 0, list[i]->name);
+			if (i < n)
+				pt_printf("%-*s", c + 1 < per_row ? width : 0, program_at(i)->name);
 		}
 		pt_puts("\n");
 	}
-	pt_free(list);
 	pt_printf("\x1b[2mTab completes, Up/Down is history, Esc clears the\n"
 		  "line or stops what runs. Fn is the control key: Fn C\n"
 		  "is Ctrl-C, Fn 1-4 a terminal. `man intro` has more.\x1b[0m\n");

@@ -235,9 +235,10 @@ static void add_path_files(struct candidates *out, const char *word)
 static void add_commands(struct sh *sh, struct candidates *out, const char *word)
 {
 	size_t len = strlen(word);
+	const struct pt_program *p;
 
 	out->typed = len;
-	for (const struct pt_program *p = program_first(); p; p = p->next)
+	for (int i = 0; (p = program_at(i)); i++)
 		if (!strncmp(p->name, word, len))
 			add_candidate(out, p->name, false);
 	for (struct function *f = sh->functions; f; f = f->next)

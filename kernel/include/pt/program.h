@@ -23,18 +23,18 @@ struct pt_program {
 	const char		*help;
 	uint16_t		 stack_kb;	/* 0: CONFIG_PT_PROC_STACK_KB */
 	bool			 any_core;	/* may run on the kernel's core too */
-	struct pt_program	*next;
 };
 
-void program_register(struct pt_program *prog);
+/* The programs are const, in flash: the registry keeps only pointers. */
+void program_register(const struct pt_program *prog);
 const struct pt_program *program_find(const char *name);
-const struct pt_program *program_first(void);	/* sorted by name */
+const struct pt_program *program_at(int i);	/* sorted by name; NULL past the end */
 
 /* For the few commands whose name is not a C identifier, such as one with
  * a hyphen in it: the C name and the name typed at the prompt differ. */
 #define PT_PROGRAM_FULL(ident_, name_, kb_, any_, help_)			\
 	static int pt_main_##ident_(int argc, char **argv);			\
-	static struct pt_program pt_prog_##ident_ = {				\
+	static const struct pt_program pt_prog_##ident_ = {			\
 		.name = name_, .main = pt_main_##ident_, .help = help_,		\
 		.stack_kb = kb_, .any_core = any_,				\
 	};									\
@@ -74,14 +74,13 @@ struct pt_completion {
 	const char		*prog;
 	const char		*spec;
 	void			(*more)(const char *after, pt_complete_add add, void *ctx);
-	struct pt_completion	*next;
 };
 
-void completion_register(struct pt_completion *c);
+void completion_register(const struct pt_completion *c);
 const struct pt_completion *completion_find(const char *prog);
 
 #define PT_COMPLETE_NAMED(ident_, name_, spec_, more_)				\
-	static struct pt_completion pt_comp_##ident_ = {			\
+	static const struct pt_completion pt_comp_##ident_ = {			\
 		.prog = name_, .spec = spec_, .more = more_,			\
 	};									\
 	__attribute__((constructor)) static void pt_compreg_##ident_(void)	\

@@ -473,10 +473,7 @@ static int ready(struct pkgs *idx)
 
 static bool built_in(const char *name)
 {
-	for (const struct pt_program *p = program_first(); p; p = p->next)
-		if (!strcmp(p->name, name))
-			return true;
-	return false;
+	return program_find(name) != NULL;
 }
 
 /*

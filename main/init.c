@@ -149,7 +149,7 @@ static int count_programs(void)
 {
 	int n = 0;
 
-	for (const struct pt_program *p = program_first(); p; p = p->next)
+	while (program_at(n))
 		n++;
 	return n;
 }
