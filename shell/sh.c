@@ -202,9 +202,10 @@ static void history_load(struct sh *sh)
 
 /*
  * After the command has run, so that its output is not kept waiting on
- * the card. The file's name is found once, at the start: finding it is a
- * mkdir and a stat, every command, otherwise. Should its folder have gone
- * meanwhile, it is found -- and made -- again.
+ * the card -- and after the next prompt is up, so that the prompt is not
+ * either (history_save()). The file's name is found once, at the start:
+ * finding it is a mkdir and a stat, every command, otherwise. Should its
+ * folder have gone meanwhile, it is found -- and made -- again.
  */
 static void history_append(struct sh *sh, const char *line)
 {
@@ -220,6 +221,22 @@ static void history_append(struct sh *sh, const char *line)
 		return;
 	pt_dprintf(fd, "%s\n", line);
 	pt_close(fd);
+}
+
+/*
+ * The last command's line onto the end of the file: lineedit() calls it
+ * once the next prompt is drawn, which an open, an append and a close on
+ * the card would otherwise keep waiting, and the shell at its end.
+ */
+void history_save(struct sh *sh)
+{
+	char *line = sh->history.unsaved;
+
+	if (!line)
+		return;
+	sh->history.unsaved = NULL;
+	history_append(sh, line);
+	pt_free(line);
 }
 
 #define DEFAULT_PS1	"\\e[1m\\u@\\h\\e[0m:\\e[33m\\w\\e[0m\\$ "
@@ -325,9 +342,13 @@ static int interactive(struct sh *sh)
 			continue;
 		}
 		run_chunk(sh, &text, NULL, &first, false);
-		if (len > 0 && !line_has_secret(line))
-			history_append(sh, line);
+		if (len > 0 && !line_has_secret(line)) {
+			history_save(sh);
+			if (!(sh->history.unsaved = pt_strdup(line)))
+				history_append(sh, line);	/* no memory: now, then */
+		}
 	}
+	history_save(sh);
 	sb_free(&text);
 	pt_free(line);
 	return sh->status;

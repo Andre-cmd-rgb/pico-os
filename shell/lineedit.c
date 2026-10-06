@@ -337,6 +337,7 @@ int lineedit(struct sh *sh, const char *prompt, char *buf, size_t size)
 	buf[0] = '\0';
 	pt_tty_raw(PT_STDIN, true);
 	refresh(&e);
+	history_save(sh);		/* the last command's, with the prompt up */
 
 	for (;;) {
 		int k = pt_readkey(PT_STDIN);

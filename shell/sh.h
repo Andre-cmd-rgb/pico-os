@@ -17,6 +17,7 @@ struct history {
 	char	*entry[SH_HISTORY];
 	int	 count;
 	char	*file;		/* ~/.config/sh_history, found once */
+	char	*unsaved;	/* the last command, for the file at the next prompt */
 };
 
 struct candidates {
@@ -40,6 +41,7 @@ void	history_add(struct history *h, const char *line);
 
 /* sh.c */
 struct history *sh_history(struct sh *sh);
+void	history_save(struct sh *sh);
 int	sh_candidates(struct sh *sh, const char *line, size_t word_start, const char *word,
 		      struct candidates *out);
 size_t	word_scan(const char *line, size_t pos, char *word, size_t size, char *quote);
