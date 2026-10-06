@@ -648,7 +648,18 @@ static void mixer_task(void *arg)
 			output_stop();
 			gain = 32768;
 			xSemaphoreGive(lock);
-			if (!ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(STANDBY_MS))) {
+			/*
+			 * What the writers gave while it played is old news: it
+			 * would end the wait at once, and a song's end would be
+			 * followed by I2S started again for 40 blocks of silence.
+			 * Dropped, then looked at again; whatever is given from
+			 * here on still ends the wait.
+			 */
+			ulTaskNotifyTake(pdTRUE, 0);
+			xSemaphoreTake(lock, portMAX_DELAY);
+			hz = wanted_rate() || rx_on;
+			xSemaphoreGive(lock);
+			if (!hz && !ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(STANDBY_MS))) {
 				xSemaphoreTake(lock, portMAX_DELAY);
 				if (!tx_on && codec_on) {
 					es8311_power(false);	/* a few seconds of silence */
