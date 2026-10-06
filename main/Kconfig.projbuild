@@ -627,8 +627,11 @@ comment "USB keyboard unavailable: the console uses the native USB port"
 
 config PT_USB_HOST
 	bool
+	select FREERTOS_USE_TIMERS
 	help
-	  The USB host stack, brought in by whatever needs it.
+	  The USB host stack, brought in by whatever needs it. It suspends
+	  an idle port with a FreeRTOS software timer, so it brings those
+	  back too (sdkconfig.defaults.esp32s3 turns them off).
 
 config PT_USB_MSC
 	bool "USB memory sticks"

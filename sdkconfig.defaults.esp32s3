@@ -91,6 +91,7 @@ CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y
 # Nothing here uses FreeRTOS's software timers -- esp_timer does that
 # work -- but with the trace facility and event groups linked in, the
 # timer task is made anyway: its 2 KB stack and queue are internal RAM.
+# The USB host stack does use them: PT_USB_HOST turns them on again.
 CONFIG_FREERTOS_USE_TIMERS=n
 
 # The default event loop (Wi-Fi's and the network's events) with its task,
