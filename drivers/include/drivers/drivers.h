@@ -417,6 +417,7 @@ void	led_set_mode(enum led_mode mode);
 enum led_mode led_get_mode(void);
 void	led_set_color(uint8_t r, uint8_t g, uint8_t b);
 void	led_get_color(uint8_t *r, uint8_t *g, uint8_t *b);
+void	led_sleep_hold(void);	/* its data pin held low through deep sleep */
 
 /* misc/alarm.c: alarms, timers and reminders, kept in /etc/alarms */
 #define ALARMS_MAX	24

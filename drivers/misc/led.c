@@ -124,6 +124,7 @@ int led_init(void)
 #else
 	led_set_color(0xff, 0xb0, 0x00);
 #endif
+	gpio_hold_dis(CONFIG_PT_LED_GPIO);	/* low through the last deep sleep */
 	if (rmt_new_tx_channel(&chan_cfg, &chan) || rmt_new_bytes_encoder(&enc_cfg, &encoder)) {
 		klog("led: RMT setup failed on GPIO%d", CONFIG_PT_LED_GPIO);
 		return -EIO;
@@ -140,6 +141,17 @@ void led_set_mode(enum led_mode m)
 	mode = m;
 	if (task)
 		xTaskNotifyGive(task);
+}
+
+/*
+ * Once the LED has been put out: its data pin kept low through a deep
+ * sleep, as gpio_sleep_sel_dis() keeps it through a light one. Left to
+ * float all night, the line can latch noise, and a lit LED draws more
+ * than the sleeping chip. led_init() lets go of it.
+ */
+void led_sleep_hold(void)
+{
+	gpio_hold_en(CONFIG_PT_LED_GPIO);
 }
 
 enum led_mode led_get_mode(void)
@@ -170,5 +182,6 @@ void led_set_mode(enum led_mode m) { }
 enum led_mode led_get_mode(void) { return LED_OFF; }
 void led_set_color(uint8_t r, uint8_t g, uint8_t b) { }
 void led_get_color(uint8_t *r, uint8_t *g, uint8_t *b) { *r = *g = *b = 0; }
+void led_sleep_hold(void) { }
 
 #endif

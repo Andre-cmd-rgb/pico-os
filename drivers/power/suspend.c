@@ -218,6 +218,7 @@ int power_suspend(uint32_t wake_after_s)
 	klog("suspend: sleeping; wake with %s%s", wake_text(key, button, "any CardKB key"),
 	     wake_after_s ? " or the timer" : "");
 	vTaskDelay(pdMS_TO_TICKS(150));		/* let the LED and the log get out */
+	led_sleep_hold();
 	sleep_now();
 	return -EIO;
 }
@@ -230,6 +231,7 @@ void power_off(void)
 	power_quiesce();
 	klog("power: off; wake with %s", wake_text(key, button, "Enter on the CardKB"));
 	vTaskDelay(pdMS_TO_TICKS(150));
+	led_sleep_hold();
 	sleep_now();
 }
 
@@ -243,6 +245,7 @@ void power_off_empty(void)
 	esp_sleep_enable_timer_wakeup(EMPTY_CHECK_S * 1000000ULL);
 	klog("power: off, the cell is flat; it wakes when charged");
 	vTaskDelay(pdMS_TO_TICKS(150));
+	led_sleep_hold();
 	sleep_now();
 }
 
