@@ -83,15 +83,18 @@ static struct vfs_file *vfs_of(struct pt_file *f)
 }
 
 /*
- * The buffer appears on the first operation small enough to benefit, in
- * internal RAM while there is plenty of it: the card's DMA reads it with
- * no bounce, and FAT on the flash writes from it straight to the flash --
+ * The buffer appears on the first operation small enough to benefit. For
+ * a FAT volume -- the card, a stick, FAT on the flash -- it is in internal
+ * RAM while there is plenty of it: the card's DMA reads it with no
+ * bounce, and FAT on the flash writes from it straight to the flash --
  * from PSRAM the flash driver copies the data through a small staging
  * buffer in pieces, which measured three times slower than no buffer at
  * all. When internal RAM runs short it comes from PSRAM instead, which is
- * far better than none for LittleFS (which copies through its own cache
- * anyway), the card and /tmp -- though not for FAT on the flash, which is
- * then left unbuffered, as before.
+ * far better than none for the card -- though not for FAT on the flash,
+ * which is then left unbuffered, as before. LittleFS and the RAM disks
+ * copy through buffers of their own, so internal RAM buys them nothing:
+ * theirs is in PSRAM from the start, and the 4 KB an open file on / or
+ * /tmp held stays free for what needs it.
  */
 #define INTERNAL_SPARE	(48 * 1024)
 
@@ -101,6 +104,11 @@ static bool fat_on_flash(const struct pt_mount *m)
 	       !strncmp(m->source, "flash:", 6);
 }
 
+static bool fat(const struct pt_mount *m)
+{
+	return m && m->type && !strcmp(m->type, "vfat");
+}
+
 static bool want_buffer(struct vfs_file *v)
 {
 	bool fat_flash = fat_on_flash(v->mount);
@@ -108,7 +116,8 @@ static bool want_buffer(struct vfs_file *v)
 	if (v->buf || !CONFIG_PT_FILE_BUF_KB)
 		return v->buf != NULL;
 	v->cap = (size_t)CONFIG_PT_FILE_BUF_KB * 1024;
-	if (fat_flash || heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > v->cap + INTERNAL_SPARE)
+	if (fat_flash || (fat(v->mount) &&
+			  heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > v->cap + INTERNAL_SPARE))
 		v->buf = heap_caps_malloc(v->cap, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 	if (!v->buf && !fat_flash)
 		v->buf = heap_caps_malloc(v->cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
